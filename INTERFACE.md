@@ -136,6 +136,19 @@ entry point in `sdk-cli`, `sdk-py`, `sdk-ts`, `sdk`, `mcp`, or `headless`
 tool call, it denies a subagent or headless session the checklist and the checkpoint
 writers, using `checklist.py actor-guard`.
 
+The ledger attributes a commit to the session only after a shell call that succeeded: the
+payload's `exit_code` (or `exitCode`) is 0, or, with no exit code, the event is
+`PostToolUse` and `tool_response.interrupted` is `false`. Claude Code reports no exit code
+and sends a failed call to `PostToolUseFailure` instead.
+
+`hooks/checklist-nudge.sh` names the checklist command `$CHECKLIST_COMMAND`, default
+`/checklist`. An adapter whose tool namespaces the package's skills sets it.
+
+**The Claude Code plugin** is this repository: `.claude-plugin/plugin.json` is its manifest,
+`.claude-plugin/marketplace.json` lists it, and `hooks/hooks.json` registers the six hooks
+above with `${CLAUDE_PLUGIN_ROOT}` paths. The plugin sets `CHECKLIST_COMMAND` to
+`/continuity:checklist`. It registers no `PreToolUse` hook.
+
 Hook output is JSON in the tool's hook format or plain text context. The stop hook prints a
 block decision only when the session has an owned commit since the handoff's baseline, or an
 edited file newer than the handoff.

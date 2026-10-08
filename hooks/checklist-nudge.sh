@@ -85,17 +85,20 @@ cadence=$(printf '%s' "$input" | python3 "$(dirname "$0")/../scripts/lib/checkli
 [ "$cadence" = "none" ] && exit 0
 
 sid=$(printf '%s' "$input" | jq -r '.session_id // "unknown"' 2>/dev/null)
+# The command that runs the checklist. An adapter whose tool namespaces the
+# package's skills (a Claude Code plugin: /continuity:checklist) sets it.
+checklist="${CHECKLIST_COMMAND:-/checklist}"
 if [ "$cadence" = "checkpoint" ]; then
     # Not throttled, but only on git: each ticket in the slate lands as a commit.
     case "$signal" in git*) : ;; *) exit 0 ;; esac
-    printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"%s in an unattended session. If this finishes a ticket in the slate, checkpoint now (the resume-checkpoint skill) so carried items survive. Run /checklist unattended once, after the slate completion command succeeds; not after each ticket."}}\n' "$signal"
+    printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"%s in an unattended session. If this finishes a ticket in the slate, checkpoint now (the resume-checkpoint skill) so carried items survive. Run %s unattended once, after the slate completion command succeeds; not after each ticket."}}\n' "$signal" "$checklist"
     exit 0
 fi
 if [ "$cadence" = "unattended-checklist" ]; then
     flag="${TMPDIR:-/tmp}/claude-checklist-unattended-${sid}"
     [ -f "$flag" ] && exit 0
     touch "$flag" 2>/dev/null || true
-    printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"%s: the unattended slate is complete. Run /checklist now, once, unattended: pass --unattended to plan, report, and wrap-check. A step that needs the user'"'"'s answer reports pending, writes nothing, and the checklist continues. Wrap check fails without --unattended until this wrap passes."}}\n' "$signal"
+    printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"%s: the unattended slate is complete. Run %s now, once, unattended: pass --unattended to plan, report, and wrap-check. A step that needs the user'"'"'s answer reports pending, writes nothing, and the checklist continues. Wrap check fails without --unattended until this wrap passes."}}\n' "$signal" "$checklist"
     exit 0
 fi
 [ "$signal" = "slate completion" ] && exit 0
@@ -103,9 +106,8 @@ flag="${TMPDIR:-/tmp}/claude-checklist-nudge-${sid}"
 [ -f "$flag" ] && exit 0          # already nudged this session
 touch "$flag" 2>/dev/null || true
 
-# One command, no routing: /checklist detects the surfaces this session touched
-# and merges each one's steps into the shared spine itself.
-checklist="/checklist"
+# One command, no routing: the checklist detects the surfaces this session
+# touched and merges each one's steps into the shared spine itself.
 items="the record, harness lessons, and pushing every repo touched"
 
 printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"%s — a real task-completion signal. If this wraps up a unit of work, run %s before moving on. The items most often skipped: %s. (Fires once per session.)"}}\n' "$signal" "$checklist" "$items"

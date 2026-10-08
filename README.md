@@ -18,8 +18,9 @@ This repository is the shared package. It holds the parts neither tool owns:
 | Tests | `tests/` |
 
 Adapters install this package into one tool each: a Claude Code plugin and a Codex install
-script. They register the hooks and place the skills. They are separate from this
-repository's engine and build against the interface in `INTERFACE.md`.
+script. They register the hooks and place the skills, and build against the interface in
+`INTERFACE.md`. The Claude Code plugin is this repository itself: `.claude-plugin/` holds its
+manifest and marketplace entry, and `hooks/hooks.json` registers the six hooks.
 
 ## What you get
 
@@ -41,8 +42,26 @@ an adapter leaves them in place.
 
 ## Requirements
 
-Python 3.9 or newer, standard library only. Bash 3.2 or newer. `git`. `gh` only if you use
-the commitments scan in `resume-work`.
+Python 3.9 or newer, standard library only. Bash 3.2 or newer. `git`. `jq`, which the
+checklist reminder hook reads its payload with. `gh` only if you use the commitments scan in
+`resume-work`.
+
+## Install in Claude Code
+
+This repository is its own plugin marketplace. One command installs the six skills and the
+six hooks, where `<owner>/continuity` is the GitHub path you are reading this repository at:
+
+```bash
+claude plugin install continuity --marketplace <owner>/continuity
+```
+
+Inside a session, `/plugin install continuity --marketplace <owner>/continuity` does the
+same. Nothing needs configuring. The skills are namespaced by the plugin: `/continuity:checklist`,
+`/continuity:resume-work`, `/continuity:resume-checkpoint`, `/continuity:handoff-prompt`,
+`/continuity:wip`, and `/continuity:harness-improve`.
+
+`claude plugin uninstall continuity@continuity` removes the plugin. Handoffs are stored
+outside the plugin's directories, so every handoff stays where it is.
 
 ## Tests
 

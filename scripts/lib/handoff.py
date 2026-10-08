@@ -745,7 +745,12 @@ def ledger_record(payload: Mapping[str, Any]) -> None:
     os.makedirs(os.path.dirname(records_path), exist_ok=True)
     existing = _ledger_records(records_path)
     response = payload.get("tool_response") if isinstance(payload.get("tool_response"), dict) else {}
-    success = response.get("exit_code", response.get("exitCode", 1)) == 0
+    if "exit_code" in response or "exitCode" in response:
+        success = response.get("exit_code", response.get("exitCode")) == 0
+    else:
+        # Claude Code's shell result carries no exit code: a failed call fires
+        # PostToolUseFailure instead, so a PostToolUse result not interrupted succeeded.
+        success = payload.get("hook_event_name") == "PostToolUse" and response.get("interrupted") is False
     seen: set[str] = set()
     with open(records_path, "a", encoding="utf-8") as handle:
         for candidate in candidates:
