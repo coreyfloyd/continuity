@@ -22,6 +22,9 @@ SLOTS = ("record", "knowledge", "lessons", "persist")
 TYPES = {"progress", "commitment", "decision", "knowledge", "lesson", "artifact", "open_loop"}
 TITLES = ("Reconcile the record", "Capture knowledge", "Fold in lessons", "Persist")
 SPINE = (*SLOTS, "handoff")
+# The one step allowed after the handoff: removing the session's own worktree earlier
+# would leave the handoff naming no repository, so `/resume-work` could not find it.
+AFTER_HANDOFF = "own-worktree"
 # What an unbound slot leaves in the handoff: the item types its step exists for.
 CARRIES = {"record": ["progress", "commitment", "decision", "artifact"], "knowledge": ["knowledge"],
            "lessons": ["lesson"], "persist": []}
@@ -85,7 +88,7 @@ def compose(profiles: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         "lessons": {"command": "/harness-improve", "consumes": ["lesson"]},
         "persist": None,
     }
-    additions: dict[str, list[dict[str, Any]]] = {anchor: [] for anchor in ("before-spine", *SLOTS)}
+    additions: dict[str, list[dict[str, Any]]] = {anchor: [] for anchor in ("before-spine", *SPINE)}
     seen = set((*SLOTS, "handoff"))
     bound: set[str] = set()
     for profile in profiles:
@@ -127,8 +130,10 @@ def compose(profiles: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
             identity, anchor = step.get("id"), step.get("after")
             if not isinstance(identity, str) or not identity.strip() or identity in seen:
                 raise ValueError(f"{name}: cannot replace or duplicate step {identity}")
-            if anchor == "handoff":
-                raise ValueError(f"{name}: cannot add step {identity} after handoff; handoff must be last")
+            if identity == AFTER_HANDOFF and anchor != "handoff":
+                raise ValueError(f"{name}: step {AFTER_HANDOFF} must follow handoff, not {anchor}")
+            if anchor == "handoff" and identity != AFTER_HANDOFF:
+                raise ValueError(f"{name}: cannot add step {identity} after handoff; only {AFTER_HANDOFF} may follow it")
             if not isinstance(anchor, str) or anchor not in additions:
                 raise ValueError(f"{name}: step {identity} has unknown anchor {anchor}")
             if not isinstance(step.get("instructions"), str) or not step["instructions"].strip():
@@ -143,6 +148,7 @@ def compose(profiles: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         plan.append(step)
         plan.extend(additions[slot])
     plan.append({"id": "handoff", "title": "Write and validate the handoff"})
+    plan.extend(additions["handoff"])
     return plan
 
 

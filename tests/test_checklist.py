@@ -93,6 +93,27 @@ class ChecklistTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "record|knowledge|handoff"):
                     self.engine.compose([dict(name="invalid", **profile)])
 
+    def test_only_own_worktree_may_follow_the_handoff(self):
+        late = {"id": "own-worktree", "after": "handoff", "instructions": "remove the session's own worktree"}
+        plan = self.engine.compose([{"name": "user", "steps": [late]}])
+        self.assertEqual([s["id"] for s in plan[-2:]], ["handoff", "own-worktree"])
+        for steps in [[{"id": "other", "after": "handoff", "instructions": "late"}], [late, {"id": "other", "after": "handoff", "instructions": "late"}]]:
+            with self.subTest(steps=steps):
+                with self.assertRaisesRegex(ValueError, "cannot add step other after handoff; only own-worktree may follow it"):
+                    self.engine.compose([{"name": "user", "steps": steps}])
+        for anchor in ["before-spine", "record", "knowledge", "lessons", "persist"]:
+            with self.subTest(anchor=anchor):
+                with self.assertRaisesRegex(ValueError, f"step own-worktree must follow handoff, not {anchor}"):
+                    self.engine.compose([{"name": "user", "steps": [dict(late, after=anchor)]}])
+        with self.assertRaisesRegex(ValueError, "cannot replace or duplicate step own-worktree"):
+            self.engine.compose([{"name": "user", "steps": [late]}, {"name": "repo", "steps": [late]}])
+        results = [{"id": step["id"], "status": "run", "writes": []} for step in plan]
+        self.assertEqual(self.engine.check_report(plan, results), [])
+        kept = dict(results[-1], status="failed", reason="kept: branch not merged into the trunk")
+        self.assertEqual(self.engine.check_report(plan, results[:-1] + [kept]), [])
+        early = results[:-2] + [results[-1], results[-2]]
+        self.assertIn("plan is", self.engine.check_report(plan, early)[0])
+
     def test_repository_profile_cannot_override_user_binding(self):
         user = self.engine.load_profile(PROFILES / "user.md")
         with self.assertRaisesRegex(ValueError, "record"):
@@ -180,7 +201,7 @@ class ChecklistTests(unittest.TestCase):
             ({"spine": ["record", "knowledge", "persist", "handoff"]}, "cannot remove or skip spine step lessons$"),
             ({"bindings": {"persist": None}}, "cannot remove or skip spine step persist$"),
             ({"bindings": {"record": {"command": "", "consumes": []}}}, "cannot remove or skip spine step record;"),
-            ({"steps": [{"id": "late", "after": "handoff", "instructions": "late"}]}, "cannot add step late after handoff; handoff must be last"),
+            ({"steps": [{"id": "late", "after": "handoff", "instructions": "late"}]}, "cannot add step late after handoff; only own-worktree may follow it"),
         ]
         for profile, message in cases:
             with self.subTest(profile=profile):

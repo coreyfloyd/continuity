@@ -33,11 +33,11 @@ Finishing a session: running the checklist, which is the spine plus any profile 
 _Avoid_: checkpoint
 
 **Spine**:
-The fixed five steps every wrap runs, in this order: reconcile the record, capture knowledge, fold in lessons, persist, write and validate the handoff. A profile can add steps around the spine but cannot remove or skip one of its steps, and no step runs after the last.
+The fixed five steps every wrap runs, in this order: reconcile the record, capture knowledge, fold in lessons, persist, write and validate the handoff. A profile can add steps around the spine but cannot remove or skip one of its steps. Only one step runs after the last: `own-worktree`, which removes the session's own worktree once the handoff is written.
 _Avoid_: checklist (the checklist is the spine plus profile steps)
 
 **Profile**:
-One file that extends the checklist: it binds slots, adds steps before the spine, and adds steps after any of the spine's first four steps. A user profile applies to every session; a repository profile adds steps for sessions in that repository.
+One file that extends the checklist: it binds slots, adds steps before the spine, and adds steps after any of the spine's first four steps, and may add the one step `own-worktree` after the handoff. A user profile applies to every session; a repository profile adds steps for sessions in that repository.
 _Avoid_: configuration (the configuration is the one value naming where handoffs are stored)
 
 **Slot**:

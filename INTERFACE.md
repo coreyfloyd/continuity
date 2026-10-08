@@ -171,7 +171,8 @@ composes and checks it. It writes no handoff and runs no skill.
 **The spine** has five steps in this order: `record`, `knowledge`, `lessons`, `persist`,
 `handoff`. The first four are slots. `lessons` is bound to `/harness-improve`, consuming
 `lesson` items. Unbound slots are carried: the items they would consume stay in the handoff
-as open loops. `handoff` is not a slot and is always last.
+as open loops. `handoff` is not a slot and is the last spine step; only a profile step
+`own-worktree` may follow it.
 
 **A profile** is JSON, or Markdown with one fenced block tagged `checklist-profile`:
 
@@ -184,10 +185,11 @@ as open loops. `handoff` is not a slot and is always last.
 ```
 
 A binding names a `command` and the item types it `consumes`. A step has a unique `id`, an
-`after` anchor (`before-spine`, `record`, `knowledge`, `lessons`, or `persist`), and
+`after` anchor (`before-spine`, `record`, `knowledge`, `lessons`, or `persist`; `handoff`
+only for the step `own-worktree`, which must use it), and
 `instructions`, or a `section` naming a level-two heading in the same Markdown file. A user
 profile applies to every session; a repository profile only adds steps. A profile that
-removes, skips, or replaces a spine step, or adds a step after `handoff`, is rejected with a
+removes, skips, or replaces a spine step, or adds any step but `own-worktree` after `handoff`, is rejected with a
 message naming the step. User profile: `$CHECKLIST_USER_PROFILE`, else
 `${XDG_CONFIG_HOME:-~/.config}/checklist/profile.md`.
 

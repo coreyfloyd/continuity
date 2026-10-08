@@ -7,7 +7,8 @@ description: "End-of-task wrap-up for any session: run the five-step spine with 
 
 Run one fixed spine: reconcile the record, capture knowledge, fold in lessons,
 persist, then write and validate the handoff. The first four steps are slots.
-Profiles bind them and add steps; the handoff is not a slot and is always last.
+Profiles bind them and add steps; the handoff is not a slot, and only an
+`own-worktree` step may follow it.
 Run the named binding skill as the step, preserving its own approval requirements.
 
 ## Resolve profiles before running the spine
@@ -62,14 +63,14 @@ items. An unbound slot's `carries` lists the item types it leaves in the handoff
 Added steps may run `before-spine` or after `record`, `knowledge`, `lessons`, or
 `persist`. At each anchor they run in profile order, then declaration order.
 The composer rejects removal, skipping, replacement of a spine step, duplicate
-step IDs, rebinding by repository profiles, and steps after `handoff`; each
-error names the step. Report its error and stop; do not silently drop a
+step IDs, rebinding by repository profiles, and any step after `handoff` but
+`own-worktree`; each error names the step. Report its error and stop; do not silently drop a
 malformed profile.
 
 Existing repository profiles without a fence still apply: read their `Slot:`
 declarations and merge their instructions at the corresponding anchors using
 the same additive rule. Reject attempts to remove/skip any spine step or add
-after handoff. A legacy `after-persist` declaration means after `persist`.
+after handoff, except `own-worktree`. A legacy `after-persist` declaration means after `persist`.
 Do not silently omit a repository's existing steps during this transition.
 
 ## Who runs it, and when
@@ -142,7 +143,7 @@ Run the bound command after steps 1–3 and their additions so it includes their
 edits. If unbound, retain unsaved items for the handoff. Ticket-state decisions
 and merge authorization belong to profiles and their bindings.
 
-### 5. Write and validate the handoff — fixed, LAST
+### 5. Write and validate the handoff — fixed
 
 After every profile addition, write the interactive session's handoff using the
 same checkpoint module as `resume-checkpoint`. Its slash skill is user-only;
@@ -182,6 +183,12 @@ writes, such as persist's commits and lessons edits, and do not count. With no
 marker in the ledger, every recorded change counts. When `record` is
 unbound, omit `--record-at`; no record check runs. On a non-zero exit, report
 each `wrap failed:` reason and refuse to report checklist completion.
+
+Then a profile's `own-worktree` step may remove the session's own linked
+worktree; removed earlier, the handoff records no repository and resume cannot
+find it. It runs only after the wrap check passes, and only when the worktree is
+clean, its branch is merged into the pushed trunk, and a plain
+`git worktree remove` succeeds. Otherwise keep it.
 
 ## Carried-item contract
 
@@ -240,5 +247,6 @@ A pending step needs a `reason` naming the answer it waits for and an empty
 `writes`. Every planned step reports, so a pending or failed step never ends the
 run early; unattended, the handoff step must have run. On a non-zero exit, fix
 the run or report each `report invalid:` reason. Include what was saved, what remains carried, and the final
-handoff location, validation result, and the wrap check's result. Profile steps appear at their declared
-anchors; no step or action follows the handoff write except reporting the result.
+handoff location, validation result, the wrap check's result, and the own-worktree result:
+removed, or kept with the failed check. Profile steps appear at their declared anchors; after
+the handoff write, only `own-worktree` and reporting the result follow.
