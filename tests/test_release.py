@@ -89,10 +89,10 @@ def sandbox_repo(dest):
     return dest
 
 
-def build(repo, out, key, home):
+def build(repo, out, key, home, cwd=None):
     env = dict(os.environ, GNUPGHOME=home, CONTINUITY_GPG_KEY=key)
     return subprocess.run(["bash", os.path.join(repo, "scripts", "build-release.sh"), out],
-                          text=True, capture_output=True, env=env)
+                          text=True, capture_output=True, env=env, cwd=cwd)
 
 
 def verify(archive, keyring, fingerprint):
@@ -127,6 +127,21 @@ def test_built_archive_verifies_and_holds_only_the_tracked_tree(tmp_path, gnupg_
     with tarfile.open(archive) as tar:
         files = sorted(m.name for m in tar.getmembers() if not m.isdir())
     assert files == sorted("continuity/" + name for name in tracked.stdout.splitlines())
+
+
+def test_relative_output_directory_resolves_from_the_caller(tmp_path, gnupg_home):
+    key = generate_key(gnupg_home, "release")
+    keyring = export(gnupg_home, key, str(tmp_path / "release.asc"))
+    repo = sandbox_repo(str(tmp_path / "repo"))
+    caller = tmp_path / "caller"
+    caller.mkdir()
+
+    result = build(repo, "dist", key, gnupg_home, cwd=str(caller))
+    assert result.returncode == 0, result.stderr
+    archive = caller / "dist" / f"continuity-{version()}.tar.gz"
+    assert archive.is_file()
+    assert not os.path.exists(os.path.join(repo, "dist"))
+    assert verify(str(archive), keyring, key).returncode == 0
 
 
 def test_verify_rejects_another_key_a_tampered_archive_and_a_swapped_checksum(tmp_path, gnupg_home):

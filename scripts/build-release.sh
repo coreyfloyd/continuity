@@ -26,6 +26,8 @@ if (cd "$ROOT" && git rev-parse --verify --quiet "refs/tags/$TAG") >/dev/null 2>
 fi
 
 mkdir -p "$OUT"
+# Absolute, so a relative argument means the caller's directory, not $ROOT.
+OUT="$(cd "$OUT" && pwd)"
 ARCHIVE="$OUT/continuity-$VERSION.tar.gz"
 # The archive is the tracked tree at HEAD under a literal continuity/ root,
 # whatever the checkout directory is called.
