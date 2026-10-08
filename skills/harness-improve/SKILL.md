@@ -101,7 +101,7 @@ A file inside an installed plugin is not yours to edit — flag it instead.
 ### 4. Draft to the house style
 
 - **Explain the why.** "Do X because Y happens otherwise" is worth ten bare "ALWAYS do X" lines. Heavy all-caps MUSTs are a yellow flag — reframe as reasoning.
-- **Keep it lean.** A section getting long is a signal to restructure, not to keep appending.
+- **Keep it lean: pair every addition with a cut.** A long section is a signal to restructure, not to keep appending. Before proposing lines for a file, read the section you are adding to and look for what the new text makes removable: a line it supersedes or duplicates, an incident narrative that compresses to rule plus one-line why, a stale path or flag, a rule another home (a hook, a skill, the ticket) already carries. Propose those cuts in the same row. A row that adds lines and cuts none must say what you checked; leaving a file larger is a cost the row has to justify.
 - **Descriptions are the trigger.** For a triggering fix, the frontmatter description is the thing to edit — specific about when to fire *and when not to*.
 - **Progressive disclosure.** Large reference material belongs in a `references/` file the SKILL.md points at, not inline.
 - **Rules files are aggressively concise** — match that register; they load in every session.
@@ -113,14 +113,15 @@ One table for all surfaces. Grounding gets a candidate INTO the table; impact de
 
 - **Impact this session** — what it actually cost: turns burned, a wrong action taken, or nothing because you caught it.
 - **Impact on future sessions** — how often the moment recurs and what it costs when it does: damage (a wrong or destructive action), a lost cycle, or noise.
+- **Strip / compress** — the cuts from step 4 for the same file, and the row's net line change (`+3 −5`).
 - **Recommend** — apply / skip, from those two. Skip a grounded edit whose future impact is noise; every line added is context every session pays for. Say which rows you recommend and why the others are not worth their line.
 
 ```
-| Target | Repo | Tier (placement) | Proposed change | Evidence (this conversation) | Impact this session | Impact on future sessions | Recommend |
-|---|---|---|---|---|---|---|---|
-| build-sim skill | tools | skill (gotchas) | Note: booting an already-booted simulator exits non-zero but is harmless | We read that message as a build failure | 2 turns lost | Every re-run on a warm simulator; a lost cycle each time | apply |
-| write-nudge hook | tools | hook | Exclude `merge-base` from the push/merge trigger | Nudge fired after a read-only ancestry check | none, ignored | Advisory noise only | skip |
-| old-path memory | — | memory → delete | Recorded path no longer exists | `ls` failed on it | 1 turn | Misleads every recall until removed | apply |
+| Target | Repo | Tier (placement) | Proposed change | Evidence (this conversation) | Impact this session | Impact on future sessions | Strip / compress | Recommend |
+|---|---|---|---|---|---|---|---|---|
+| build-sim skill | tools | skill (gotchas) | Note: booting an already-booted simulator exits non-zero but is harmless | We read that message as a build failure | 2 turns lost | Every re-run on a warm simulator; a lost cycle each time | Fold the two older simulator-boot notes into this one; `+1 −2` | apply |
+| write-nudge hook | tools | hook | Exclude `merge-base` from the push/merge trigger | Nudge fired after a read-only ancestry check | none, ignored | Advisory noise only | none: config change, no prose; `+0` | skip |
+| old-path memory | — | memory → delete | Recorded path no longer exists | `ls` failed on it | 1 turn | Misleads every recall until removed | the whole file; `−1 file` | apply |
 ```
 
 **"Nothing grounded" is a normal, good outcome.** Say so plainly and stop — "skills used this session all ran cleanly; no rule friction; memories verified." Manufacturing edits to fill the table is the failure mode, not the absence of them.
@@ -142,7 +143,8 @@ Routing: <routing file path | default>
 Surfaces scanned: rules · skills+agents (<list>) · memory (<n> recalled)
 Mode: HITL | AFK
 
-<the table from step 5 with impact + recommend columns, or "nothing grounded — <one line on what was checked>">
+<the table from step 5 with impact, strip/compress, and recommend columns, or "nothing grounded — <one line on what was checked>">
+Net: <per file touched, lines added and removed>
 Recommend: apply <rows> · skip <rows> — <one line why the skips are not worth their line>
 
 [HITL, after approval]
