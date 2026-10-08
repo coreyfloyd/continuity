@@ -936,9 +936,8 @@ def test_state_dir_cli_prints_the_configured_location(tmp_path, monkeypatch):
     assert result.returncode == 0 and result.stdout.strip() == str(tmp_path / "configured")
 
 
-def test_ambient_session_id_falls_back_to_the_codex_thread(monkeypatch):
-    """#1572 review: Codex exposes only CODEX_THREAD_ID, so a bare `resolve`
-    (wip Step 0) and the checklist's `plan` must find the session there."""
+def test_ambient_session_id_uses_codex_identity_over_inherited_claude_identity(monkeypatch):
+    """The child Codex thread owns its ledger even with Claude parent variables."""
     handoff = load_module()
     for key in ("CLAUDE_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"):
         monkeypatch.delenv(key, raising=False)
@@ -946,6 +945,8 @@ def test_ambient_session_id_falls_back_to_the_codex_thread(monkeypatch):
     monkeypatch.setenv("CODEX_THREAD_ID", "codex-thread")
     assert handoff.ambient_session_id() == "codex-thread"
     monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "claude-session")
+    assert handoff.ambient_session_id() == "codex-thread"
+    monkeypatch.delenv("CODEX_THREAD_ID")
     assert handoff.ambient_session_id() == "claude-session"
 
 

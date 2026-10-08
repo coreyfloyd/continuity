@@ -131,9 +131,9 @@ def state_dir() -> str:
 
 
 def ambient_session_id() -> str:
-    """The calling session's id in either tool: Claude Code's variables first, then Codex's thread id."""
-    return (os.environ.get("CLAUDE_SESSION_ID") or os.environ.get("CLAUDE_CODE_SESSION_ID")
-            or os.environ.get("CODEX_THREAD_ID", ""))
+    """The calling tool's id, not an inherited parent harness's session."""
+    return (os.environ.get("CODEX_THREAD_ID") or os.environ.get("CLAUDE_SESSION_ID")
+            or os.environ.get("CLAUDE_CODE_SESSION_ID", ""))
 
 
 def resolve_path(cwd: str, session_id: str, use_override: bool = True) -> str:
@@ -546,7 +546,38 @@ def count_for_repository(cwd: str) -> int:
 
 
 def is_interactive(payload: Mapping[str, Any], entrypoint: str | None = None) -> bool:
-    return (entrypoint or os.environ.get("CLAUDE_CODE_ENTRYPOINT", "")) not in HEADLESS_ENTRYPOINTS and not bool(payload.get("agent_id"))
+    if payload.get("agent_id"):
+        return False
+    # The child's own harness decides: a headless Claude parent is not evidence
+    # that its interactive Codex child is headless. CLI commands have no payload,
+    # but Codex propagates the thread id and persists its source in session_meta.
+    codex = os.environ.get("CONTINUITY_HARNESS") == "codex" or bool(os.environ.get("CODEX_THREAD_ID"))
+    if codex:
+        session_id = str(payload.get("session_id") or os.environ.get("CODEX_THREAD_ID") or "")
+        transcript = payload.get("transcript_path")
+        paths = [Path(transcript)] if isinstance(transcript, str) and transcript else []
+        if not paths and session_id and re.fullmatch(r"[A-Za-z0-9_.-]+", session_id):
+            home = Path(os.environ.get("CODEX_HOME") or os.path.expanduser("~/.codex"))
+            paths = sorted((home / "sessions").rglob("*" + session_id + "*.jsonl"))
+        for path in paths:
+            try:
+                with path.open(encoding="utf-8") as handle:
+                    # Metadata is at the start of a rollout, not in its usage tail.
+                    for _ in range(32):
+                        line = handle.readline()
+                        if not line:
+                            break
+                        row = json.loads(line)
+                        meta = row.get("payload", {})
+                        if row.get("type") == "session_meta" and meta.get("id") == session_id:
+                            source = meta.get("source")
+                            return isinstance(source, str) and source in {"cli", "vscode", "appServer", "app-server"}
+            except (OSError, ValueError, TypeError, AttributeError):
+                continue
+        # An identified Codex session with unreadable/unknown origin is not
+        # authorized to run wrap commands. Advisory hooks simply stay quiet.
+        return False
+    return (entrypoint or os.environ.get("CLAUDE_CODE_ENTRYPOINT", "")) not in HEADLESS_ENTRYPOINTS
 
 
 def _ledger_records(path: str) -> list[dict[str, Any]]:
@@ -823,7 +854,10 @@ def context_guard(payload: Mapping[str, Any]) -> None:
     if not is_interactive(payload):
         return
     transcript = str(payload.get("transcript_path") or "")
-    if not transcript or not os.path.isfile(transcript) or os.path.getsize(transcript) < 512 * 1024:
+    codex = os.environ.get("CONTINUITY_HARNESS") == "codex"
+    if not transcript or not os.path.isfile(transcript):
+        return
+    if not codex and os.path.getsize(transcript) < 512 * 1024:
         return
     with open(transcript, "rb") as handle:
         size = os.path.getsize(transcript)
@@ -832,25 +866,42 @@ def context_guard(payload: Mapping[str, Any]) -> None:
             handle.readline()
         lines = handle.read().decode("utf-8", "replace").splitlines()
     usage: Mapping[str, Any] | None = None
+    window = 1_000_000
     for line in lines:
         try:
             row = json.loads(line)
         except json.JSONDecodeError:
             continue
-        candidate = row.get("message", {}).get("usage", {}) if row.get("type") == "assistant" else {}
+        if codex:
+            event = row.get("payload", {})
+            info = event.get("info") if row.get("type") == "event_msg" and event.get("type") == "token_count" else None
+            if not isinstance(info, dict):
+                continue
+            candidate = info.get("last_token_usage")
+            context_window = info.get("model_context_window")
+            if not isinstance(context_window, int) or context_window <= 0:
+                usage = None
+                continue
+            window = context_window
+        else:
+            candidate = row.get("message", {}).get("usage", {}) if row.get("type") == "assistant" else {}
         if isinstance(candidate, dict) and candidate.get("input_tokens") is not None:
             usage = candidate
     if not usage:
         return
-    used = sum(int(usage.get(key, 0) or 0) for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"))
-    percentage = int(used * 100 / 1_000_000)
+    # Codex input_tokens already includes cached input; do not count it twice.
+    keys = ("input_tokens",) if codex else ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+    used = sum(int(usage.get(key, 0) or 0) for key in keys)
+    percentage = int(used * 100 / window)
     if percentage < 50:
         return
     path = resolve_path(str(payload.get("cwd") or ""), str(payload.get("session_id") or ""))
+    window_note = "checkpoint threshold 50%" if codex else "warn 50%, auto-compaction 75%"
+    restart = "Then start a fresh session when at a clean boundary." if codex else "Then /clear when at a clean boundary."
     if path:
-        print(f"CONTEXT USAGE: {percentage}% of context window (warn 50%, auto-compaction 75%). First save durable progress to your record (the checklist's record step). Then checkpoint: source {HANDOFF_SH} and pipe your continuation JSON (resume.headline/next_action/open_loops[], spawned_processes) to handoff_checkpoint — it resolves the subject, composes subject/git, and lints (do NOT use handoff_atomic_write directly — it refuses a subject-less payload). Then /clear when at a clean boundary.")
+        print(f"CONTEXT USAGE: {percentage}% of context window ({window_note}). First save durable progress to your record (the checklist's record step). Then checkpoint: source {HANDOFF_SH} and pipe your continuation JSON (resume.headline/next_action/open_loops[], spawned_processes) to handoff_checkpoint — it resolves the subject, composes subject/git, and lints (do NOT use handoff_atomic_write directly — it refuses a subject-less payload). {restart}")
     else:
-        print(f"CONTEXT USAGE: {percentage}% of context window (warn 50%, auto-compaction 75%). Save durable progress to your record NOW, because the record is what outlives this context. Then /clear when at a clean boundary.")
+        print(f"CONTEXT USAGE: {percentage}% of context window ({window_note}). Save durable progress to your record NOW, because the record is what outlives this context. {restart}")
 
 
 def pre_compact(payload: Mapping[str, Any], raw_input: str | None = None) -> None:

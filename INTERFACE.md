@@ -25,8 +25,9 @@ together identify it, so two sessions on one subject never overwrite each other.
 `subject.working_directory` is a canonical path, and `git.repository_root` is the parent of
 `git rev-parse --git-common-dir`, so every worktree of a repository shares one root.
 
-The session id comes from `--session-id`, else `CLAUDE_SESSION_ID`, else
-`CLAUDE_CODE_SESSION_ID`, else `CODEX_THREAD_ID`.
+The session id comes from `--session-id`, else `CODEX_THREAD_ID`, else
+`CLAUDE_SESSION_ID`, else `CLAUDE_CODE_SESSION_ID`. Codex's own thread takes priority
+over an inherited Claude parent's session identity.
 
 ## 2. Configuration
 
@@ -232,3 +233,22 @@ term, case-insensitively, as `path:line:column: term: text`. Exit status 0 is cl
 findings, 2 is a usage error. The term list is supplied by the caller and is not part of this
 repository. `tests/test_shipped_surface.py` runs the check over the whole tree when
 `REFERENCE_CHECK_TERMS` names a list.
+
+## 10. Codex installation and normalization
+
+`python3 scripts/install-codex.py [--codex-home PATH] [--codex PATH]` installs a
+runtime copy, the six skill links, six continuity hooks and the optional actor
+guard. The installer owns only the registrations and links recorded in
+`continuity-install.json`; other hooks and configuration survive. Its seven
+handlers must match `hooks/list` with `trustStatus: trusted`, or it restores the
+previous install. `--uninstall` removes the adapter, retaining shared state.
+
+`scripts/codex-hook.py OPERATION` reads one captured-shape Codex payload on stdin,
+normalizes string tool responses and calls the shared engines through commands.
+Advisory errors exit zero. `CONTINUITY_HARNESS=codex` selects the Codex transcript
+context parser and actor classification for these calls. With `CODEX_THREAD_ID`
+present, command-line checklist operations also read that session's `session_meta`
+from `CODEX_HOME/sessions`. Source `exec`, subagents, unknown sources, mismatched
+identity, and unreadable metadata are refused; interactive CLI, desktop and
+app-server sources ignore a parent's `CLAUDE_CODE_ENTRYPOINT`. No caller-provided
+model or tool name establishes interactive authority.

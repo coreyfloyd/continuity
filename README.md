@@ -22,6 +22,38 @@ script. They register the hooks and place the skills, and build against the inte
 `INTERFACE.md`. The Claude Code plugin is this repository itself: `.claude-plugin/` holds its
 manifest and marketplace entry, and `hooks/hooks.json` registers the six hooks.
 
+## Install in Codex
+
+From a downloaded release or this checkout:
+
+```bash
+python3 scripts/install-codex.py
+```
+
+The one action installs six skills, the six continuity hooks, and the checklist
+actor guard. It copies the runtime under `${CODEX_HOME:-~/.codex}/continuity`, so
+removing the download does not break the installation. It preserves other hooks
+and settings, refuses existing skills owned by another installer, and verifies
+its persisted hook trust through `codex app-server` (`hooks/list`). A failed
+verification rolls back the installation. Run the same action to update.
+
+Codex CLI 0.160.0 or newer with command-hook support is required. The contract is
+pinned to captured 0.160.0 payloads and checked against the installed binary.
+`--codex-home PATH` selects a different Codex home; `--codex PATH` selects the
+executable used for verification. Restart the Codex session after installation.
+
+```bash
+python3 scripts/install-codex.py --uninstall
+```
+
+Uninstall removes the owned hooks, trust entries, skill links and runtime copy.
+It leaves handoffs, ledger, backups and checklist state in shared storage.
+
+The Codex adapter normalizes string tool output and reads the session's own
+metadata. `codex exec` and subagents cannot run checklist commands; an interactive
+Codex child of a headless Claude session can. Context usage reads Codex token-count
+rows and the reported context window, without counting cached input twice.
+
 ## What you get
 
 - **Checkpoint.** Write the handoff now, without finishing. It carries every session item
