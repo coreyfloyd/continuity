@@ -95,6 +95,22 @@ same. Nothing needs configuring. The skills are namespaced by the plugin: `/cont
 `claude plugin uninstall continuity@continuity` removes the plugin. Handoffs are stored
 outside the plugin's directories, so every handoff stays where it is.
 
+## Verify a release
+
+Each release publishes `continuity-<version>.tar.gz` with a `.sha256` checksum, a
+signature over that checksum, the public key `continuity-release.asc`, and
+`verify-release.sh`. Download them into one directory and check the signature before
+extracting:
+
+```bash
+bash verify-release.sh continuity-<version>.tar.gz continuity-release.asc \
+  09674AFF392661238F4ACBD9F32B3A412CD5EFC5
+```
+
+The fingerprint is in `RELEASE_SIGNING_FINGERPRINT`. The script fails unless the
+checksum was signed by that key and the archive matches the checksum. Maintainers cut
+releases with `RELEASING.md`.
+
 ## Tests
 
 ```bash
