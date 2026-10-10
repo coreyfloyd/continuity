@@ -963,3 +963,66 @@ def test_resolve_cli_and_shell_library_accept_the_codex_session_environment(tmp_
                            text=True, capture_output=True, env=env)
     assert shell.returncode == 0, shell.stderr
     assert shell.stdout.strip() == result.stdout.strip()
+
+
+def _missing_handoff_repo(tmp_path):
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "init", "--allow-empty"], check=True)
+    return repo.resolve(), tmp_path / "absent-handoff.json", tmp_path / "ledger.jsonl"
+
+
+def _git_state_record(repo, ts="2026-01-01T00:00:00Z"):
+    return json.dumps({"repo_root": str(repo), "head": "h", "remote_heads": [], "ts": ts}) + "\n"
+
+
+def test_guard_blocks_missing_handoff_after_a_session_file_edit(tmp_path):
+    handoff = load_module()
+    repo, path, ledger = _missing_handoff_repo(tmp_path)
+    (repo / "edited.txt").write_text("x")
+    ledger.write_text(json.dumps({"kind": "file", "path": str(repo / "edited.txt"), "checkout": str(repo),
+                                  "session_id": "s", "ts": "2026-01-01T00:00:00Z"}) + "\n")
+    decision = handoff.guard_decide(str(path), str(ledger))
+    assert decision["decision"] == "block"
+    assert str(path) in decision["reason"] and "HANDOFF MISSING" in decision["reason"]
+
+
+def test_guard_blocks_missing_handoff_after_an_owned_commit(tmp_path):
+    handoff = load_module()
+    repo, path, ledger = _missing_handoff_repo(tmp_path)
+    ledger.write_text(json.dumps({"repo_root": str(repo), "head": "h", "commit": "h", "ts": "2026-01-01T00:00:00Z"}) + "\n")
+    assert handoff.guard_decide(str(path), str(ledger))["decision"] == "block"
+
+
+def test_guard_blocks_missing_handoff_after_a_shell_edit_in_the_stop_cwd(tmp_path):
+    handoff = load_module()
+    repo, path, ledger = _missing_handoff_repo(tmp_path)
+    ledger.write_text(_git_state_record(repo))
+    (repo / "sed-edited.txt").write_text("x")
+    assert handoff.guard_decide(str(path), str(ledger), str(repo))["decision"] == "block"
+
+
+def test_guard_allows_missing_handoff_for_a_read_only_session(tmp_path):
+    handoff = load_module()
+    repo, path, ledger = _missing_handoff_repo(tmp_path)
+    ledger.write_text(_git_state_record(repo, handoff.utc_now()))
+    assert handoff.guard_decide(str(path), str(ledger), str(repo))["decision"] == "allow"
+
+
+def test_guard_allows_missing_handoff_when_only_older_dirt_exists(tmp_path):
+    handoff = load_module()
+    repo, path, ledger = _missing_handoff_repo(tmp_path)
+    old = repo / "preexisting.txt"
+    old.write_text("x")
+    os.utime(old, (1_700_000_000, 1_700_000_000))
+    ledger.write_text(_git_state_record(repo, handoff.utc_now()))
+    assert handoff.guard_decide(str(path), str(ledger), str(repo))["decision"] == "allow"
+
+
+def test_guard_allows_missing_handoff_without_a_ledger_or_a_path(tmp_path):
+    handoff = load_module()
+    repo, path, ledger = _missing_handoff_repo(tmp_path)
+    (repo / "edited.txt").write_text("x")
+    assert handoff.guard_decide(str(path), str(ledger), str(repo))["decision"] == "allow"
+    ledger.write_text(json.dumps({"kind": "file", "path": str(repo / "edited.txt"), "checkout": str(repo), "session_id": "s"}) + "\n")
+    assert handoff.guard_decide("", str(ledger), str(repo))["decision"] == "allow"

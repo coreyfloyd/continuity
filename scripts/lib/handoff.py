@@ -707,13 +707,75 @@ def carry_artifacts(loops: list[Any], session_id: str) -> list[Any]:
     return result
 
 
-def guard_decide(handoff_path: str, ledger_path: str) -> dict[str, str]:
-    """Return a block only for this ledger's owned commit or newer dirty file."""
+def _dirty_paths(checkout: str) -> list[str] | None:
+    """Return the absolute paths git reports dirty in one checkout, or None."""
+    result = subprocess.run(["git", "-C", checkout, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                            capture_output=True)
+    if result.returncode:
+        return None
+    entries = os.fsdecode(result.stdout).split("\0")
+    paths = []
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if not entry:
+            continue
+        paths.append(entry[3:])
+        if ("R" in entry[:2] or "C" in entry[:2]) and index < len(entries):
+            index += 1  # the rename or copy source is no longer in the tree
+    return [str((Path(checkout) / name).parent.resolve() / Path(name).name) for name in paths]
+
+
+def _guard_missing_handoff(handoff_path: str, records: list[dict[str, Any]], cwd: str) -> dict[str, str]:
+    """Block when the session did work but has never written its handoff."""
+    reason = f"HANDOFF MISSING — this session has done work but has never written a handoff. Write {handoff_path} now: source {HANDOFF_SH} and pipe your continuation JSON (resume.headline/next_action/open_loops, spawned_processes) to handoff_checkpoint — it composes subject/git and lints. The handoff is the last thing that survives a crashed session."
+    if any(record.get("commit") for record in records):
+        return {"decision": "block", "reason": reason}
+    touched: dict[str, set[str]] = {}
+    for record in records:
+        if record.get("kind") == "file" and record.get("checkout") and record.get("path"):
+            path = Path(record["path"])
+            touched.setdefault(str(Path(record["checkout"]).resolve()), set()).add(str(path.parent.resolve() / path.name))
+    # A shell edit leaves no file record, so a dirty file newer than the session's
+    # first ledger record also counts. The ledger repo_root is the main checkout
+    # for a linked worktree, so the Stop cwd's own checkout is checked instead.
+    stamps = []
+    for record in records:
+        try:
+            stamps.append(datetime.fromisoformat(str(record.get("ts", "")).replace("Z", "+00:00")).timestamp())
+        except ValueError:
+            pass
+    since = min(stamps) if stamps else None
+    checkouts = dict.fromkeys(touched)
+    top = _run_git(cwd, "rev-parse", "--show-toplevel") if cwd and os.path.isdir(cwd) else None
+    if top:
+        checkouts.setdefault(str(Path(top).resolve()))
+    for checkout in checkouts:
+        if not os.path.isdir(checkout):
+            continue
+        for path in _dirty_paths(checkout) or []:
+            if path in touched.get(checkout, ()):
+                return {"decision": "block", "reason": reason}
+            try:
+                if since is not None and os.path.isfile(path) and os.path.getmtime(path) > since:
+                    return {"decision": "block", "reason": reason}
+            except OSError:
+                pass
+    return {"decision": "allow"}
+
+
+def guard_decide(handoff_path: str, ledger_path: str, cwd: str = "") -> dict[str, str]:
+    """Return a block for this ledger's owned commit or newer dirty file, or for work with no handoff."""
+    if not os.path.isfile(ledger_path):
+        return {"decision": "allow"}
     try:
         handoff = read_json(handoff_path)
+    except FileNotFoundError:
+        if not handoff_path:
+            return {"decision": "allow"}
+        return _guard_missing_handoff(handoff_path, _ledger_records(ledger_path), cwd)
     except (OSError, ValueError, TypeError):
-        return {"decision": "allow"}
-    if not os.path.isfile(ledger_path):
         return {"decision": "allow"}
     git = handoff.get("git", {}) if isinstance(handoff, dict) else {}
     root, baseline = git.get("repository_root", ""), git.get("head", "")
@@ -1057,7 +1119,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             path = args.path or resolve_path(str(payload.get("cwd") or ""),
                                              session_id)
             ledger = args.ledger or ledger_path(session_id)
-            decision = guard_decide(path, ledger)
+            decision = guard_decide(path, ledger, str(payload.get("cwd") or ""))
             if decision["decision"] == "block": print(json.dumps(decision, separators=(",", ":")))
         elif args.command == "post-compact": post_compact(_read_stdin_json())
         elif args.command == "context-guard": context_guard(_read_stdin_json())

@@ -254,3 +254,23 @@ def test_quiet_commit_uses_the_captured_transcript_completion_exit_code(sandbox)
     result=cli(ADAPTER,'guard-decide',data=stop)
     assert result.stdout, 'a quiet owned commit still makes the handoff stale'
     assert json.loads(result.stdout)['decision']=='block'
+
+
+def test_owned_commit_without_any_handoff_blocks_stop(sandbox):
+    _,work=sandbox
+    p=payload('PostToolUse',sandbox)
+    assert cli(ADAPTER,'ledger-record',data=p).returncode==0
+    commit=subprocess.run(['git','-C',str(work),'-c','user.name=Example','-c','user.email=example@example.org',
+                    'commit','--allow-empty','-m','Work'],check=True,text=True,capture_output=True)
+    p['tool_input']['command']='git commit --allow-empty -m Work';p['tool_response']=commit.stdout
+    assert cli(ADAPTER,'ledger-record',data=p).returncode==0
+    assert not list(Path(os.environ['HANDOFF_STATE_DIR']).glob('*.json'))
+    result=cli(ADAPTER,'guard-decide',data=payload('Stop',sandbox))
+    assert json.loads(result.stdout)['decision']=='block'
+    assert 'HANDOFF MISSING' in json.loads(result.stdout)['reason']
+
+
+def test_read_only_session_without_any_handoff_allows_stop(sandbox):
+    p=payload('PostToolUse',sandbox,tool_input={'command':'git status'},tool_response='Process exited with code 0')
+    assert cli(ADAPTER,'ledger-record',data=p).returncode==0
+    assert cli(ADAPTER,'guard-decide',data=payload('Stop',sandbox)).stdout==''
