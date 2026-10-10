@@ -86,7 +86,7 @@ An explicit id never falls back to a guess. Each failure is a JSON error object 
 
 **This is reconstruction, not native continuation.** `/resume-work` rebuilds what a dead session did so the current tool can carry on; it works across providers. Continuing the provider's own conversation thread — `claude --resume <id>` or `codex resume <id>` — reads only that provider's store and remains a same-provider capability.
 
-### Rendering the morning briefing (`version: 2`)
+### Rendering the resume briefing (`version: 2`)
 
 The JSON is a deterministic worklog that YOU, the agent, turn into the user's actual briefing. **Rendering it is your job, not the script's.** **Every open ask the dead session left is re-rendered in full** — context, options with tradeoffs, recommendation — never as the prior session's `R3`/`O2` codes: the user has no memory of those labels, and a briefing that says "R6: release, manual, or arm" cannot be answered (2026-09-05).
 
@@ -116,12 +116,44 @@ Top-level fields: `session`, `provider`, `transcript_files`, `messages`, `first_
 | `files_by_repo` | Per repo (keyed by repo root, not per-worktree path): `committed`, `uncommitted`, `transcript_scraped` (three separate lists — a path can appear in more than one), and `unresolved_branches` (branch names in this repo whose `commits_source` is `"unresolved"` — their real files are absent from `committed` above, not confirmed empty; cross-reference before treating the file list as complete). Uncommitted alone misses a merged-but-still-open branch's contribution; committed alone misses live uncommitted edits (a real session had 5 uncommitted changes in a notes repository that `git log` reported as zero); transcript-scraped catches bypass-mode edits routed through `Bash` (heredocs, `sed`, `python3 -c`) that never went through `Write`/`Edit` at all. |
 | `staleness` | `last_end_turn_ts` (the last message actually sent to the user) plus `tool_calls_after` — nonzero means the session kept working (or crashed mid-tool-call) past its last sign-off, and `last_assistant` above is stale by exactly that gap. |
 
-**Render the user's briefing from this JSON, not from your own recollection of the session** (subagent tool calls are invisible to the transcript — see Known limit below — so re-derive everything from what the JSON actually contains):
+**Render the user's briefing from this JSON, not from your own recollection of the session** (subagent tool calls are invisible to the transcript — see Known limit below — so re-derive the session's work from what the JSON actually contains). Enrich that work with live context before rendering; the engine's `tickets` entries identify work, but do not supply titles, milestones, or parents.
 
-> **Last night** — what it set out to do (`first_user`), what it did (`last_assistant`, `tickets`, `branches[].commits`)
+**Read the outcomes live at render time.** For every ticket the session worked (`tickets`, plus worked tickets identified in the selected handoff), read its purpose, state, milestone, and GitHub parent issue (the epic). Use `gh issue view <number> --repo <owner/repo> --json title,body,state,url,milestone,comments` for the ticket and GraphQL for its parent and outcome counts. A body mention or dependency is not a GitHub parent relationship. For example, substitute the ticket's owner, repository, and number in this read-only query:
+
+```bash
+gh api graphql -f query='query {
+  repository(owner: "<owner>", name: "<repo>") {
+    issue(number: <number>) {
+      title body state url
+      milestone {
+        title description
+        issues { totalCount }
+        closedIssues: issues(states: CLOSED) { totalCount }
+      }
+      parent {
+        number title body state url
+        subIssues(first: 100) {
+          totalCount nodes { state }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
+    }
+  }
+}'
+```
+
+Count an epic's closed children only after reading every page of its `subIssues` connection (follow `pageInfo.endCursor` with `after` while `hasNextPage` is true). Read the milestone description and epic body for their exit outcomes, not just their names. State both current completion and the session's contribution: a live count is today's total, not how many the session closed. Say “last blocker” only after checking the remaining children, dependencies, and open acceptance criteria. Do not infer closure from child counts alone. If `gh` is unavailable, denied, or returns partial data/errors, say the affected outcome could not be checked; retain the transcript's account as inferred, without inventing counts or treating a failed lookup as no milestone/epic. An explicit null relationship means omit that relationship.
+
+**Resolve projects through the user's profile binding.** Follow the checklist's profile resolution: read `$CHECKLIST_USER_PROFILE` if set, otherwise `checklist/profile.md` under `$XDG_CONFIG_HOME` (default `~/.config`), and the `record` slot's binding and referenced project mapping/read interface. Use that binding to read each worked ticket's project and goal, as the checklist's record step does; do not run the checklist or invoke record writes while resuming. Read milestone and epic outcomes from GitHub first, then the bound project's goal. Never derive a project from the repository name, labels, or a private default. With no project binding, leave the project out and say nothing about it. If a configured binding's lookup fails, report the unavailable project context instead of guessing.
+
+Keep exactly these four sections, with one plain-language line per item; combine tickets sharing an outcome rather than repeating it. **Open Last session with what the work serves:** for every worked ticket, name its milestone and epic when present, and its bound project when available, with how its result moves each toward closing. For a ticket still open, distinguish intended progress from shipped progress. Keep these outcome lines inside Last session, before the work recap; do not add an outcomes or projects section.
+
+> **Last session** — milestone and epic outcomes, then each bound project's goal and how the session's work advances them; what it set out to do (`first_user`) and what it did (`last_assistant`, `tickets`, `branches[].commits`)
 > **Landed** — merged/closed tickets and branches
 > **Outstanding** — unmerged branches, uncommitted files (`files_by_repo`), open claimed tickets *(the section that matters most)*
 > **Start here** — one ticket, one command: the top of `tickets` (already ranked by write-ops) joined with any row in `commitments`; a branch still `dirty`/`clean_unmerged`/`gone_unmerged`/`unknown` in `branches` is a second line, not the headline.
+
+**Define identifiers on first mention.** Give each ticket's purpose in plain words (not its full title) and its project or milestone when it has one, with a clickable `[repo#number](https://github.com/owner/repo/issues/number)` beside the description. This applies to epics, dependencies, follow-ups, and Start here too. Later mentions may use the number alone as the description, but **every reference still includes the repo and link**. Describe a group by the work its tickets cover, linking each member; never substitute a number range for its scope. Define other identifiers the first time they appear: a decision code with the choice it names, a setting with what it controls, a session id with which session it identifies, a score with its scale, what was evaluated, and what the verdict means. Read those definitions from the ticket, transcript, setting definition, or evaluation rubric; omit unnecessary codes, and mark unavailable definitions rather than guessing. Someone ignoring every ticket number must still understand the work and the next action. Use time-neutral prose throughout the briefing; do not assume the resumed session ran overnight.
 
 **Say why the top ticket existed.** Read its body for its origin ("found while gating X", a `blocked_by`, a parent issue) and state in the briefing whether that parent is still open. A session that worked a blocker ticket otherwise reads as the main task (2026-09-27: a ticket filed while gating another, already closed; the user asked twice what the session's real scope was). **Read the parent's body and its open acceptance criteria before proposing any transition on it.** A parent that still has unbuilt criteria is not "done once the blocker lands"; offering to close it from its title and labels is a state claim made without the read (2026-09-28: a resume briefing offered "close it as done" for a parent with three unbuilt criteria; the user asked why).
 
@@ -130,6 +162,38 @@ Top-level fields: `session`, `provider`, `transcript_files`, `messages`, `first_
 **A staged AFK-dispatch brief is as stale as the findings — re-verify its premises before dispatching.** When the resumed session left a pre-written dispatch staged (worktrees created, a brief on disk, scope registered), the brief is not a green light: re-verify its premises against current main first — every target file/line it names still exists, and every "assume X does not exist / use the old path" claim still holds. A brief can contradict code that landed after it was written, **even code that existed at its own staging base**. (2026-09-21: a day-old brief said "assume no replace endpoint, use add-then-remove" while the `consolidate` endpoint was already merged and wired at the brief's own staging base; two of the ticket's three ACs had shipped under sibling tickets. Dispatching it would have wasted an AFK launch or rebuilt done work — live verification re-scoped it to the one AC actually left.)
 
 **The branch cross-check keys on the resumed session's own branch** — its last recorded `gitBranch` — not on the working tree's current branch. In a shared checkout a concurrent session swaps the checked-out branch, so `$PWD` HEAD is unrelated to the session being resumed; reading it reported unmerged work as "already on main (merged)". Fixed 2026-08-16.
+
+### Before/after from a real briefing
+
+Adapted from a real resume briefing about a session that closed settings work and prepared launch-override evaluation. All repository, ticket, and session references below are neutral placeholders; session `example-session` identifies that earlier settings and evaluation session. The before excerpt preserves the unexplained codes; the after demonstrates the same work with descriptions. Counts and provenance tags retain the source example’s dated checks from 2026-10-10; they do not claim live verification of the placeholder URLs. It omits project context because this example supplies no user profile binding. It is a dated example, not current execution advice.
+
+Before (paraphrased fragments; placeholder links added without supplying the missing descriptions):
+
+> “closed [app#12](https://github.com/example/app/issues/12), [app#13](https://github.com/example/app/issues/13) and [app#14](https://github.com/example/app/issues/14)”; “filed [app#20](https://github.com/example/app/issues/20) through [app#28](https://github.com/example/app/issues/28)”; “[app#16](https://github.com/example/app/issues/16) is blocked by [app#17](https://github.com/example/app/issues/17) and [tools#18](https://github.com/example/tools/issues/18)”; “Start here: the D5 decision on [app#16](https://github.com/example/app/issues/16)”.
+
+After:
+
+**Last session**
+
+- Closed work on settings catch-up across machines ([app#12](https://github.com/example/app/issues/12)), project-to-machine assignments ([app#13](https://github.com/example/app/issues/13)), and configurable message delivery ([app#14](https://github.com/example/app/issues/14)); these closes advance the “Settings out of git” milestone (7 of 12 closed) and the epic to move configuration out of git ([app#15](https://github.com/example/app/issues/15), 7 of 16 children closed, still open). (validated: live GitHub ticket, milestone, and parent queries, 2026-10-10)
+- Prepared per-launch choices of AI provider, model, and reasoning effort ([app#16](https://github.com/example/app/issues/16)) so one evaluation can differ without changing defaults for every session. (inferred: preparation from the source briefing; purpose and absent milestone/parent checked in live GitHub, 2026-10-10)
+
+**Landed**
+
+- Closed the three settings tickets above: [app#12](https://github.com/example/app/issues/12), [app#13](https://github.com/example/app/issues/13), [app#14](https://github.com/example/app/issues/14). (validated: live GitHub states, 2026-10-10)
+
+**Outstanding**
+
+- Filed nine follow-ups: mark superseded settings applies ([app#20](https://github.com/example/app/issues/20)), recover machine catch-up after restoring the store ([app#21](https://github.com/example/app/issues/21)), and test catch-up and phone-width status ([app#22](https://github.com/example/app/issues/22)). (inferred: filing from the source briefing; purposes and absent milestone/parent checked in live GitHub, 2026-10-10)
+- The settings follow-ups cover clearer machine capabilities ([app#23](https://github.com/example/app/issues/23)), unavailable open-ticket checks ([app#24](https://github.com/example/app/issues/24)), consistent record editing ([app#25](https://github.com/example/app/issues/25)), and repository edit-button styling ([app#26](https://github.com/example/app/issues/26)). (inferred: filing from the source briefing; purposes and absent milestone/parent checked in live GitHub, 2026-10-10)
+- The communication follow-ups distinguish known Slack channels ([app#27](https://github.com/example/app/issues/27)) and use consistent names for delivery destinations ([app#28](https://github.com/example/app/issues/28)). (inferred: filing from the source briefing; purposes and absent milestone/parent checked in live GitHub, 2026-10-10)
+- Launch overrides depend on allowing single Codex launches ([app#17](https://github.com/example/app/issues/17)) and checking approved subagents on both providers ([tools#18](https://github.com/example/tools/issues/18)); neither has a milestone or GitHub parent. (validated: live bodies and relationships, 2026-10-10)
+
+- The global `evaluator_provider` setting chooses the AI provider that checks implementations; earlier spec-quality reviews of [app#16](https://github.com/example/app/issues/16) scored 7/10 on Claude and 3/10 on Codex (1–10 criterion scale, higher is better), both requiring escalation before approval; the ticket now records addressed findings and approval. (validated: live ticket body/comments, 2026-10-10, and spec evaluation rubric)
+
+**Start here**
+
+- Read the approved launch-override spec ([app#16](https://github.com/example/app/issues/16)) with `gh issue view 16 --repo example/app --comments`: D5, the choice of how overlapping overrides combine, is now answered—each value comes from the narrowest override. (validated: live ticket body, 2026-10-10)
 
 ### Known limit: subagent work is invisible here
 
