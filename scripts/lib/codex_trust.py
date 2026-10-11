@@ -231,15 +231,62 @@ def state_key_from_header(line: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def config_statement_lines(lines: list[str]) -> set[int]:
+    """Locate statement starts, excluding multiline string and array contents."""
+    starts: set[int] = set()
+    quote = None
+    depth = 0
+    escaped = False
+    for number, line in enumerate(lines):
+        if quote is None and depth == 0:
+            starts.add(number)
+        index = 0
+        # Include the newline so a basic string's line-continuation escape does
+        # not escape the first character of the next line instead.
+        line += "\n"
+        while index < len(line):
+            char = line[index]
+            if quote is not None:
+                if escaped:
+                    escaped = False
+                elif char == "\\" and quote[0] == '"':
+                    escaped = True
+                elif line.startswith(quote, index):
+                    width = len(quote)
+                    if width == 3:
+                        while index + width < len(line) and line[index + width] == quote[0]:
+                            width += 1
+                    quote = None
+                    index += width
+                    continue
+            elif char == "#":
+                break
+            elif char in ('"', "'"):
+                quote = char * 3 if line.startswith(char * 3, index) else char
+                index += len(quote)
+                continue
+            elif char in "[{":
+                depth += 1
+            elif char in "]}":
+                depth -= 1
+            index += 1
+    return starts
+
+
 def update_config_text(text: str, hashes: dict[str, str]) -> str:
     lines = text.splitlines()
+    statements = config_statement_lines(lines)
     sections: dict[str, tuple[int, int]] = {}
     for start, line in enumerate(lines):
+        if start not in statements:
+            continue
         key = state_key_from_header(line)
         if key is None:
             continue
         end = start + 1
-        while end < len(lines) and not lines[end].lstrip().startswith("["):
+        while end < len(lines) and not (
+            end in statements and lines[end].lstrip().startswith("[")
+        ):
             end += 1
         if key in sections:
             raise ValueError(f"config.toml has duplicate hook state table for {key}")
@@ -256,7 +303,7 @@ def update_config_text(text: str, hashes: dict[str, str]) -> str:
         trusted_lines = [
             index
             for index in range(start + 1, end)
-            if re.match(r"^\s*trusted_hash\s*=", lines[index])
+            if index in statements and re.match(r"^\s*trusted_hash\s*=", lines[index])
         ]
         if len(trusted_lines) > 1:
             raise ValueError(f"config.toml has duplicate trusted_hash for {key}")

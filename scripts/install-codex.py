@@ -59,15 +59,35 @@ def remove_managed(hooks, managed):
     return result
 
 
+def assignment_key(line):
+    """Decode a single TOML assignment key without interpreting its value."""
+    match=re.match(r'''^\s*("(?:[^"\\]|\\.)*"|'[^']*'|[A-Za-z0-9_-]+)\s*=''', line)
+    if not match:
+        return None
+    key=match.group(1)
+    if key.startswith('"'):
+        # JSON shares TOML's basic-key escapes except the eight-digit Unicode form.
+        key=re.sub(r'\\(?:U([0-9a-fA-F]{8})|.)',
+                   lambda escape: json.dumps(chr(int(escape.group(1), 16)))[1:-1]
+                   if escape.group(1) else escape.group(0), key)
+        try:
+            return json.loads(key)
+        except ValueError:
+            return None
+    return key[1:-1] if key.startswith("'") else key
+
+
 def remove_trust(text, keys, replacements=None):
-    """Remove owned values, optionally replacing tables at their existing positions."""
+    """Remove owned tables, or refresh their hash while retaining user values."""
     lines=text.splitlines(keepends=True); result=[];skip=False
     quote=None; depth=0; escaped=False
+    preserve_table=False; preserve_value=False
     for line in lines:
         if quote is None and depth == 0:
             if line.lstrip().startswith('['):
                 key=trust.state_key_from_header(line.strip())
                 skip=key in keys
+                preserve_table=skip and replacements is not None and key in replacements
                 if skip:
                     if replacements is not None and key in replacements:
                         result.extend((line, f'trusted_hash = {json.dumps(replacements[key])}\n'))
@@ -75,9 +95,13 @@ def remove_trust(text, keys, replacements=None):
             if not skip or not re.match(r'^\s*[^#\s][^=]*=', line):
                 result.append(line)
                 continue
+            preserve_value=preserve_table and assignment_key(line) != 'trusted_hash'
+        if preserve_value:
+            result.append(line)
         # Outside strings, comments and blank lines survive even within arrays.
         if quote is None and (not line.strip() or line.lstrip().startswith('#')):
-            result.append(line)
+            if not preserve_value:
+                result.append(line)
             continue
         # Follow the complete value, so continuation lines cannot become tables.
         index=0
@@ -100,7 +124,8 @@ def remove_trust(text, keys, replacements=None):
             elif char == '#':
                 # Keep trailing comments as standalone lines, excluding string content.
                 indent=line[:len(line) - len(line.lstrip())]
-                result.append(indent + line[index:])
+                if not preserve_value:
+                    result.append(indent + line[index:])
                 break
             elif char in ('"', "'"):
                 quote=char * 3 if line.startswith(char * 3, index) else char
