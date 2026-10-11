@@ -98,6 +98,9 @@ def remove_trust(text, keys, replacements=None):
                     index += width
                     continue
             elif char == '#':
+                # Keep trailing comments as standalone lines, excluding string content.
+                indent=line[:len(line) - len(line.lstrip())]
+                result.append(indent + line[index:])
                 break
             elif char in ('"', "'"):
                 quote=char * 3 if line.startswith(char * 3, index) else char

@@ -134,8 +134,23 @@ def test_remove_trust_preserves_adjacent_comments_and_blank_lines(codex_installe
     assert installer.remove_trust(text, set()) == text
 
 
+@pytest.mark.parametrize('assignment', [
+    'trusted_hash = "sha256:example" # retained inline note\n',
+    "trusted_hash = 'sha256:#value' # retained inline note\n",
+    'trusted_hash = "sha256:#value" # retained inline note\n',
+])
+def test_remove_trust_preserves_inline_assignment_comments(
+        codex_installer, trust_then_foreign_block, assignment):
+    key, table, block = trust_then_foreign_block
+    text = table.splitlines(keepends=True)[0] + assignment + block
+    assert codex_installer.remove_trust(text, {key}) == '# retained inline note\n' + block
+
+
 @pytest.mark.parametrize('assignment,preserved', [
     ('extra = [\n  "value",\n]\n', ''),
+    ('extra = [ # array start\n  "#value", # element\n] # array end\n',
+     '# array start\n  # element\n# array end\n'),
+    ('extra = """\n# string content\n""" # string end\n', '# string end\n'),
     ('extra = [\n  # retained array comment\n\n  ["value"],\n]\n', '  # retained array comment\n\n'),
     ('extra = [\n  [\n    "value",\n  ],\n]\n', ''),
     ('extra = """\n# string content\n[agents.decoy]\n"""\n', ''),
@@ -186,14 +201,22 @@ def test_reinstalls_leave_whole_config_stable(
     original = config.read_text().replace('trusted_hash =', '# retained note\n\n\ntrusted_hash =', 1)
     if with_foreign_block:
         original += block
+    lines = original.splitlines(keepends=True)
+    index = next(i for i, line in enumerate(lines) if line.startswith('trusted_hash ='))
+    lines[index] = lines[index].rstrip('\n') + ' # retained inline note\n'
+    original = ''.join(lines)
     config.write_text(original)
     snapshots = []
     for _ in range(4):
         assert codex_installer.main() == 0
         snapshots.append(config.read_text())
+        assert snapshots[-1].count('# retained inline note\n') == 1
     assert snapshots == [snapshots[0]] * 4
     keys = set(json.loads((codex / 'continuity-install.json').read_text())['trust_keys'])
     assert codex_installer.remove_trust(snapshots[0], keys) == codex_installer.remove_trust(original, keys)
+    monkeypatch.setattr(sys, 'argv', [str(INSTALL), '--codex-home', str(codex), '--uninstall'])
+    assert codex_installer.main() == 0
+    assert config.read_text() == codex_installer.remove_trust(original, keys)
 
 
 def test_install_collision_and_verification_failure_do_not_change_user_files(sandbox):
