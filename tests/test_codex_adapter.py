@@ -219,6 +219,47 @@ def test_reinstalls_leave_whole_config_stable(
     assert config.read_text() == codex_installer.remove_trust(original, keys)
 
 
+@pytest.mark.parametrize('hash_key', ['trusted_hash', '"trusted_hash"', "'trusted_hash'"])
+def test_reinstalls_preserve_all_user_trust_settings(sandbox, codex_installer, monkeypatch, hash_key):
+    home, _ = sandbox
+    codex = home / '.codex'
+    monkeypatch.setattr(sys, 'argv', [str(INSTALL), '--codex-home', str(codex),
+                                    '--codex', shutil.which('codex')])
+    # Exercise native hooks/list trust verification, including disabled hooks.
+    assert codex_installer.main() == 0
+    config = codex / 'config.toml'
+    original = config.read_text()
+    expected = codex_installer.trust.managed_state(
+        codex_installer.registrations(codex / 'continuity'),
+        codex_installer.read_hooks(codex / 'hooks.json'), codex / 'hooks.json')
+    captured = json.loads((FIX / 'PostToolUse.json').read_text())
+    # enabled=false is the ticket's captured reproduction; other value shapes
+    # reuse data from the recorded hook payload rather than fabricated records.
+    settings = ('enabled = false\n'
+                'tool_name = ' + json.dumps(captured['tool_name']) + '\n'
+                'tool_input = { command = ' + json.dumps(captured['tool_input']['command']) + ' }\n'
+                'tool_response = """\n' + captured['tool_response'] + '"""\n'
+                'events = [\n  ' + json.dumps(captured['hook_event_name']) + ',\n]\n')
+    modified = []
+    for line in original.splitlines(keepends=True):
+        if line.startswith('trusted_hash ='):
+            # A stale persisted hash must still be refreshed by the installer.
+            modified.append(hash_key + ' = "" # retained hash comment\n' + settings)
+        else:
+            modified.append(line)
+    config.write_text(''.join(modified))
+    snapshots = []
+    for _ in range(3):
+        assert codex_installer.main() == 0
+        text = config.read_text()
+        for key, digest in expected.items():
+            assert f'[hooks.state.{json.dumps(key)}]\ntrusted_hash = {json.dumps(digest)}\n' in text
+        assert text.count(settings) == len(expected)
+        assert text.count('# retained hash comment') == len(expected)
+        snapshots.append(text)
+    assert snapshots == [snapshots[0]] * 3
+
+
 def test_install_collision_and_verification_failure_do_not_change_user_files(sandbox):
     home,_=sandbox;codex=home/'.codex';(codex/'skills/checklist').mkdir(parents=True)
     result=cli(INSTALL,'--codex-home',codex)
