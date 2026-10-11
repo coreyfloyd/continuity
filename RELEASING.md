@@ -83,7 +83,7 @@ Run the full suite against the exact commit to be released:
 
 ```bash
 git diff --check
-python3 -m pytest tests
+CONTINUITY_RELEASE_CHECK=1 python3 -m pytest tests
 bash tests/test-resume-work-wrapper.sh
 bash tests/test-resume-work-branch-scan.sh
 python3 scripts/lib/reference_check.py --terms /path/to/terms.txt .
@@ -91,7 +91,8 @@ python3 scripts/lib/reference_check.py --terms /path/to/terms.txt .
 
 `tests/test_release.py` builds an archive in a sandbox repository, signs it with a
 throwaway key, and verifies it. It also checks the committed key against
-`RELEASE_SIGNING_FINGERPRINT`.
+`RELEASE_SIGNING_FINGERPRINT`. The release check fails if GnuPG prerequisites
+are missing; ordinary contributor runs skip these tests instead.
 
 Before tagging, check the documentation against the release: grep `README.md`,
 `INTERFACE.md`, and `docs/` for any name the release renamed or removed, and for

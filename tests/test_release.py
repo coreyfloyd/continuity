@@ -22,7 +22,14 @@ FINGERPRINT_FILE = os.path.join(ROOT, "RELEASE_SIGNING_FINGERPRINT")
 HIPPOCAMPUS_RELEASE_FINGERPRINT = "09674AFF392661238F4ACBD9F32B3A412CD5EFC5"
 SNAPSHOT_IGNORE = shutil.ignore_patterns(".git", "__pycache__", ".pytest_cache", ".DS_Store", "dist")
 
-pytestmark = pytest.mark.skipif(shutil.which("gpg") is None, reason="gpg is not installed")
+@pytest.fixture(autouse=True)
+def require_gnupg():
+    for tool in ("gpg", "gpgconf"):
+        if shutil.which(tool) is None:
+            reason = f"{tool} is not installed"
+            if os.environ.get("CONTINUITY_RELEASE_CHECK") == "1":
+                pytest.fail(reason, pytrace=False)
+            pytest.skip(reason)
 
 
 def version():
