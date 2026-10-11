@@ -1060,3 +1060,33 @@ def test_atomic_create_never_replaces_a_concurrent_handoff(tmp_path):
     handoff.atomic_write(str(path), {"skeleton": True}, before_replace=concurrent_checkpoint, replace=False)
     assert json.loads(path.read_text()) == {"existing": True}
     assert list(tmp_path.iterdir()) == [path]
+
+
+@pytest.mark.parametrize("ownership,newer,committed,expected", [
+    ("own", True, False, "block"), ("own", False, False, "allow"),
+    ("other", True, False, "allow"), ("none", True, False, "allow"),
+    ("own", True, True, "allow"),
+])
+def test_stale_renamed_file_retains_source_ownership(tmp_path, ownership, newer, committed, expected):
+    handoff = load_module()
+    repo, path, ledger = _missing_handoff_repo(tmp_path)
+    source = repo / 'original " file.txt'
+    destination = repo / 'renamed " file.txt'
+    source.write_text("unchanged line\n" * 100)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "tracked file"], check=True)
+    handoff.atomic_write(str(path), handoff.overlay_checkpoint(valid_payload(), str(repo), "s", "checkpoint"))
+    source.write_text(source.read_text() + "session edit\n")
+    records = [] if ownership == "none" else [{"kind": "file", "path": str(source), "checkout": str(repo), "session_id": "s" if ownership == "own" else "other"}]
+    ledger.write_text("".join(json.dumps(row) + "\n" for row in records))
+    subprocess.run(["git", "-C", str(repo), "mv", source.name, destination.name], check=True)
+    status = subprocess.run(["git", "-C", str(repo), "status", "--porcelain=v1", "-z"], capture_output=True, check=True).stdout
+    assert status.split(b"\0")[:2] == [b"RM " + os.fsencode(destination.name), os.fsencode(source.name)]
+    if committed:
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "rename"], check=True)
+        assert subprocess.run(["git", "-C", str(repo), "status", "--porcelain=v1", "-z"], capture_output=True, check=True).stdout == b""
+    stamp = path.stat().st_mtime + (10 if newer else -10)
+    os.utime(destination, (stamp, stamp))
+    assert not source.exists()
+    assert handoff.guard_decide(str(path), str(ledger))["decision"] == expected

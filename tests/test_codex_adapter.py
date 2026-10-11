@@ -312,3 +312,25 @@ def test_codex_session_file_edit_blocks_and_active_stop_does_not_loop(sandbox):
     assert json.loads(result.stdout)['decision'] == 'block'
     stop['stop_hook_active'] = True
     assert cli(ADAPTER, 'guard-decide', data=stop).stdout == ''
+
+
+@pytest.mark.parametrize("owned,newer,expected", [(True, True, "block"), (False, True, "allow"), (True, False, "allow")])
+def test_codex_stop_retains_renamed_file_ownership(sandbox, owned, newer, expected):
+    _, work = sandbox
+    source = work / 'original.txt'; destination = work / 'renamed.txt'
+    source.write_text('unchanged line\n' * 100)
+    subprocess.run(['git', '-C', str(work), 'add', '.'], check=True)
+    subprocess.run(['git', '-C', str(work), '-c', 'user.name=t', '-c', 'user.email=t@x', 'commit', '-qm', 'tracked file'], check=True)
+    path = checkpoint(work)
+    source.write_text(source.read_text() + 'session edit\n')
+    if owned:
+        event = payload('PostToolUse', sandbox, tool_input={'file_path': str(source)}, tool_response={'exit_code': 0})
+        assert cli(ADAPTER, 'ledger-record', data=event).returncode == 0
+    subprocess.run(['git', '-C', str(work), 'mv', source.name, destination.name], check=True)
+    status = subprocess.run(['git', '-C', str(work), 'status', '--porcelain=v1', '-z'], capture_output=True, check=True).stdout
+    assert status.split(b'\0')[:2] == [b'RM renamed.txt', b'original.txt']
+    stamp = path.stat().st_mtime + (10 if newer else -10); os.utime(destination, (stamp, stamp))
+    result = cli(ADAPTER, 'guard-decide', data=payload('Stop', sandbox))
+    assert result.returncode == 0, result.stderr
+    decision = json.loads(result.stdout)['decision'] if result.stdout else 'allow'
+    assert decision == expected

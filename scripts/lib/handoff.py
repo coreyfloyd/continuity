@@ -716,8 +716,8 @@ def carry_artifacts(loops: list[Any], session_id: str) -> list[Any]:
     return result
 
 
-def _dirty_paths(checkout: str) -> list[str] | None:
-    """Return the absolute paths git reports dirty in one checkout, or None."""
+def _dirty_paths(checkout: str) -> list[tuple[str, set[str]]] | None:
+    """Pair each dirty destination with paths that can establish its ownership."""
     result = subprocess.run(["git", "-C", checkout, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
                             capture_output=True)
     if result.returncode:
@@ -730,10 +730,13 @@ def _dirty_paths(checkout: str) -> list[str] | None:
         index += 1
         if not entry:
             continue
-        paths.append(entry[3:])
+        names = [entry[3:]]
         if ("R" in entry[:2] or "C" in entry[:2]) and index < len(entries):
-            index += 1  # the rename or copy source is no longer in the tree
-    return [str((Path(checkout) / name).parent.resolve() / Path(name).name) for name in paths]
+            names.append(entries[index])
+            index += 1
+        absolute = [str((Path(checkout) / name).parent.resolve() / Path(name).name) for name in names]
+        paths.append((absolute[0], set(absolute)))
+    return paths
 
 
 def guard_decide(handoff_path: str, ledger_path: str, cwd: str = "", session_id: str = "") -> dict[str, str]:
@@ -775,8 +778,8 @@ def guard_decide(handoff_path: str, ledger_path: str, cwd: str = "", session_id:
             touched.setdefault(str(Path(record["checkout"]).resolve()), set()).add(
                 str(path.parent.resolve() / path.name))
         for dirty_checkout, paths in touched.items():
-            for candidate in _dirty_paths(dirty_checkout) or []:
-                if (candidate in paths and os.path.isfile(candidate)
+            for candidate, ownership_paths in _dirty_paths(dirty_checkout) or []:
+                if (ownership_paths & paths and os.path.isfile(candidate)
                         and os.path.getmtime(candidate) > handoff_mtime):
                     return {"decision": "block", "reason": reason}
     except OSError:
