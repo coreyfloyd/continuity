@@ -1090,3 +1090,14 @@ def test_stale_renamed_file_retains_source_ownership(tmp_path, ownership, newer,
     os.utime(destination, (stamp, stamp))
     assert not source.exists()
     assert handoff.guard_decide(str(path), str(ledger))["decision"] == expected
+
+
+def test_config_get_prints_positive_integer_prune_days(tmp_path):
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"prune_days": 14}))
+    result = subprocess.run(
+        [sys.executable, MODULE, "config-get", "prune_days"],
+        text=True, capture_output=True,
+        env=dict(os.environ, CONTINUITY_CONFIG=str(config)))
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == "14\n"

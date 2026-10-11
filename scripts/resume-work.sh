@@ -223,6 +223,13 @@ else
       json_error "handoff_config_error" "resume-work: $state_dir"
       exit 1
     fi
+    # Both transcript providers use this one threshold. Leave an explicit
+    # environment override intact; the engine supplies 7 when neither is set.
+    if [ -z "${RESUME_WORK_PRUNE_DAYS:-}" ]; then
+      config_value prune_days prune_days \
+        || { json_error "handoff_config_error" "resume-work: $config_error"; exit 1; }
+      [ -z "$prune_days" ] || export RESUME_WORK_PRUNE_DAYS="$prune_days"
+    fi
     current_session="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
     # The invoking Codex thread is excluded too (#1453): the automatic lens
     # lists both providers' sessions, and under Codex the newest rollout for

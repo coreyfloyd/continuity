@@ -45,6 +45,7 @@ an empty configuration.
 | `checklist_suite_baselines_dir` | string | Directory of per-repository suite baseline files the surface detector reports. |
 | `commitment_owner` | string | The GitHub owner whose issues carry claim comments. Without it `resume-work` reports commitments as `no_owner`. |
 | `machine_lens` | string | A command `resume-work --machine` runs, given `RESUME_WORK_WANT_HOST` and `RESUME_WORK_AS_JSON` in its environment. Without it the flag reports `machine_lens_unavailable`. |
+| `prune_days` | positive integer | Age in days at which a handoff becomes a `stale_transcript` prune candidate. Shared by Claude and Codex; `RESUME_WORK_PRUNE_DAYS` overrides it. Default: 7. |
 | `host` | string | The host name the commitments scan filters on, unless `RESUME_WORK_HOST` is set. |
 | `cycle_sessions` | object | Maps a session name to a directory under the home directory, for a consumer that cycles sessions (section 8). |
 | `unattended` | object | Optional unattended mode, section 6. |
@@ -96,7 +97,7 @@ directory (siblings marked), falling back to recent sessions from the tool's own
 |---|---|
 | `--handoff PATH` | A briefing for one handoff. |
 | `--session ID` | A specific transcript, from either tool. |
-| `--prune` | Archive handoffs whose session is gone. Never deletes. |
+| `--prune` | Archive handoffs whose transcript is missing or at least the configured prune age. Never deletes. |
 | `--no-commitments` | Skip the claim scan, which costs one `gh` call per ticket. |
 | `--machine`, `--all-hosts`, `--host NAME`, `--json` | The optional machine lens, supplied by configuration. |
 
@@ -106,6 +107,15 @@ is unreadable or mistyped), `machine_lens_unavailable` (no lens configured),
 `engine_not_found`, `engine_failed`, and `engine_bad_output`. `RESUME_WORK_ENGINE` names the
 engine (`skills/resume-work/scripts/resume_work.py`) when an adapter installs it away from
 the scripts.
+
+Prune discovery checks Claude's `~/.claude/projects/<cwd-slug>/<session-id>.jsonl`
+(`/` and `.` in the stored working directory become `-`) and Codex rollouts in
+`${CODEX_HOME:-~/.codex}/sessions/` and `archived_sessions/`. Codex rollouts match the
+session's thread id, including window files; age is measured from the newest matching
+file's modification time. A missing transcript is a `missing_transcript` candidate;
+a transcript at least `prune_days` old is a `stale_transcript` candidate. Listing
+reports candidates without moving them; only `--prune` archives them. An unavailable
+Codex store returns `session_store_unavailable` before archiving.
 
 Other settings: `RESUME_WORK_HOST`, `RESUME_WORK_COMMITMENT_OWNER`,
 `RESUME_WORK_COMMITMENT_LIMIT`, `RESUME_WORK_COMMITMENT_JOBS`, `RESUME_WORK_TRUNK`,

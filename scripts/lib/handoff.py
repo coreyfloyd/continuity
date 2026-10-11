@@ -1103,7 +1103,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         elif args.command == "state-dir": print(state_dir())
         elif args.command == "config-get":
             value = read_config().get(args.key)
-            if isinstance(value, list):
+            if args.key == "prune_days" and value is not None:
+                if type(value) is not int or value <= 0:
+                    raise ValueError(f"continuity config {config_path()}: prune_days must be a positive integer")
+                print(value)
+            elif isinstance(value, list):
                 config_string_list(args.key)
                 print("\n".join(value))
             elif value is not None:
