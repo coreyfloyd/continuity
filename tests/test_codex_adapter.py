@@ -91,9 +91,65 @@ def test_one_install_registers_six_hooks_and_guard_preserves_other_entries_and_u
                     assert run.returncode==0,run.stderr
     assert cli(INSTALL,'--codex-home',codex,'--uninstall').returncode==0
     assert json.loads((codex/'hooks.json').read_text()) == foreign
-    assert (codex/'config.toml').read_text() == 'model = "custom"\n'
+    # Trust removal retains blank separators while removing all owned settings.
+    assert [line for line in (codex/'config.toml').read_text().splitlines() if line.strip()] == ['model = "custom"']
     assert handoff.exists()
     assert not [p for p in (codex/'skills').iterdir() if p.name != '.system']
+
+
+@pytest.fixture
+def trust_then_foreign_block():
+    # Derived from a trust table immediately preceding another tool's markers.
+    key = '/example/config/hooks.json:user_prompt_submit:3:0'
+    block = ('# >>> example-tool codex agents >>>\n'
+             '[agents.example]\n'
+             'description = "Example agent"\n'
+             'config_file = "/example/config/agents/example.toml"\n'
+             '# <<< example-tool codex agents <<<\n')
+    table = f'[hooks.state.{json.dumps(key)}]\ntrusted_hash = "sha256:example"\n'
+    return key, table, block
+
+
+@pytest.fixture
+def codex_installer():
+    import importlib.util
+    sys.path.insert(0, str(ROOT / 'scripts'))
+    try:
+        spec = importlib.util.spec_from_file_location('install_codex_test', INSTALL)
+        installer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(installer)
+    finally:
+        sys.path.pop(0)
+    return installer
+
+
+def test_remove_trust_preserves_adjacent_comments_and_blank_lines(codex_installer, trust_then_foreign_block):
+    installer = codex_installer
+    key, table, block = trust_then_foreign_block
+    text = 'model = "custom"\n\n' + table + block + '\n\n'
+    assert installer.remove_trust(text, {key}) == 'model = "custom"\n\n' + block + '\n\n'
+    # Comments and spacing within the owned table also survive removal.
+    annotated = table.replace('trusted_hash', '# retained note\n\ntrusted_hash')
+    assert installer.remove_trust(annotated, {key}) == '# retained note\n\n'
+    assert installer.remove_trust(text, set()) == text
+
+
+def test_two_reinstalls_preserve_adjacent_foreign_agent_block(
+        sandbox, trust_then_foreign_block, codex_installer, monkeypatch):
+    home, _ = sandbox
+    codex = home / '.codex'
+    monkeypatch.setattr(sys, 'argv', [str(INSTALL), '--codex-home', str(codex), '--codex', 'codex'])
+    # The external app-server trust check is independent of config preservation.
+    monkeypatch.setattr(codex_installer.trust, 'verify_with_hooks_list', lambda *args: None)
+    assert codex_installer.main() == 0
+    _, _, block = trust_then_foreign_block
+    config = codex / 'config.toml'
+    # The installed config ends with an owned trust table, as in the reproduction.
+    config.write_text(config.read_text() + block)
+    for _ in range(2):
+        assert codex_installer.main() == 0
+        text = config.read_text()
+        assert text.count(block) == 1
 
 
 def test_install_collision_and_verification_failure_do_not_change_user_files(sandbox):

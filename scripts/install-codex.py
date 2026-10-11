@@ -64,9 +64,13 @@ def remove_trust(text, keys):
     for line in lines:
         if line.lstrip().startswith('['):
             skip=trust.state_key_from_header(line.strip()) in keys
-        if not skip:
-            result.append(line)
-    return ''.join(result).rstrip()+'\n' if result else ''
+            if skip:
+                continue
+        # Only assignments belong to the removed table; preserve surrounding comments.
+        if skip and re.match(r'^\s*[^#\s][^=]*=', line):
+            continue
+        result.append(line)
+    return ''.join(result)
 
 
 def relocate_trust(original, cleaned, config_text, target):
