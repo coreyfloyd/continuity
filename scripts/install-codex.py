@@ -59,6 +59,24 @@ def remove_managed(hooks, managed):
     return result
 
 
+def assignment_key(line):
+    """Decode a single TOML assignment key without interpreting its value."""
+    match=re.match(r'''^\s*("(?:[^"\\]|\\.)*"|'[^']*'|[A-Za-z0-9_-]+)\s*=''', line)
+    if not match:
+        return None
+    key=match.group(1)
+    if key.startswith('"'):
+        # JSON shares TOML's basic-key escapes except the eight-digit Unicode form.
+        key=re.sub(r'\\(?:U([0-9a-fA-F]{8})|.)',
+                   lambda escape: json.dumps(chr(int(escape.group(1), 16)))[1:-1]
+                   if escape.group(1) else escape.group(0), key)
+        try:
+            return json.loads(key)
+        except ValueError:
+            return None
+    return key[1:-1] if key.startswith("'") else key
+
+
 def remove_trust(text, keys, replacements=None):
     """Remove owned tables, or refresh their hash while retaining user values."""
     lines=text.splitlines(keepends=True); result=[];skip=False
@@ -77,8 +95,7 @@ def remove_trust(text, keys, replacements=None):
             if not skip or not re.match(r'^\s*[^#\s][^=]*=', line):
                 result.append(line)
                 continue
-            preserve_value=preserve_table and not re.match(
-                r'''^\s*(?:trusted_hash|"trusted_hash"|'trusted_hash')\s*=''', line)
+            preserve_value=preserve_table and assignment_key(line) != 'trusted_hash'
         if preserve_value:
             result.append(line)
         # Outside strings, comments and blank lines survive even within arrays.

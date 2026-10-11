@@ -219,7 +219,10 @@ def test_reinstalls_leave_whole_config_stable(
     assert config.read_text() == codex_installer.remove_trust(original, keys)
 
 
-@pytest.mark.parametrize('hash_key', ['trusted_hash', '"trusted_hash"', "'trusted_hash'"])
+@pytest.mark.parametrize('hash_key', [
+    'trusted_hash', '"trusted_hash"', "'trusted_hash'",
+    r'"trusted\u005fhash"', r'"trusted\U0000005fhash"',
+])
 def test_reinstalls_preserve_all_user_trust_settings(sandbox, codex_installer, monkeypatch, hash_key):
     home, _ = sandbox
     codex = home / '.codex'
