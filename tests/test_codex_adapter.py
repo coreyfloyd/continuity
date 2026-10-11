@@ -17,7 +17,7 @@ ADAPTER = ROOT / 'scripts/codex-hook.py'
 
 @pytest.fixture
 def sandbox(tmp_path, monkeypatch):
-    for key in ('CODEX_THREAD_ID', 'CLAUDE_SESSION_ID', 'CLAUDE_CODE_SESSION_ID', 'CONTINUITY_HARNESS'):
+    for key in ('CODEX_THREAD_ID', 'CLAUDE_SESSION_ID', 'CLAUDE_CODE_SESSION_ID', 'CLAUDE_CODE_ENTRYPOINT', 'CONTINUITY_HARNESS'):
         monkeypatch.delenv(key, raising=False)
     home = tmp_path / 'home'; home.mkdir()
     work = tmp_path / 'work'; work.mkdir()
@@ -281,7 +281,7 @@ def test_nudge_once_and_no_failed_tests(sandbox,command,output):
     if 'failed' in output:
         assert first.stdout==''
     else:
-        assert '/checklist' in first.stdout
+        assert '$checklist' in first.stdout
         assert cli(ADAPTER,'checklist-nudge',data=p).stdout==''
 
 
@@ -311,10 +311,14 @@ def test_unattended_completion_marks_wrap_until_success(sandbox):
     config={'unattended':{'state_module':str(module),'completion_command':'finish-work','completed_by':['complete']}}
     Path(os.environ['CONTINUITY_CONFIG']).write_text(json.dumps(config))
     p=payload('PostToolUse',sandbox,tool_input={'command':'git commit -m work'},tool_response='committed')
-    assert 'checkpoint' in cli(ADAPTER,'checklist-nudge',data=p).stdout.lower()
+    reminder = cli(ADAPTER,'checklist-nudge',data=p).stdout
+    assert 'checkpoint' in reminder.lower()
+    assert '$checklist' in reminder
     (modes/'captured-session').write_text(json.dumps({'session_id':'captured-session','mode':'hitl','updated_by':'complete','updated_at':'2026-01-02T00:00:00Z'}))
     p['tool_input']['command']='finish-work'
-    assert '--unattended' in cli(ADAPTER,'checklist-nudge',data=p).stdout
+    reminder = cli(ADAPTER,'checklist-nudge',data=p).stdout
+    assert '--unattended' in reminder
+    assert '$checklist' in reminder
     check=ROOT/'scripts/lib/checklist.py'
     assert cli(check,'wrap-check','--written-handoff',handoff).returncode==1
     assert cli(check,'wrap-check','--written-handoff',handoff,'--unattended').returncode==0
@@ -457,3 +461,24 @@ def test_codex_stop_retains_renamed_file_ownership(sandbox, owned, newer, expect
     assert result.returncode == 0, result.stderr
     decision = json.loads(result.stdout)['decision'] if result.stdout else 'allow'
     assert decision == expected
+
+
+def test_uninstall_finishes_when_runtime_copy_is_already_gone(sandbox):
+    home, work = sandbox
+    codex = home / '.codex'
+    codex.mkdir()
+    foreign = {'hooks': {'Stop': [{'hooks': [{'type': 'command', 'command': 'echo foreign', 'timeout': 1}]}]}}
+    (codex / 'hooks.json').write_text(json.dumps(foreign))
+    (codex / 'config.toml').write_text('model = "custom"\n')
+    handoff = checkpoint(work)
+    result = cli(INSTALL, '--codex-home', codex)
+    assert result.returncode == 0, result.stderr
+    shutil.rmtree(codex / 'continuity')
+    result = cli(INSTALL, '--codex-home', codex, '--uninstall')
+    assert result.returncode == 0, result.stderr
+    assert not (codex / 'continuity-install.json').exists()
+    assert json.loads((codex / 'hooks.json').read_text()) == foreign
+    assert [line for line in (codex / 'config.toml').read_text().splitlines() if line.strip()] == ['model = "custom"']
+    assert not [p for p in (codex / 'skills').iterdir() if p.name != '.system']
+    assert handoff.exists()
+    assert cli(INSTALL, '--codex-home', codex, '--uninstall').returncode == 0

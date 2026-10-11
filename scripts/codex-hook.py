@@ -90,12 +90,12 @@ def nudge(payload):
         return
     if value == 'checkpoint':
         if signal == 'git completion':
-            emit('PostToolUse','Git completed in an unattended session. Checkpoint now if this finishes a unit of work. Run /checklist once, unattended, after the slate completion command succeeds.')
+            emit('PostToolUse','Git completed in an unattended session. Checkpoint now if this finishes a unit of work. Run $checklist once, unattended, after the slate completion command succeeds.')
         return
     if value == 'unattended-checklist':
-        text = 'The unattended slate is complete. Run /checklist now, once, unattended: pass --unattended to plan, report, and wrap-check. A step needing an answer reports pending, writes nothing, and the checklist continues.'
+        text = 'The unattended slate is complete. Run $checklist now, once, unattended: pass --unattended to plan, report, and wrap-check. A step needing an answer reports pending, writes nothing, and the checklist continues.'
     elif signal != 'slate completion':
-        text = signal + ' — if this wraps a unit of work, run /checklist before moving on. Reminder fires once per session.'
+        text = signal + ' — if this wraps a unit of work, run $checklist before moving on. Reminder fires once per session.'
     else:
         return
     # State stays outside the tool's uninstall area and the git checkout.

@@ -82,13 +82,13 @@ checklist reminder hook reads its payload with. `gh` only if you use the commitm
 ## Install in Claude Code
 
 This repository is its own plugin marketplace. One command installs the six skills and the
-six hooks, where `<owner>/continuity` is the GitHub path you are reading this repository at:
+six hooks:
 
 ```bash
-claude plugin install continuity --marketplace <owner>/continuity
+claude plugin install continuity --marketplace coreyfloyd/continuity
 ```
 
-Inside a session, `/plugin install continuity --marketplace <owner>/continuity` does the
+Inside a session, `/plugin install continuity --marketplace coreyfloyd/continuity` does the
 same. Nothing needs configuring. The skills are namespaced by the plugin: `/continuity:checklist`,
 `/continuity:resume-work`, `/continuity:resume-checkpoint`, `/continuity:handoff-prompt`,
 `/continuity:wip`, and `/continuity:harness-improve`.
