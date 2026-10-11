@@ -150,9 +150,13 @@ and sends a failed call to `PostToolUseFailure` instead.
 above with `${CLAUDE_PLUGIN_ROOT}` paths. The plugin sets `CHECKLIST_COMMAND` to
 `/continuity:checklist`. It registers no `PreToolUse` hook.
 
-Hook output is JSON in the tool's hook format or plain text context. The stop hook prints a
-block decision only when the session has an owned commit since the handoff's baseline, or an
-edited file newer than the handoff.
+Hook output is JSON in the tool's hook format or plain text context. At stop, an interactive
+session with no handoff gets a skeleton handoff written for it (subject, git state, and the
+files it wrote, with an empty headline); the hook never overwrites an existing handoff and does
+not block. Once a handoff exists, the stop hook prints a block decision only for the session's
+own work since it: a commit the session made after the handoff's baseline, or a file the
+session wrote that is still uncommitted and newer than the handoff. Another session's changes
+in the same checkout never block.
 
 ## 6. Checklist engine: `scripts/lib/checklist.py`
 

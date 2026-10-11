@@ -65,7 +65,8 @@ rows and the reported context window, without counting cached input twice.
   either tool. With no handoff, fall back to recent sessions from the tool's own history.
 - **Hooks.** Restore the handoff after compaction, back up the hook input before it, warn
   when half the context window is used, record the files and artifacts a session touches,
-  flag a stale handoff at stop, and remind once to run the checklist after a commit, a push,
+  write a skeleton handoff at stop when a session has none, flag a handoff made stale by the
+  session's own commits or edits, and remind once to run the checklist after a commit, a push,
   or a passing test run.
 
 With nothing configured the package works: handoffs go to
