@@ -308,8 +308,9 @@ def migrate_legacy_handoffs() -> dict[str, list[dict[str, str]]]:
     return result
 
 
-def atomic_write(path: str, data: Any, before_replace: Callable[[], None] | None = None) -> None:
-    """Encode then atomically replace a JSON file; old content survives errors."""
+def atomic_write(path: str, data: Any, before_replace: Callable[[], None] | None = None,
+                 *, replace: bool = True) -> None:
+    """Publish complete JSON atomically; replace=False preserves any existing file."""
     if not path:
         raise ValueError("handoff_atomic_write: empty path")
     encoded = json.dumps(data, separators=(",", ":")) if not isinstance(data, str) else _validate_raw_json(data)
@@ -321,7 +322,15 @@ def atomic_write(path: str, data: Any, before_replace: Callable[[], None] | None
             handle.write(encoded)
         if before_replace is not None:
             before_replace()
-        os.replace(temporary, path)
+        if replace:
+            os.replace(temporary, path)
+        else:
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                pass
+            finally:
+                os.unlink(temporary)
     except BaseException:
         try:
             os.unlink(temporary)
@@ -707,20 +716,52 @@ def carry_artifacts(loops: list[Any], session_id: str) -> list[Any]:
     return result
 
 
-def guard_decide(handoff_path: str, ledger_path: str) -> dict[str, str]:
-    """Return a block only for this ledger's owned commit or newer dirty file."""
+def _dirty_paths(checkout: str) -> list[tuple[str, set[str]]] | None:
+    """Pair each dirty destination with paths that can establish its ownership."""
+    result = subprocess.run(["git", "-C", checkout, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                            capture_output=True)
+    if result.returncode:
+        return None
+    entries = os.fsdecode(result.stdout).split("\0")
+    paths = []
+    index = 0
+    while index < len(entries):
+        entry = entries[index]
+        index += 1
+        if not entry:
+            continue
+        names = [entry[3:]]
+        if ("R" in entry[:2] or "C" in entry[:2]) and index < len(entries):
+            names.append(entries[index])
+            index += 1
+        absolute = [str((Path(checkout) / name).parent.resolve() / Path(name).name) for name in names]
+        paths.append((absolute[0], set(absolute)))
+    return paths
+
+
+def guard_decide(handoff_path: str, ledger_path: str, cwd: str = "", session_id: str = "") -> dict[str, str]:
+    """Create a missing Stop handoff; block existing handoffs only for owned work."""
     try:
         handoff = read_json(handoff_path)
-    except (OSError, ValueError, TypeError):
+    except FileNotFoundError:
+        if handoff_path and cwd and session_id:
+            skeleton = overlay_checkpoint(
+                {"resume": {"headline": "", "open_loops": []}, "spawned_processes": []},
+                cwd, session_id, "stop")
+            # A skeleton has no agent-authored continuation, including open loops.
+            skeleton["resume"]["open_loops"] = []
+            atomic_write(handoff_path, skeleton, replace=False)
         return {"decision": "allow"}
-    if not os.path.isfile(ledger_path):
+    except (OSError, ValueError, TypeError):
         return {"decision": "allow"}
     git = handoff.get("git", {}) if isinstance(handoff, dict) else {}
     root, baseline = git.get("repository_root", ""), git.get("head", "")
     subject = handoff.get("subject", {}).get("working_directory", "") if isinstance(handoff, dict) else ""
     checkout = subject if subject and repository_root(subject) == root else root
     reason = f"HANDOFF STALE — work has happened since your last handoff write. Update {handoff_path} now: source {HANDOFF_SH} and pipe your continuation JSON (resume.headline/next_action/open_loops, spawned_processes) to handoff_checkpoint — it composes subject/git and lints. The handoff is the last thing that survives a crashed session."
-    records = _ledger_records(ledger_path)
+    session_id = session_id or handoff.get("subject", {}).get("session_id", "")
+    records = [record for record in _ledger_records(ledger_path)
+               if not record.get("session_id") or record.get("session_id") == session_id]
     owned = {record.get("commit") for record in records if record.get("repo_root") == root and record.get("commit")}
     if root and baseline and checkout and _run_git(checkout, "cat-file", "-e", baseline + "^{commit}") is not None:
         current = _run_git(checkout, "rev-list", baseline + "..HEAD") or ""
@@ -728,23 +769,18 @@ def guard_decide(handoff_path: str, ledger_path: str) -> dict[str, str]:
             return {"decision": "block", "reason": reason}
     try:
         handoff_mtime = os.path.getmtime(handoff_path)
-        dirty_checkouts = []
+        touched: dict[str, set[str]] = {}
         for record in records:
-            recorded_root = str(record.get("repo_root") or "")
-            if recorded_root == root and checkout:
-                dirty_checkouts.append(checkout)
-            else:
-                dirty_checkouts.append(recorded_root)
-        for dirty_checkout in dirty_checkouts:
-            if not dirty_checkout or not os.path.isdir(dirty_checkout):
+            if (record.get("kind") != "file" or record.get("session_id") != session_id
+                    or not record.get("checkout") or not record.get("path")):
                 continue
-            status = _run_git(dirty_checkout, "status", "--porcelain") or ""
-            for line in status.splitlines():
-                filename = line[3:]
-                if " -> " in filename:
-                    filename = filename.rsplit(" -> ", 1)[1]
-                candidate = os.path.join(dirty_checkout, filename)
-                if os.path.isfile(candidate) and os.path.getmtime(candidate) > handoff_mtime:
+            path = Path(record["path"])
+            touched.setdefault(str(Path(record["checkout"]).resolve()), set()).add(
+                str(path.parent.resolve() / path.name))
+        for dirty_checkout, paths in touched.items():
+            for candidate, ownership_paths in _dirty_paths(dirty_checkout) or []:
+                if (ownership_paths & paths and os.path.isfile(candidate)
+                        and os.path.getmtime(candidate) > handoff_mtime):
                     return {"decision": "block", "reason": reason}
     except OSError:
         pass
@@ -1057,7 +1093,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             path = args.path or resolve_path(str(payload.get("cwd") or ""),
                                              session_id)
             ledger = args.ledger or ledger_path(session_id)
-            decision = guard_decide(path, ledger)
+            decision = guard_decide(path, ledger, str(payload.get("cwd") or ""), session_id)
             if decision["decision"] == "block": print(json.dumps(decision, separators=(",", ":")))
         elif args.command == "post-compact": post_compact(_read_stdin_json())
         elif args.command == "context-guard": context_guard(_read_stdin_json())

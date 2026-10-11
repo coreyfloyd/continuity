@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -537,7 +538,7 @@ def test_pull_event_through_ledger_hook_is_not_owned_or_blocked(tmp_path):
 
 
 def test_dirty_linked_worktree_subject_blocks_once(tmp_path):
-    """Common-root identity must not replace the subject checkout for status."""
+    """Session-owned work in the linked subject checkout must block stopping."""
     main = tmp_path / "main"
     linked = tmp_path / "linked"
     subprocess.run(["git", "init", "-q", str(main)], check=True)
@@ -550,8 +551,12 @@ def test_dirty_linked_worktree_subject_blocks_once(tmp_path):
     handoff_path = tmp_path / "handoff.json"
     module.atomic_write(str(handoff_path), handoff)
     (linked / "dirty").write_text("dirty")
+    dirty_mtime = handoff_path.stat().st_mtime + 10
+    os.utime(linked / "dirty", (dirty_mtime, dirty_mtime))
     ledger = tmp_path / "ledger.jsonl"
     ledger.write_text(json.dumps({"repo_root": str(main), "head": baseline}) + "\n")
+    with ledger.open("a") as stream:
+        stream.write(json.dumps({"kind": "file", "session_id": "session", "checkout": str(linked), "path": str(linked / "dirty")}) + "\n")
     env = os.environ | {"CLAUDE_CODE_ENTRYPOINT": "cli", "HANDOFF_GUARD_OVERRIDE_PATH": str(handoff_path), "HANDOFF_GUARD_OVERRIDE_LEDGER": str(ledger)}
     result = _run_hook(GUARD_HOOK, {"session_id": "session", "cwd": str(linked)}, env)
     assert result.returncode == 0
@@ -613,8 +618,12 @@ def test_dirty_secondary_ledger_repository_blocks(tmp_path):
     handoff_path = tmp_path / "handoff.json"
     module.atomic_write(str(handoff_path), handoff)
     (secondary / "dirty").write_text("dirty")
+    dirty_mtime = handoff_path.stat().st_mtime + 10
+    os.utime(secondary / "dirty", (dirty_mtime, dirty_mtime))
     ledger = tmp_path / "ledger.jsonl"
     ledger.write_text("\n".join(json.dumps({"repo_root": str(repo)}) for repo in (subject, secondary)) + "\n")
+    with ledger.open("a") as stream:
+        stream.write(json.dumps({"kind": "file", "session_id": "session", "checkout": str(secondary), "path": str(secondary / "dirty")}) + "\n")
     env = os.environ | {"CLAUDE_CODE_ENTRYPOINT": "cli", "HANDOFF_GUARD_OVERRIDE_PATH": str(handoff_path), "HANDOFF_GUARD_OVERRIDE_LEDGER": str(ledger)}
     result = _run_hook(GUARD_HOOK, {"session_id": "session", "cwd": str(subject)}, env)
     assert json.loads(result.stdout)["decision"] == "block"
@@ -963,3 +972,121 @@ def test_resolve_cli_and_shell_library_accept_the_codex_session_environment(tmp_
                            text=True, capture_output=True, env=env)
     assert shell.returncode == 0, shell.stderr
     assert shell.stdout.strip() == result.stdout.strip()
+
+
+def _missing_handoff_repo(tmp_path):
+    repo = tmp_path / "repo"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "init", "--allow-empty"], check=True)
+    return repo.resolve(), tmp_path / "absent-handoff.json", tmp_path / "ledger.jsonl"
+
+
+def _git_state_record(repo, ts="2026-01-01T00:00:00Z"):
+    return json.dumps({"repo_root": str(repo), "head": "h", "remote_heads": [], "ts": ts}) + "\n"
+
+
+@pytest.mark.parametrize("work", ["read-only", "file", "commit", "shell", "no-ledger"])
+def test_stop_writes_lint_clean_skeleton_and_allows(tmp_path, monkeypatch, work):
+    handoff = load_module()
+    repo, path, ledger = _missing_handoff_repo(tmp_path)
+    monkeypatch.setenv("HANDOFF_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("HANDOFF_LEDGER_DIR", str(tmp_path))
+    ledger = tmp_path / "session-touched-paths.s.jsonl"
+    if work == "file":
+        (repo / "edited.txt").write_text("x")
+        handoff.record_file(str(repo), "s", "edited.txt")
+    elif work == "commit":
+        ledger.write_text(json.dumps({"repo_root": str(repo), "commit": "h"}) + "\n")
+    elif work == "shell":
+        (repo / "shell.txt").write_text("x")
+    elif work == "read-only":
+        ledger.write_text(_git_state_record(repo))
+    env = os.environ | {"CLAUDE_CODE_ENTRYPOINT": "cli", "CONTINUITY_HARNESS": "claude"}
+    env.pop("CODEX_THREAD_ID", None)
+    result = _run_hook(GUARD_HOOK, {"session_id": "s", "cwd": str(repo)}, env)
+    assert result.returncode == 0 and result.stdout == "", result.stderr
+    path = Path(handoff.resolve_path(str(repo), "s"))
+    data = json.loads(path.read_text())
+    assert data["subject"] == {"working_directory": str(repo), "session_id": "s"}
+    assert data["git"]["head"] == handoff._run_git(str(repo), "rev-parse", "HEAD")
+    assert data["resume"]["headline"] == ""
+    assert data["resume"]["open_loops"] == []
+    assert data["uncommitted_files"] == ([str(repo / "edited.txt")] if work == "file" else [])
+    errors, warnings = handoff.lint_file(str(path))
+    assert errors == [] and warnings == ["resume.headline empty"]
+    before = path.read_bytes(), path.stat().st_mtime_ns
+    assert _run_hook(GUARD_HOOK, {"session_id": "s", "cwd": str(repo)}, env).stdout == ""
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+
+
+@pytest.mark.parametrize("changes,entrypoint", [({"agent_id": "child"}, "cli"), ({}, "sdk-cli"), ({"stop_hook_active": True}, "cli")])
+def test_excluded_stop_writes_nothing(tmp_path, monkeypatch, changes, entrypoint):
+    monkeypatch.setenv("HANDOFF_STATE_DIR", str(tmp_path / "state"))
+    env = os.environ | {"CLAUDE_CODE_ENTRYPOINT": entrypoint, "CONTINUITY_HARNESS": "claude"}
+    env.pop("CODEX_THREAD_ID", None)
+    result = _run_hook(GUARD_HOOK, {"session_id": "s", "cwd": str(tmp_path), **changes}, env)
+    assert result.returncode == 0 and result.stdout == ""
+    assert not (tmp_path / "state").exists()
+
+
+@pytest.mark.parametrize("ownership,dirty,newer,expected", [
+    ("own", True, True, "block"), ("other", True, True, "allow"),
+    ("none", True, True, "allow"), ("own", False, True, "allow"),
+    ("own", True, False, "allow"),
+])
+def test_stale_files_require_session_ownership_and_newer_uncommitted_file(tmp_path, ownership, dirty, newer, expected):
+    handoff = load_module()
+    repo, path, ledger = _missing_handoff_repo(tmp_path)
+    handoff.atomic_write(str(path), handoff.overlay_checkpoint(valid_payload(), str(repo), "s", "checkpoint"))
+    edited = repo / 'space " in name.txt'
+    edited.write_text("x")
+    if not dirty:
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "file"], check=True)
+    stamp = path.stat().st_mtime + (10 if newer else -10)
+    os.utime(edited, (stamp, stamp))
+    records = [{"repo_root": str(repo), "head": "h"}]
+    if ownership != "none":
+        records.append({"kind": "file", "path": str(edited), "checkout": str(repo), "session_id": "s" if ownership == "own" else "other"})
+    ledger.write_text("".join(json.dumps(row) + "\n" for row in records))
+    assert handoff.guard_decide(str(path), str(ledger))["decision"] == expected
+
+
+def test_atomic_create_never_replaces_a_concurrent_handoff(tmp_path):
+    handoff = load_module()
+    path = tmp_path / "handoff.json"
+    def concurrent_checkpoint():
+        handoff.atomic_write(str(path), {"existing": True})
+    handoff.atomic_write(str(path), {"skeleton": True}, before_replace=concurrent_checkpoint, replace=False)
+    assert json.loads(path.read_text()) == {"existing": True}
+    assert list(tmp_path.iterdir()) == [path]
+
+
+@pytest.mark.parametrize("ownership,newer,committed,expected", [
+    ("own", True, False, "block"), ("own", False, False, "allow"),
+    ("other", True, False, "allow"), ("none", True, False, "allow"),
+    ("own", True, True, "allow"),
+])
+def test_stale_renamed_file_retains_source_ownership(tmp_path, ownership, newer, committed, expected):
+    handoff = load_module()
+    repo, path, ledger = _missing_handoff_repo(tmp_path)
+    source = repo / 'original " file.txt'
+    destination = repo / 'renamed " file.txt'
+    source.write_text("unchanged line\n" * 100)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "tracked file"], check=True)
+    handoff.atomic_write(str(path), handoff.overlay_checkpoint(valid_payload(), str(repo), "s", "checkpoint"))
+    source.write_text(source.read_text() + "session edit\n")
+    records = [] if ownership == "none" else [{"kind": "file", "path": str(source), "checkout": str(repo), "session_id": "s" if ownership == "own" else "other"}]
+    ledger.write_text("".join(json.dumps(row) + "\n" for row in records))
+    subprocess.run(["git", "-C", str(repo), "mv", source.name, destination.name], check=True)
+    status = subprocess.run(["git", "-C", str(repo), "status", "--porcelain=v1", "-z"], capture_output=True, check=True).stdout
+    assert status.split(b"\0")[:2] == [b"RM " + os.fsencode(destination.name), os.fsencode(source.name)]
+    if committed:
+        subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@x", "commit", "-qm", "rename"], check=True)
+        assert subprocess.run(["git", "-C", str(repo), "status", "--porcelain=v1", "-z"], capture_output=True, check=True).stdout == b""
+    stamp = path.stat().st_mtime + (10 if newer else -10)
+    os.utime(destination, (stamp, stamp))
+    assert not source.exists()
+    assert handoff.guard_decide(str(path), str(ledger))["decision"] == expected

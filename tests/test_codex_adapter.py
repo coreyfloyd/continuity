@@ -254,3 +254,83 @@ def test_quiet_commit_uses_the_captured_transcript_completion_exit_code(sandbox)
     result=cli(ADAPTER,'guard-decide',data=stop)
     assert result.stdout, 'a quiet owned commit still makes the handoff stale'
     assert json.loads(result.stdout)['decision']=='block'
+
+
+def test_owned_commit_without_any_handoff_writes_skeleton_and_allows_stop(sandbox):
+    _,work=sandbox
+    p=payload('PostToolUse',sandbox)
+    assert cli(ADAPTER,'ledger-record',data=p).returncode==0
+    commit=subprocess.run(['git','-C',str(work),'-c','user.name=Example','-c','user.email=example@example.org',
+                    'commit','--allow-empty','-m','Work'],check=True,text=True,capture_output=True)
+    p['tool_input']['command']='git commit --allow-empty -m Work';p['tool_response']=commit.stdout
+    assert cli(ADAPTER,'ledger-record',data=p).returncode==0
+    assert not list(Path(os.environ['HANDOFF_STATE_DIR']).glob('*.json'))
+    result=cli(ADAPTER,'guard-decide',data=payload('Stop',sandbox))
+    assert result.stdout == ''
+    path = next(Path(os.environ['HANDOFF_STATE_DIR']).glob('*.json'))
+    data = json.loads(path.read_text())
+    assert data['resume']['headline'] == ''
+    assert data['resume']['open_loops'] == []
+
+
+def test_read_only_session_without_any_handoff_allows_stop(sandbox):
+    p=payload('PostToolUse',sandbox,tool_input={'command':'git status'},tool_response='Process exited with code 0')
+    assert cli(ADAPTER,'ledger-record',data=p).returncode==0
+    assert cli(ADAPTER,'guard-decide',data=payload('Stop',sandbox)).stdout==''
+
+
+@pytest.mark.parametrize('source,changes', [('interactive', {}), ('headless', {}), ('interactive', {'agent_id': 'child'}), ('interactive', {'stop_hook_active': True})])
+def test_codex_stop_skeleton_gate(sandbox, source, changes):
+    stop = payload('Stop', sandbox, source=source, **changes)
+    result = cli(ADAPTER, 'guard-decide', data=stop)
+    assert result.returncode == 0 and result.stdout == ''
+    paths = list(Path(os.environ['HANDOFF_STATE_DIR']).glob('*.json'))
+    assert bool(paths) == (source == 'interactive' and not changes)
+
+
+def test_codex_stop_ignores_another_sessions_newer_dirty_file(sandbox):
+    _, work = sandbox
+    path = checkpoint(work)
+    p = payload('PostToolUse', sandbox, tool_input={'command': 'git status'}, tool_response='Process exited with code 0')
+    assert cli(ADAPTER, 'ledger-record', data=p).returncode == 0
+    edited = work / 'other.txt'; edited.write_text('x')
+    stamp = path.stat().st_mtime + 10; os.utime(edited, (stamp, stamp))
+    before = path.read_bytes(), path.stat().st_mtime_ns
+    assert cli(ADAPTER, 'guard-decide', data=payload('Stop', sandbox)).stdout == ''
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+
+
+def test_codex_session_file_edit_blocks_and_active_stop_does_not_loop(sandbox):
+    _, work = sandbox
+    path = checkpoint(work)
+    edited = work / 'own.txt'; edited.write_text('x')
+    event = payload('PostToolUse', sandbox, tool_input={'file_path': str(edited)}, tool_response={'exit_code': 0})
+    assert cli(ADAPTER, 'ledger-record', data=event).returncode == 0
+    stamp = path.stat().st_mtime + 10; os.utime(edited, (stamp, stamp))
+    stop = payload('Stop', sandbox)
+    result = cli(ADAPTER, 'guard-decide', data=stop)
+    assert json.loads(result.stdout)['decision'] == 'block'
+    stop['stop_hook_active'] = True
+    assert cli(ADAPTER, 'guard-decide', data=stop).stdout == ''
+
+
+@pytest.mark.parametrize("owned,newer,expected", [(True, True, "block"), (False, True, "allow"), (True, False, "allow")])
+def test_codex_stop_retains_renamed_file_ownership(sandbox, owned, newer, expected):
+    _, work = sandbox
+    source = work / 'original.txt'; destination = work / 'renamed.txt'
+    source.write_text('unchanged line\n' * 100)
+    subprocess.run(['git', '-C', str(work), 'add', '.'], check=True)
+    subprocess.run(['git', '-C', str(work), '-c', 'user.name=t', '-c', 'user.email=t@x', 'commit', '-qm', 'tracked file'], check=True)
+    path = checkpoint(work)
+    source.write_text(source.read_text() + 'session edit\n')
+    if owned:
+        event = payload('PostToolUse', sandbox, tool_input={'file_path': str(source)}, tool_response={'exit_code': 0})
+        assert cli(ADAPTER, 'ledger-record', data=event).returncode == 0
+    subprocess.run(['git', '-C', str(work), 'mv', source.name, destination.name], check=True)
+    status = subprocess.run(['git', '-C', str(work), 'status', '--porcelain=v1', '-z'], capture_output=True, check=True).stdout
+    assert status.split(b'\0')[:2] == [b'RM renamed.txt', b'original.txt']
+    stamp = path.stat().st_mtime + (10 if newer else -10); os.utime(destination, (stamp, stamp))
+    result = cli(ADAPTER, 'guard-decide', data=payload('Stop', sandbox))
+    assert result.returncode == 0, result.stderr
+    decision = json.loads(result.stdout)['decision'] if result.stdout else 'allow'
+    assert decision == expected
