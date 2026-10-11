@@ -61,15 +61,49 @@ def remove_managed(hooks, managed):
 
 def remove_trust(text, keys):
     lines=text.splitlines(keepends=True); result=[];skip=False
+    quote=None; depth=0; escaped=False
     for line in lines:
-        if line.lstrip().startswith('['):
-            skip=trust.state_key_from_header(line.strip()) in keys
-            if skip:
+        if quote is None and depth == 0:
+            if line.lstrip().startswith('['):
+                skip=trust.state_key_from_header(line.strip()) in keys
+                if skip:
+                    continue
+            if not skip or not re.match(r'^\s*[^#\s][^=]*=', line):
+                result.append(line)
                 continue
-        # Only assignments belong to the removed table; preserve surrounding comments.
-        if skip and re.match(r'^\s*[^#\s][^=]*=', line):
+        # Outside strings, comments and blank lines survive even within arrays.
+        if quote is None and (not line.strip() or line.lstrip().startswith('#')):
+            result.append(line)
             continue
-        result.append(line)
+        # Follow the complete value, so continuation lines cannot become tables.
+        index=0
+        while index < len(line):
+            char=line[index]
+            if quote is not None:
+                if escaped:
+                    escaped=False
+                elif char == '\\' and quote[0] == '"':
+                    escaped=True
+                elif line.startswith(quote, index):
+                    width=len(quote)
+                    if width == 3:
+                        # TOML permits one or two literal quotes before a closing triple.
+                        while index + width < len(line) and line[index + width] == quote[0]:
+                            width += 1
+                    quote=None
+                    index += width
+                    continue
+            elif char == '#':
+                break
+            elif char in ('"', "'"):
+                quote=char * 3 if line.startswith(char * 3, index) else char
+                index += len(quote)
+                continue
+            elif char in '[{':
+                depth += 1
+            elif char in ']}':
+                depth -= 1
+            index += 1
     return ''.join(result)
 
 

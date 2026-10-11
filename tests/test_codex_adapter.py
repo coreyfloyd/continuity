@@ -134,6 +134,27 @@ def test_remove_trust_preserves_adjacent_comments_and_blank_lines(codex_installe
     assert installer.remove_trust(text, set()) == text
 
 
+@pytest.mark.parametrize('assignment,preserved', [
+    ('extra = [\n  "value",\n]\n', ''),
+    ('extra = [\n  # retained array comment\n\n  ["value"],\n]\n', '  # retained array comment\n\n'),
+    ('extra = [\n  [\n    "value",\n  ],\n]\n', ''),
+    ('extra = """\n# string content\n[agents.decoy]\n"""\n', ''),
+    ("extra = '''\n# string content\n[agents.decoy]\n'''\n", ''),
+    ('extra = """\nvalue with \\"quote\\" and # text\n"""\n', ''),
+    ('extra = """value"""""\n', ''),
+])
+def test_remove_trust_removes_complete_multiline_assignments(
+        codex_installer, trust_then_foreign_block, assignment, preserved):
+    key, table, block = trust_then_foreign_block
+    text = table + assignment + '# retained separator\n\n' + block
+    cleaned = codex_installer.remove_trust(text, {key})
+    assert cleaned == preserved + '# retained separator\n\n' + block
+    if sys.version_info >= (3, 11):
+        import tomllib
+        tomllib.loads(text)
+        assert tomllib.loads(cleaned) == tomllib.loads(block)
+
+
 def test_two_reinstalls_preserve_adjacent_foreign_agent_block(
         sandbox, trust_then_foreign_block, codex_installer, monkeypatch):
     home, _ = sandbox
