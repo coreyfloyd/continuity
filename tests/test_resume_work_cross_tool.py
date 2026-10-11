@@ -22,6 +22,7 @@ import json
 import os
 import re
 import subprocess
+import time
 
 import pytest
 
@@ -1231,3 +1232,121 @@ def test_redact_commands_fixtures_keep_only_placeholder_command_fields(fixture):
     assert not bad, bad
     if fixture in (CODEX_FIXTURE, PAGED_BASE, PAGED_WINDOW):
         assert commands > 0, "no CommandExecution rows: the invariant would be vacuous"
+
+
+# Pruning uses the same real captured sources as reconstruction. Handoffs
+# are contract inputs; no transcript records are invented for these cases.
+def _put_prune_handoff(sb, guid):
+    from test_resume_work import _handoff, _write_handoff
+
+    path = sb.state / (guid + ".json")
+    _write_handoff(path, _handoff(
+        str(sb.cwd), str(sb.cwd), "main", "Resume captured session", "Continue",
+        "2026-09-06T00:00:00Z", session_id=guid))
+    return path
+
+
+@pytest.mark.parametrize("flavor", ["claude", "codex"])
+@pytest.mark.parametrize("archived", [False, True])
+def test_prune_keeps_existing_codex_rollout_and_archives_missing_one(sb, flavor, archived):
+    rollout = sb.put_codex(CODEX_NAME, CODEX_FIXTURE, archived=archived)
+    handoff = _put_prune_handoff(sb, CODEX_GUID)
+    env = {"CONTINUITY_CONFIG": str(sb.root / "absent-config.json"),
+           "RESUME_WORK_PRUNE_DAYS": "7"}
+
+    rc, report = sb.run(flavor, "--prune", env_extra=env)
+    assert rc == 0, report
+    assert report["prune_candidates"] == []
+    assert report["moved"] == []
+    assert handoff.is_file()
+
+    rollout.unlink()
+    rc, report = sb.run(flavor, "--prune", env_extra=env)
+    assert rc == 0, report
+    assert [(row["session_id"], row["reason"]) for row in report["moved"]] == [
+        (CODEX_GUID, "missing_transcript")]
+    assert not handoff.exists()
+    assert (sb.state / "archive" / handoff.name).is_file()
+
+
+@pytest.mark.parametrize("window_archived", [False, True])
+@pytest.mark.parametrize("newest_days, stale", [(6, False), (7, True), (8, True)])
+def test_prune_ages_codex_thread_by_newest_rollout(sb, window_archived, newest_days, stale):
+    base = sb.put_codex(PAGED_BASE_NAME, PAGED_BASE, day="2026/09/21")
+    window = sb.put_codex(PAGED_WINDOW_NAME, PAGED_WINDOW, day="2026/09/23",
+                          archived=window_archived)
+    handoff = _put_prune_handoff(sb, PAGED_GUID)
+    now = time.time()
+    os.utime(base, (now - 30 * 86400, now - 30 * 86400))
+    os.utime(window, (now - newest_days * 86400, now - newest_days * 86400))
+
+    rc, report = sb.run("codex", env_extra={
+        "CONTINUITY_CONFIG": str(sb.root / "absent-config.json"),
+        "RESUME_WORK_PRUNE_DAYS": "7"})
+    assert rc == 0, report
+    expected = [(PAGED_GUID, "stale_transcript")] if stale else []
+    assert [(row["session_id"], row["reason"]) for row in report["prune_candidates"]] == expected
+    assert handoff.is_file()  # Listing is read-only even for stale sessions.
+
+
+@pytest.mark.parametrize("config_days, override, age_days, stale", [
+    (14, "", 8, False),
+    (3, "", 4, True),
+    (14, "3", 4, True),
+    (3, "14", 8, False),
+    (None, "", 7, True),
+])
+@pytest.mark.parametrize("location", ["explicit", "xdg", "default"])
+def test_prune_threshold_is_shared_config_then_environment_then_default(
+        sb, config_days, override, age_days, stale, location):
+    claude = sb.put_claude(CLAUDE_GUID, CLAUDE_FIXTURE, sb.cwd)
+    codex = sb.put_codex(CODEX_NAME, CODEX_FIXTURE)
+    for guid in (CLAUDE_GUID, CODEX_GUID):
+        _put_prune_handoff(sb, guid)
+    modified = time.time() - age_days * 86400
+    for source in (claude, codex):
+        os.utime(source, (modified, modified))
+    env = {"CONTINUITY_CONFIG": "", "XDG_CONFIG_HOME": "",
+           "RESUME_WORK_PRUNE_DAYS": override}
+    if location == "explicit":
+        config = sb.root / "config.json"
+        env["CONTINUITY_CONFIG"] = str(config)
+    elif location == "xdg":
+        env["XDG_CONFIG_HOME"] = str(sb.root / "xdg")
+        config = sb.root / "xdg" / "continuity" / "config.json"
+    else:
+        config = sb.home / ".config" / "continuity" / "config.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(json.dumps({} if config_days is None else {"prune_days": config_days}))
+
+    rc, report = sb.run("claude", env_extra=env)
+    assert rc == 0, report
+    expected = {CLAUDE_GUID: "stale_transcript", CODEX_GUID: "stale_transcript"} if stale else {}
+    assert {row["session_id"]: row["reason"] for row in report["prune_candidates"]} == expected
+
+
+@pytest.mark.parametrize("invalid", [0, -1, True, 1.5, "7", [], {}])
+def test_invalid_prune_days_configuration_refuses_archiving(sb, invalid):
+    handoff = _put_prune_handoff(sb, CODEX_GUID)
+    config = sb.root / "config.json"
+    config.write_text(json.dumps({"prune_days": invalid}))
+
+    rc, report = sb.run("codex", "--prune", env_extra={
+        "CONTINUITY_CONFIG": str(config), "RESUME_WORK_PRUNE_DAYS": ""})
+    assert rc != 0
+    assert report["error"] == "handoff_config_error"
+    assert "prune_days" in report["message"]
+    assert handoff.is_file()
+
+
+def test_prune_refuses_unknown_codex_store_before_archiving(sb, unlistable):
+    handoff = _put_prune_handoff(sb, CODEX_GUID)
+    rollout = sb.put_codex(CODEX_NAME, CODEX_FIXTURE)
+    unlistable(rollout.parent)
+
+    rc, report = sb.run("codex", "--prune", env_extra={
+        "CONTINUITY_CONFIG": str(sb.root / "absent-config.json"),
+        "RESUME_WORK_PRUNE_DAYS": "7"})
+    assert rc != 0
+    assert report["error"] == "session_store_unavailable"
+    assert handoff.is_file()

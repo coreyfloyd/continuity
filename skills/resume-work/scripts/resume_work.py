@@ -108,10 +108,12 @@ def _prune_days(value=None):
     return days if days > 0 else 7
 
 
-def prune_candidates(state_dir, home, prune_days=None, now=None):
+def prune_candidates(state_dir, home, prune_days=None, now=None, codex_home=None):
     """List handoffs whose transcript is absent or older than the threshold."""
     now = now or _utc_now()
     threshold = _prune_days(prune_days) * 86400
+    codex_home = codex_home or os.environ.get("CODEX_HOME") or os.path.join(home, ".codex")
+    codex_files = None
     rows = []
     try:
         names = sorted(os.listdir(state_dir))
@@ -129,13 +131,26 @@ def prune_candidates(state_dir, home, prune_days=None, now=None):
         cwd = subject.get("working_directory")
         if not isinstance(session_id, str) or not session_id or not isinstance(cwd, str):
             continue
+        # Enumerate once per pass, only when there is a valid handoff. The
+        # existing store walker includes archived and paginated rollouts and
+        # refuses unknown store state before any candidate can be archived.
+        if codex_files is None:
+            codex_files = defaultdict(list)
+            for rollout, thread_id in codex_rollouts(codex_home):
+                codex_files[thread_id].append(rollout)
         transcript = transcript_path(home, cwd, session_id)
-        if not os.path.isfile(transcript):
+        files = list(codex_files.get(session_id, []))
+        if os.path.isfile(transcript):
+            files.append(transcript)
+        if not files:
             rows.append({"path": path, "session_id": session_id,
                          "reason": "missing_transcript", "age": _age(handoff.get("written_at"))})
             continue
-        modified = datetime.datetime.fromtimestamp(os.path.getmtime(transcript),
-                                                   tz=datetime.timezone.utc)
+        try:
+            newest_mtime = max(os.path.getmtime(source) for source in files)
+        except OSError as exc:
+            raise _store_unavailable("session transcript", exc.filename or session_id, exc)
+        modified = datetime.datetime.fromtimestamp(newest_mtime, tz=datetime.timezone.utc)
         if (now - modified).total_seconds() >= threshold:
             rows.append({"path": path, "session_id": session_id,
                          "reason": "stale_transcript", "age": _age(modified.isoformat())})
@@ -1828,7 +1843,10 @@ def directory_resume(state_dir, cwd, home, current_session, repo_nwo=None,
     slug = cwd.replace("/", "-").replace(".", "-")
     transcript_dir = os.path.join(home, ".claude", "projects", slug)
     candidates, skipped = handoff_candidates(state_dir, cwd, include_skipped=True)
-    dead = prune_candidates(state_dir, home)
+    try:
+        dead = prune_candidates(state_dir, home, codex_home=codex_home)
+    except SourceError as exc:
+        return _directory_error(exc.code, exc.message)
     if prune:
         moved = archive_prune_candidates(state_dir, dead)
         return {"version": REPORT_VERSION, "source": "handoff_prune",
