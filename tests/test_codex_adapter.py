@@ -256,7 +256,7 @@ def test_quiet_commit_uses_the_captured_transcript_completion_exit_code(sandbox)
     assert json.loads(result.stdout)['decision']=='block'
 
 
-def test_owned_commit_without_any_handoff_blocks_stop(sandbox):
+def test_owned_commit_without_any_handoff_writes_skeleton_and_allows_stop(sandbox):
     _,work=sandbox
     p=payload('PostToolUse',sandbox)
     assert cli(ADAPTER,'ledger-record',data=p).returncode==0
@@ -266,11 +266,49 @@ def test_owned_commit_without_any_handoff_blocks_stop(sandbox):
     assert cli(ADAPTER,'ledger-record',data=p).returncode==0
     assert not list(Path(os.environ['HANDOFF_STATE_DIR']).glob('*.json'))
     result=cli(ADAPTER,'guard-decide',data=payload('Stop',sandbox))
-    assert json.loads(result.stdout)['decision']=='block'
-    assert 'HANDOFF MISSING' in json.loads(result.stdout)['reason']
+    assert result.stdout == ''
+    path = next(Path(os.environ['HANDOFF_STATE_DIR']).glob('*.json'))
+    data = json.loads(path.read_text())
+    assert data['resume']['headline'] == ''
+    assert data['resume']['open_loops'] == []
 
 
 def test_read_only_session_without_any_handoff_allows_stop(sandbox):
     p=payload('PostToolUse',sandbox,tool_input={'command':'git status'},tool_response='Process exited with code 0')
     assert cli(ADAPTER,'ledger-record',data=p).returncode==0
     assert cli(ADAPTER,'guard-decide',data=payload('Stop',sandbox)).stdout==''
+
+
+@pytest.mark.parametrize('source,changes', [('interactive', {}), ('headless', {}), ('interactive', {'agent_id': 'child'}), ('interactive', {'stop_hook_active': True})])
+def test_codex_stop_skeleton_gate(sandbox, source, changes):
+    stop = payload('Stop', sandbox, source=source, **changes)
+    result = cli(ADAPTER, 'guard-decide', data=stop)
+    assert result.returncode == 0 and result.stdout == ''
+    paths = list(Path(os.environ['HANDOFF_STATE_DIR']).glob('*.json'))
+    assert bool(paths) == (source == 'interactive' and not changes)
+
+
+def test_codex_stop_ignores_another_sessions_newer_dirty_file(sandbox):
+    _, work = sandbox
+    path = checkpoint(work)
+    p = payload('PostToolUse', sandbox, tool_input={'command': 'git status'}, tool_response='Process exited with code 0')
+    assert cli(ADAPTER, 'ledger-record', data=p).returncode == 0
+    edited = work / 'other.txt'; edited.write_text('x')
+    stamp = path.stat().st_mtime + 10; os.utime(edited, (stamp, stamp))
+    before = path.read_bytes(), path.stat().st_mtime_ns
+    assert cli(ADAPTER, 'guard-decide', data=payload('Stop', sandbox)).stdout == ''
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+
+
+def test_codex_session_file_edit_blocks_and_active_stop_does_not_loop(sandbox):
+    _, work = sandbox
+    path = checkpoint(work)
+    edited = work / 'own.txt'; edited.write_text('x')
+    event = payload('PostToolUse', sandbox, tool_input={'file_path': str(edited)}, tool_response={'exit_code': 0})
+    assert cli(ADAPTER, 'ledger-record', data=event).returncode == 0
+    stamp = path.stat().st_mtime + 10; os.utime(edited, (stamp, stamp))
+    stop = payload('Stop', sandbox)
+    result = cli(ADAPTER, 'guard-decide', data=stop)
+    assert json.loads(result.stdout)['decision'] == 'block'
+    stop['stop_hook_active'] = True
+    assert cli(ADAPTER, 'guard-decide', data=stop).stdout == ''
