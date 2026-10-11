@@ -263,6 +263,31 @@ def test_reinstalls_preserve_all_user_trust_settings(sandbox, codex_installer, m
     assert snapshots == [snapshots[0]] * 3
 
 
+@pytest.mark.parametrize('quote', ['"' * 3, "'" * 3])
+@pytest.mark.parametrize('content_kind', ['table', 'assignment'])
+def test_reinstalls_preserve_config_syntax_inside_user_strings(
+        sandbox, codex_installer, monkeypatch, quote, content_kind):
+    home, _ = sandbox
+    codex = home / '.codex'
+    monkeypatch.setattr(sys, 'argv', [str(INSTALL), '--codex-home', str(codex),
+                                    '--codex', shutil.which('codex')])
+    assert codex_installer.main() == 0
+    config = codex / 'config.toml'
+    original = config.read_text()
+    lines = original.splitlines(keepends=True)
+    # Capture the installed table and assignment, reproducing the evaluator's
+    # multiline value with actual generated configuration rather than fake keys.
+    header_index = next(i for i, line in enumerate(lines) if line.startswith('[hooks.state.'))
+    content = lines[header_index if content_kind == 'table' else header_index + 1]
+    settings = 'enabled = false\nnotes = ' + quote + '\n' + content + quote + '\n'
+    lines.insert(header_index + 2, settings)
+    configured = ''.join(lines)
+    config.write_text(configured)
+    for _ in range(3):
+        assert codex_installer.main() == 0
+        assert config.read_text() == configured
+
+
 def test_install_collision_and_verification_failure_do_not_change_user_files(sandbox):
     home,_=sandbox;codex=home/'.codex';(codex/'skills/checklist').mkdir(parents=True)
     result=cli(INSTALL,'--codex-home',codex)
