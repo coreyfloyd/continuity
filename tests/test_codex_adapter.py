@@ -173,6 +173,29 @@ def test_two_reinstalls_preserve_adjacent_foreign_agent_block(
         assert text.count(block) == 1
 
 
+@pytest.mark.parametrize('with_foreign_block', [False, True])
+def test_reinstalls_leave_whole_config_stable(
+        sandbox, trust_then_foreign_block, codex_installer, monkeypatch, with_foreign_block):
+    home, _ = sandbox
+    codex = home / '.codex'
+    monkeypatch.setattr(sys, 'argv', [str(INSTALL), '--codex-home', str(codex), '--codex', 'codex'])
+    monkeypatch.setattr(codex_installer.trust, 'verify_with_hooks_list', lambda *args: None)
+    assert codex_installer.main() == 0
+    config = codex / 'config.toml'
+    _, _, block = trust_then_foreign_block
+    original = config.read_text().replace('trusted_hash =', '# retained note\n\n\ntrusted_hash =', 1)
+    if with_foreign_block:
+        original += block
+    config.write_text(original)
+    snapshots = []
+    for _ in range(4):
+        assert codex_installer.main() == 0
+        snapshots.append(config.read_text())
+    assert snapshots == [snapshots[0]] * 4
+    keys = set(json.loads((codex / 'continuity-install.json').read_text())['trust_keys'])
+    assert codex_installer.remove_trust(snapshots[0], keys) == codex_installer.remove_trust(original, keys)
+
+
 def test_install_collision_and_verification_failure_do_not_change_user_files(sandbox):
     home,_=sandbox;codex=home/'.codex';(codex/'skills/checklist').mkdir(parents=True)
     result=cli(INSTALL,'--codex-home',codex)

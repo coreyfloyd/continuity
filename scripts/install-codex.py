@@ -59,14 +59,18 @@ def remove_managed(hooks, managed):
     return result
 
 
-def remove_trust(text, keys):
+def remove_trust(text, keys, replacements=None):
+    """Remove owned values, optionally replacing tables at their existing positions."""
     lines=text.splitlines(keepends=True); result=[];skip=False
     quote=None; depth=0; escaped=False
     for line in lines:
         if quote is None and depth == 0:
             if line.lstrip().startswith('['):
-                skip=trust.state_key_from_header(line.strip()) in keys
+                key=trust.state_key_from_header(line.strip())
+                skip=key in keys
                 if skip:
+                    if replacements is not None and key in replacements:
+                        result.extend((line, f'trusted_hash = {json.dumps(replacements[key])}\n'))
                     continue
             if not skip or not re.match(r'^\s*[^#\s][^=]*=', line):
                 result.append(line)
@@ -193,6 +197,9 @@ def main():
     home.mkdir(parents=True,exist_ok=True);skills.mkdir(exist_ok=True)
     installed=trust.merge_hooks(registrations(package),cleaned)
     hashes=trust.managed_state(registrations(package),installed,target)
+    if saved:
+        # Reuse owned table positions so preserved separators are not duplicated.
+        clean_config=remove_trust(old_config or '',set(saved['trust_keys']),hashes)
     try:
         if package.exists():package.rename(backup)
         copy_package(package)
