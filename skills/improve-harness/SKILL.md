@@ -1,9 +1,9 @@
 ---
-name: harness-improve
+name: improve-harness
 description: "Fold what a session taught into rules files, skills, agent definitions, or memory, with one placement per lesson. Use at wrap-up, or when the user says \"from now on\", \"remember this\", \"make this a durable rule\", \"always/never do X\", or asks where a rule belongs. Interactive: proposes, then waits. Unattended: edits nothing."
 ---
 
-# Harness Improve
+# Improve Harness
 
 The **inward-writing** wrap-up pass. The record holds what this session *did*; this skill folds what the session *taught* back into the instructions that will govern the next one. It is also the place to decide where a single durable rule belongs when the user asks for one mid-session.
 
@@ -11,7 +11,7 @@ Rules, skills and agent definitions, and memory are covered in one pass, because
 
 ## Routing: the user's file, or the default
 
-Look for a **routing file**: `$HARNESS_IMPROVE_ROUTING` when set, otherwise `harness-improve/routing.md` under `$XDG_CONFIG_HOME` (default `~/.config`). When it exists, read the whole file: it **replaces** the default routing table below, and it may also name where the sources live, where unattended proposals are filed, recording conventions, and extra steps for this procedure. Follow it wherever it differs from this skill. When it does not exist, use the default routing; it needs no configuration.
+Look for a **routing file**: `$IMPROVE_HARNESS_ROUTING` when set, otherwise `improve-harness/routing.md` under `$XDG_CONFIG_HOME` (default `~/.config`). When it exists, read the whole file: it **replaces** the default routing table below, and it may also name where the sources live, where unattended proposals are filed, recording conventions, and extra steps for this procedure. Follow it wherever it differs from this skill. When it does not exist, use the default routing; it needs no configuration.
 
 ### Default routing
 

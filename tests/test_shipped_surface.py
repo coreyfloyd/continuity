@@ -96,3 +96,24 @@ def test_no_shipped_file_carries_a_listed_term():
     """The list of terms lives outside this repository, so the check itself ships none."""
     result = subprocess.run([sys.executable, CHECK, "--terms", TERMS, ROOT], capture_output=True, text=True)
     assert result.returncode == 0, result.stdout[-3000:] + result.stderr
+
+
+def test_improve_harness_skill_publishes_the_new_routing_contract():
+    path = os.path.join(ROOT, "skills", "improve-harness", "SKILL.md")
+    assert os.path.isfile(path)
+    text = read_text(path)
+    assert "name: improve-harness\n" in text
+    assert "$IMPROVE_HARNESS_ROUTING" in text
+    assert "`improve-harness/routing.md` under `$XDG_CONFIG_HOME`" in text
+    assert "default `~/.config`" in text
+
+
+def test_shipped_sources_use_only_the_current_lessons_skill_name():
+    retired = "-".join(("harness", "improve"))
+    retired_variable = "_".join(("HARNESS", "IMPROVE"))
+    for path in shipped_files():
+        assert retired not in os.path.relpath(path, ROOT), path
+        text = read_text(path)
+        if text is not None:
+            assert retired not in text, path
+            assert retired_variable not in text, path

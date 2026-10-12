@@ -52,13 +52,13 @@ class ChecklistTests(unittest.TestCase):
         self.assertEqual([s["id"] for s in plan], ["record", "knowledge", "lessons", "persist", "handoff"])
         self.assertEqual([s["slot"] for s in plan[:-1]], ["record", "knowledge", "lessons", "persist"])
         self.assertNotIn("slot", plan[-1])
-        self.assertEqual(plan[2]["binding"]["command"], "/harness-improve")
+        self.assertEqual(plan[2]["binding"]["command"], "/improve-harness")
 
     def test_user_profile_runs_nine_steps(self):
         user = self.engine.load_profile(PROFILES / "user.md")
         plan = self.engine.compose([user])
         self.assertEqual([s["id"] for s in plan], ["record", "knowledge", "lessons", "persist", "cleanup", "context-health", "session-metadata", "whats-next", "handoff"])
-        self.assertEqual([s["binding"]["command"] for s in plan[:4]], ["/record-step", "/knowledge-step", "/harness-improve", "/persist-step"])
+        self.assertEqual([s["binding"]["command"] for s in plan[:4]], ["/record-step", "/knowledge-step", "/improve-harness", "/persist-step"])
         for step in plan[4:-1]:
             self.assertTrue(step["instructions"])
 

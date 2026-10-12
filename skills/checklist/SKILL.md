@@ -57,7 +57,7 @@ handoff was resumed. `plan` writes a start marker row to the current session's
 ledger; `--session-id` defaults to the Claude Code session in the environment,
 so pass it in Codex. No profile is also a valid plan: omit the profile arguments, and the plan is the
 five spine steps ending with the handoff. Record, knowledge, and persist are
-unbound in the spine; lessons defaults to `/harness-improve`, consuming `lesson`
+unbound in the spine; lessons defaults to `/improve-harness`, consuming `lesson`
 items. An unbound slot's `carries` lists the item types it leaves in the handoff.
 
 Added steps may run `before-spine` or after `record`, `knowledge`, `lessons`, or
@@ -134,7 +134,7 @@ pending approval or otherwise unsaved as open loops. If unbound, carry it.
 ### 3. Fold in lessons — slot `lessons`
 
 Run the bound lesson-routing command on current lessons and carried lesson text.
-The default command is `/harness-improve`; a user profile can replace it.
+The default command is `/improve-harness`; a user profile can replace it.
 Retain lessons whose routing is pending or failed.
 
 ### 4. Persist — slot `persist`
