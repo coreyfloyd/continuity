@@ -288,6 +288,52 @@ def test_reinstalls_preserve_config_syntax_inside_user_strings(
         assert config.read_text() == configured
 
 
+@pytest.mark.parametrize('separator', ['\x0b', '\x0c', '\x1c', '\x1d', '\x1e', '\x85', '\u2028', '\u2029'])
+@pytest.mark.parametrize('ending', ['\n', '\r\n', ''])
+@pytest.mark.parametrize('newline', ['\n', '\r\n'])
+def test_config_writer_preserves_unowned_bytes(
+        codex_installer, trust_then_foreign_block, separator, ending, newline):
+    key, table, block = trust_then_foreign_block
+    # Mutate the existing redacted table/block with the reported boundary cases.
+    block = block.replace('Example agent', 'Example' + separator + 'agent')
+    original = (table + block).replace('\n', newline) + '  \t' + ending
+    updated = codex_installer.trust.update_config_text(original, {key: 'sha256:example'})
+    assert updated.encode('utf-8') == original.encode('utf-8')
+
+
+@pytest.mark.parametrize('separator', ['\x85', '\u2028', '\u2029'])
+@pytest.mark.parametrize('quote', ['"', '"""', "'''"])
+@pytest.mark.parametrize('location', ['owned', 'foreign'])
+def test_reinstalls_preserve_unicode_config_values(
+        sandbox, codex_installer, monkeypatch, trust_then_foreign_block,
+        separator, quote, location):
+    home, _ = sandbox
+    codex = home / '.codex'
+    monkeypatch.setattr(sys, 'argv', [str(INSTALL), '--codex-home', str(codex),
+                                    '--codex', shutil.which('codex')])
+    assert codex_installer.main() == 0
+    config = codex / 'config.toml'
+    original = config.read_text()
+    captured = json.loads((FIX / 'PostToolUse.json').read_text())
+    # The recorded response supplies the value; replace its physical newline
+    # with the separator from the reported corruption, without inventing records.
+    value = captured['tool_response'].replace('\n', separator)
+    padding = '\n' if len(quote) == 3 else ''
+    settings = 'tool_response = ' + quote + padding + value + padding + quote + '\n'
+    if location == 'owned':
+        index = original.index('\n', original.index('trusted_hash =')) + 1
+        original = original[:index] + settings + original[index:]
+    else:
+        _, _, block = trust_then_foreign_block
+        original += block.replace('# <<<', settings + '# <<<', 1)
+    # Reinstall must also retain physical CRLF, trailing whitespace and EOF.
+    configured = original.replace('\n', '\r\n').encode('utf-8') + b'  \t'
+    config.write_bytes(configured)
+    for _ in range(2):
+        assert codex_installer.main() == 0
+        assert config.read_bytes() == configured
+
+
 def test_install_collision_and_verification_failure_do_not_change_user_files(sandbox):
     home,_=sandbox;codex=home/'.codex';(codex/'skills/checklist').mkdir(parents=True)
     result=cli(INSTALL,'--codex-home',codex)

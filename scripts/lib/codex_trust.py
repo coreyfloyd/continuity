@@ -27,7 +27,7 @@ SUPPORTED_HANDLER_FIELDS = {"type", "command", "timeout", "async"}
 
 
 def atomic_write(path: Path, content: str) -> bool:
-    old = path.read_text() if path.exists() else None
+    old = path.read_bytes().decode("utf-8") if path.exists() else None
     if old == content:
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -35,7 +35,7 @@ def atomic_write(path: Path, content: str) -> bool:
         dir=path.parent, prefix=f".{path.name}.", text=True
     )
     try:
-        with os.fdopen(descriptor, "w") as handle:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
             handle.write(content)
         os.replace(temporary, path)
     finally:
@@ -231,6 +231,16 @@ def state_key_from_header(line: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def config_lines(text: str) -> list[str]:
+    """Split only at TOML newlines, retaining terminators and the final bytes."""
+    lines = text.split("\n")
+    return [line + "\n" for line in lines[:-1]] + ([lines[-1]] if lines[-1] else [])
+
+
+def config_line_ending(line: str) -> str:
+    return "\r\n" if line.endswith("\r\n") else "\n" if line.endswith("\n") else ""
+
+
 def config_statement_lines(lines: list[str]) -> set[int]:
     """Locate statement starts, excluding multiline string and array contents."""
     starts: set[int] = set()
@@ -243,7 +253,8 @@ def config_statement_lines(lines: list[str]) -> set[int]:
         index = 0
         # Include the newline so a basic string's line-continuation escape does
         # not escape the first character of the next line instead.
-        line += "\n"
+        if not line.endswith("\n"):
+            line += "\n"
         while index < len(line):
             char = line[index]
             if quote is not None:
@@ -274,7 +285,7 @@ def config_statement_lines(lines: list[str]) -> set[int]:
 
 
 def update_config_text(text: str, hashes: dict[str, str]) -> str:
-    lines = text.splitlines()
+    lines = config_lines(text)
     statements = config_statement_lines(lines)
     sections: dict[str, tuple[int, int]] = {}
     for start, line in enumerate(lines):
@@ -308,32 +319,38 @@ def update_config_text(text: str, hashes: dict[str, str]) -> str:
         if len(trusted_lines) > 1:
             raise ValueError(f"config.toml has duplicate trusted_hash for {key}")
         if trusted_lines:
-            lines[trusted_lines[0]] = assignment
+            index = trusted_lines[0]
+            lines[index] = assignment + config_line_ending(lines[index])
         else:
-            insertions.append((start + 1, assignment))
+            ending = config_line_ending(lines[start]) or "\n"
+            if not lines[start].endswith("\n"):
+                lines[start] += ending
+            insertions.append((start + 1, assignment + ending))
 
     for index, assignment in sorted(insertions, reverse=True):
         lines.insert(index, assignment)
 
     if missing:
-        insert_at = (
-            lines.index(AGENT_BLOCK_START)
-            if AGENT_BLOCK_START in lines
-            else len(lines)
+        insert_at = next(
+            (index for index, line in enumerate(lines)
+             if line.rstrip("\r\n") == AGENT_BLOCK_START), len(lines)
         )
         block: list[str] = []
-        if insert_at > 0 and lines[insert_at - 1] != "":
-            block.append("")
+        if insert_at > 0:
+            if not lines[insert_at - 1].endswith("\n"):
+                block.append("\n")
+            if lines[insert_at - 1].rstrip("\r\n") != "":
+                block.append("\n")
         for key, assignment in missing:
-            if block and block[-1] != "":
-                block.append("")
+            if block and block[-1] != "\n":
+                block.append("\n")
             block.extend(
-                (f"[hooks.state.{json.dumps(key, ensure_ascii=False)}]", assignment)
+                (f"[hooks.state.{json.dumps(key, ensure_ascii=False)}]\n", assignment + "\n")
             )
-        if insert_at < len(lines) and block[-1] != "":
-            block.append("")
+        if insert_at < len(lines):
+            block.append("\n")
         lines[insert_at:insert_at] = block
-    return "\n".join(lines).rstrip() + "\n"
+    return "".join(lines)
 
 
 def verify_with_hooks_list(
