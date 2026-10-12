@@ -91,7 +91,7 @@ checklist="${CHECKLIST_COMMAND:-/checklist}"
 if [ "$cadence" = "checkpoint" ]; then
     # Not throttled, but only on git: each ticket in the slate lands as a commit.
     case "$signal" in git*) : ;; *) exit 0 ;; esac
-    printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"%s in an unattended session. If this finishes a ticket in the slate, checkpoint now (the resume-checkpoint skill) so carried items survive. Run %s unattended once, after the slate completion command succeeds; not after each ticket."}}\n' "$signal" "$checklist"
+    printf '{"hookSpecificOutput":{"hookEventName":"PostToolUse","additionalContext":"%s in an unattended session. If this finishes a ticket in the slate, checkpoint now (the checkpoint skill) so carried items survive. Run %s unattended once, after the slate completion command succeeds; not after each ticket."}}\n' "$signal" "$checklist"
     exit 0
 fi
 if [ "$cadence" = "unattended-checklist" ]; then

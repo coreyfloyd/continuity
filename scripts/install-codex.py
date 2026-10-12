@@ -15,7 +15,7 @@ import sys
 from lib import codex_trust as trust
 
 ROOT = Path(__file__).resolve().parent.parent
-SKILLS = ('resume-checkpoint','resume-work','checklist','handoff-prompt','wip','improve-harness')
+SKILLS = ('checkpoint','pickup','checklist','handoff-prompt','wip','improve-harness')
 REGISTRATIONS = (('SessionStart','post-compact',None), ('PreCompact','pre-compact',None),
                  ('UserPromptSubmit','context-guard',None), ('PostToolUse','ledger-record',None),
                  ('Stop','guard-decide',None), ('PostToolUse','checklist-nudge','Bash'),

@@ -11,7 +11,7 @@ This repository is the shared package. It holds the parts neither tool owns:
 |---|---|
 | Handoff engine: resolve, checkpoint, lint, ledger, hook decisions | `scripts/lib/handoff.py` (standard library only) |
 | Checklist engine: spine, profiles, slots, carried items, wrap check | `scripts/lib/checklist.py` (standard library only) |
-| Six skills: `resume-checkpoint`, `resume-work`, `checklist`, `handoff-prompt`, `wip`, `improve-harness` | `skills/` |
+| Six skills: `checkpoint`, `pickup`, `checklist`, `handoff-prompt`, `wip`, `improve-harness` | `skills/` |
 | Six hook adapters, each a few lines over the engines | `scripts/` and `hooks/` |
 | Glossary of the twelve terms | `docs/glossary.md` |
 | Storage, configuration, and profile contracts | `INTERFACE.md` |
@@ -61,7 +61,7 @@ rows and the reported context window, without counting cached input twice.
 - **Wrap.** Run the checklist: reconcile the record, capture knowledge, fold in lessons,
   persist, then write and validate the handoff. A profile binds the first four steps to
   your own commands and adds steps of its own. It cannot remove or skip a spine step.
-- **Resume.** List the handoffs for the current directory, newest first, and pick one up in
+- **Pickup.** List the handoffs for the current directory, newest first, and pick one up in
   either tool. With no handoff, fall back to recent sessions from the tool's own history.
 - **Hooks.** Restore the handoff after compaction, back up the hook input before it, warn
   when half the context window is used, record the files and artifacts a session touches,
@@ -77,7 +77,7 @@ an adapter leaves them in place.
 
 Python 3.9 or newer, standard library only. Bash 3.2 or newer. `git`. `jq`, which the
 checklist reminder hook reads its payload with. `gh` only if you use the commitments scan in
-`resume-work`.
+`pickup`.
 
 ## Install in Claude Code
 
@@ -90,7 +90,7 @@ claude plugin install continuity --marketplace coreyfloyd/continuity
 
 Inside a session, `/plugin install continuity --marketplace coreyfloyd/continuity` does the
 same. Nothing needs configuring. The skills are namespaced by the plugin: `/continuity:checklist`,
-`/continuity:resume-work`, `/continuity:resume-checkpoint`, `/continuity:handoff-prompt`,
+`/continuity:pickup`, `/continuity:checkpoint`, `/continuity:handoff-prompt`,
 `/continuity:wip`, and `/continuity:improve-harness`.
 
 `claude plugin uninstall continuity@continuity` removes the plugin. Handoffs are stored
@@ -117,13 +117,13 @@ releases with `RELEASING.md`.
 ```bash
 python3 -m pip install pytest
 python3 -m pytest tests
-bash tests/test-resume-work-wrapper.sh
-bash tests/test-resume-work-branch-scan.sh
+bash tests/test-pickup-wrapper.sh
+bash tests/test-pickup-branch-scan.sh
 ```
 
 The fixtures in `tests/fixtures` are records captured from real sessions, with names,
 repositories, projects, products, channels, paths, and addresses replaced by neutral
-stand-ins. `tests/fixtures/resume-work-codex-PROVENANCE.md`
+stand-ins. `tests/fixtures/pickup-codex-PROVENANCE.md`
 says how.
 
 ### Keeping a setup out of the repository

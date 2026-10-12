@@ -1,14 +1,14 @@
 ---
-name: resume-work
+name: pickup
 description: "Resume work after a cold start: default mode lists durable handoff candidates with transcript fallback; --machine reads GitHub claims. Use for 'where was I?' or 'pick up where I left off'; not within-session status."
 disable-model-invocation: true
 ---
 
-# Resume Work
+# Pickup
 
 Answers *"where was I?"* from a cold start — no surviving context, no memory of what the last session held. It is handoff-first, with transcript fallback and the existing machine lens.
 
-`<resume-work.sh>` is this package's `scripts/resume-work.sh` (resolve the path from this skill's real directory: `../../scripts/resume-work.sh`).
+`<pickup.sh>` is this package's `scripts/pickup.sh` (resolve the path from this skill's real directory: `../../scripts/pickup.sh`).
 
 ## Handoff candidates (default)
 
@@ -18,12 +18,12 @@ With no arguments, it reads schema-v2 handoff files from the configured handoff 
 
 ### Dead-session pruning
 
-The default JSON report includes `prune_candidates` but never changes files. A handoff is a prune candidate when the matching transcript is missing, or when that transcript's mtime is at least 7 days old. Override the threshold with the positive integer `RESUME_WORK_PRUNE_DAYS`. Transcript identity is derived mechanically from the stored handoff subject using Claude Code's cwd slug (`/` and `.` replaced by `-`): `~/.claude/projects/<cwd-slug>/<session_id>.jsonl`.
+The default JSON report includes `prune_candidates` but never changes files. A handoff is a prune candidate when the matching transcript is missing, or when that transcript's mtime is at least 7 days old. Override the threshold with the positive integer `PICKUP_PRUNE_DAYS`. Transcript identity is derived mechanically from the stored handoff subject using Claude Code's cwd slug (`/` and `.` replaced by `-`): `~/.claude/projects/<cwd-slug>/<session_id>.jsonl`.
 
 Each candidate carries `path`, `session_id`, `reason` (`missing_transcript` or `stale_transcript`), and `age`. To act on the suggestion:
 
 ```bash
-bash <resume-work.sh> --prune
+bash <pickup.sh> --prune
 ```
 
 `--prune` moves candidates into the handoff directory's `archive/` and reports every move in JSON. It never deletes a handoff, and a same-named archive file is preserved by choosing a numbered destination.
@@ -31,7 +31,7 @@ bash <resume-work.sh> --prune
 Render these groups for the user and let them choose; do not make another candidate the current task. To select a returned candidate, use its `path`:
 
 ```bash
-bash <resume-work.sh> --handoff <path>
+bash <pickup.sh> --handoff <path>
 ```
 
 The selected handoff produces a version-2 briefing: handoff text is inferred, while git and best-effort ticket cross-checks are tagged validated or inferred. Ticket lookup degrades cleanly when `gh` is unavailable.
@@ -45,7 +45,7 @@ When no handoff candidate is available, the default path reads the on-disk trans
 **It always prints a single JSON object — there is no human-rendered mode** (the script emits JSON, the agent renders the briefing, the user never sees raw output). `--json` is accepted for backward compatibility but has no effect on this lens — it's already the only output.
 
 ```bash
-bash <resume-work.sh> --session <id>
+bash <pickup.sh> --session <id>
 ```
 
 | Flag | Effect |
@@ -61,13 +61,13 @@ When neither provider has a session recorded for this cwd, or the only session h
 
 Newest first across both providers (by file mtime; equal mtimes break by lowest session id, then provider name, never by file listing order), excluding the current session, **skipping any transcript that is malformed or has no substantive assistant turn** — a lone candidate included. A transcript is malformed when any of its files cannot be read, or any non-empty record in any of its files does not decode as a JSON object, the final record included; it is skipped whole, never reconstructed with that record missing. A Codex thread's files are every rollout whose filename carries its id, so a paginated window file that is unreadable, undecodable, or names another thread in its `session_meta` fails the whole thread rather than being left out. When every candidate is skipped, the result is `error: "no_substantive_transcript"` with a non-zero exit and a message naming each skipped file and why. A session that opened and never ran leaves an empty transcript and is not a resume target. If the default lands on the wrong session, pass `--session <id>`.
 
-**A bare `/resume-work <arg>` argument is a session id, not a flag.** Map it to `--session <arg>` before running the script — don't fall through to the no-flag default. On 2026-08-16 `/resume-work 9d6ae6fd` was run against a pre-update copy of this skill that had no directory lens at all; the argument was silently dropped and the machine lens returned an unrelated ticket. The user had to ask why the session id they gave was ignored.
+**A bare `/pickup <arg>` argument is a session id, not a flag.** Map it to `--session <arg>` before running the script — don't fall through to the no-flag default. On 2026-08-16 `/pickup 9d6ae6fd` was run against a pre-update copy of this skill that had no directory lens at all; the argument was silently dropped and the machine lens returned an unrelated ticket. The user had to ask why the session id they gave was ignored.
 
 Automatic scoping is by directory, so it naturally separates worktrees — each has its own session set. A worktree with no prior session of its own returns the `no_transcript_directory` error above; that is expected, not a bug. If a store directory this path reads exists but cannot be listed, or is a rejected link (see Symbolic links above), it returns `session_store_unavailable` instead, because an absent session cannot be proven.
 
 ### Cross-tool reconstruction
 
-`--session <id>` reconstructs context from a session recorded by **either** Claude Code or Codex, whichever tool runs `/resume-work`, and from any directory. The engine searches both stores for the id and decides the owner from what it finds there — never from the id's UUID version or from `CLAUDE_*`/`CODEX_*` variables:
+`--session <id>` reconstructs context from a session recorded by **either** Claude Code or Codex, whichever tool runs `/pickup`, and from any directory. The engine searches both stores for the id and decides the owner from what it finds there — never from the id's UUID version or from `CLAUDE_*`/`CODEX_*` variables:
 
 - **Claude:** `~/.claude/projects/*/<id>.jsonl`, in any project directory.
 - **Codex:** rollout files named `rollout-<timestamp>-<id>[_<window>].jsonl` under `$CODEX_HOME/sessions/YYYY/MM/DD/` and the flat `$CODEX_HOME/archived_sessions/`. The id is the thread id (`session_meta.payload.id`), never `payload.session_id`, which names the parent thread for a subagent. A thread split across several files (a paginated window) is read as one source, oldest file first.
@@ -84,7 +84,7 @@ An explicit id never falls back to a guess. Each failure is a JSON error object 
 | `invalid_session_transcript` | A file matched the id but cannot be read as a transcript of its provider, including when it cannot be read or any non-empty record in it, the final one included, does not decode as a JSON object. This fails even when another match is valid. |
 | `invalid_session_id` | The id contains path or glob syntax. |
 
-**This is reconstruction, not native continuation.** `/resume-work` rebuilds what a dead session did so the current tool can carry on; it works across providers. Continuing the provider's own conversation thread — `claude --resume <id>` or `codex resume <id>` — reads only that provider's store and remains a same-provider capability.
+**This is reconstruction, not native continuation.** `/pickup` rebuilds what a dead session did so the current tool can carry on; it works across providers. Continuing the provider's own conversation thread — `claude --resume <id>` or `codex resume <id>` — reads only that provider's store and remains a same-provider capability.
 
 ### Rendering the resume briefing (`version: 2`)
 
@@ -92,7 +92,7 @@ The JSON is a deterministic worklog that YOU, the agent, turn into the user's ac
 
 Top-level fields: `session`, `provider`, `transcript_files`, `messages`, `first_ts`, `last_ts`, `first_user` (uncapped), `last_user` (uncapped), `last_assistant` (uncapped, selected by `stop_reason == "end_turn"` — the sign-off, not just the last row with any text), `ticket_refs`, `git` (session-branch cross-check: `branch`, `head`, `exists`, `on_main`, `unmerged`, `ahead_behind`), `branches`, `tickets`, `files_by_repo`, `staleness`, `skipped_candidates`, `session_repo_cwd`, `session_repo_readable`, `commitments` and `commitments_reason` (see [COMMITMENTS](#commitments) below).
 
-**Exit code and error shape.** The directory lens is one Python process (`skills/resume-work/scripts/resume_work.py`); `scripts/resume-work.sh` parses arguments, finds the engine, and runs it. Every failure path puts `{"version": 2, "error": ..., "message": ..., "commitments": null, "commitments_reason": "lens_error"}` on stdout — the shape never varies.
+**Exit code and error shape.** The directory lens is one Python process (`skills/pickup/scripts/pickup.py`); `scripts/pickup.sh` parses arguments, finds the engine, and runs it. Every failure path puts `{"version": 2, "error": ..., "message": ..., "commitments": null, "commitments_reason": "lens_error"}` on stdout — the shape never varies.
 
 **Branch on the `error` key, not on the exit code**, because the two do not line up and are not meant to:
 
@@ -201,11 +201,11 @@ Zero `isSidechain` rows were found across 15 sampled sessions, in a session that
 
 ### Trunk branch
 
-Every `main`-relative comparison resolves the trunk branch in this order: the `RESUME_WORK_TRUNK` env var, if set; otherwise `git symbolic-ref refs/remotes/origin/HEAD` (deterministic — the one branch the remote itself designates as default, empty when unset, never a wrong guess); otherwise `main`. A repo whose trunk is `master`/`trunk`/`develop` needs neither set as long as its `origin/HEAD` is configured (true for most clones); `RESUME_WORK_TRUNK` remains the override for a repo with no remote HEAD at all, or to force a value.
+Every `main`-relative comparison resolves the trunk branch in this order: the `PICKUP_TRUNK` env var, if set; otherwise `git symbolic-ref refs/remotes/origin/HEAD` (deterministic — the one branch the remote itself designates as default, empty when unset, never a wrong guess); otherwise `main`. A repo whose trunk is `master`/`trunk`/`develop` needs neither set as long as its `origin/HEAD` is configured (true for most clones); `PICKUP_TRUNK` remains the override for a repo with no remote HEAD at all, or to force a value.
 
 ## COMMITMENTS
 
-A field in the same JSON object, `commitments` — not a separate printed section (fixed in #910: it used to be prose appended after the JSON, which made the default invocation unparseable — `json.load` failed with "Extra data" past the report's closing brace). It answers a different question from everything else in the object: not *what did the last session say*, but **what did it promise**. The scan runs inside `resume_work.py` alongside everything else in this lens; it was a bash function whose output was merged into the report through an environment variable until #910 round 4, and every open fail-mode defect sat on that seam.
+A field in the same JSON object, `commitments` — not a separate printed section (fixed in #910: it used to be prose appended after the JSON, which made the default invocation unparseable — `json.load` failed with "Extra data" past the report's closing brace). It answers a different question from everything else in the object: not *what did the last session say*, but **what did it promise**. The scan runs inside `pickup.py` alongside everything else in this lens; it was a bash function whose output was merged into the report through an environment variable until #910 round 4, and every open fail-mode defect sat on that seam.
 
 The transcript recovers narrative. Commitments — "verify the 21:30 nightly", "watch #820 for 7 days", "delete the preview page once the nightly lands" — are not narrative and are usually not in the tail of the transcript at all. `/record-update`'s **commitments sweep** stamps them onto tickets before the session dies; this field is the read side.
 
@@ -224,7 +224,7 @@ The transcript recovers narrative. Commitments — "verify the 21:30 nightly", "
 | `null` | Collected, complete. The only value that lets you say "nothing outstanding." |
 | `"skipped"` | `--no-commitments` was passed. Nothing was checked. |
 | `"no_session_id"` | The resumed session's id could not be determined, so the join had no key. |
-| `"no_owner"` | No GitHub owner is configured (`RESUME_WORK_COMMITMENT_OWNER`, else `commitment_owner` in the continuity configuration), so there is no owner to scope the search. Nothing was checked. This is the default. |
+| `"no_owner"` | No GitHub owner is configured (`PICKUP_COMMITMENT_OWNER`, else `commitment_owner` in the continuity configuration), so there is no owner to scope the search. Nothing was checked. This is the default. |
 | `"gh_not_found"` | `gh` is not on `PATH`. |
 | `"gh_search_failed"` | `gh` ran and failed — stale auth, offline, rate limit. **This is the cold-start case**, and until #910 round 4 it reported `[]`, a false "you promised nothing". |
 | `"partial_claim_fetch"` | The array is real but INCOMPLETE: at least one ticket's claim comment could not be read, so its inheritance is unknown rather than absent. |
@@ -242,16 +242,16 @@ Re-claim each row under **your** session id with the claim tool your setup uses;
 
 ### Bounds and known gaps
 
-- Scans the **25 most recently updated** open host-labeled issues owned by `RESUME_WORK_COMMITMENT_OWNER` (`RESUME_WORK_COMMITMENT_LIMIT` overrides). Claim bodies are fetched by a thread pool whose default size is that same limit, i.e. one wave (`RESUME_WORK_COMMITMENT_JOBS` overrides, capped at 32 — lower it on a rate-limited box). Measured ~14s uncapped serially, which is what `--no-commitments` exists to skip.
+- Scans the **25 most recently updated** open host-labeled issues owned by `PICKUP_COMMITMENT_OWNER` (`PICKUP_COMMITMENT_LIMIT` overrides). Claim bodies are fetched by a thread pool whose default size is that same limit, i.e. one wave (`PICKUP_COMMITMENT_JOBS` overrides, capped at 32 — lower it on a rate-limited box). Measured ~14s uncapped serially, which is what `--no-commitments` exists to skip.
 - **The join is a 12-char prefix.** The claim tool is expected to truncate the session id; the transcript id is a full uuid. A session that claimed under `CLAUDE_SESSION_NAME` (a name, not an id prefix) is **not** recoverable by id.
 - **A stale row is possible.** `heartbeat` keeps the recorded session id when the host matches, so a ticket stamped by session A and later heartbeated by session B on the same box still reads A. Verify a row before inheriting it — same rule as the transcript findings above.
 
 ## Machine lens (`--machine`)
 
-*"What does this HOST hold?"* — an optional lens, available when a machine-lens command is configured (`RESUME_WORK_MACHINE_LENS`, else `machine_lens` in the continuity configuration; without one, these flags report `machine_lens_unavailable`). The command a claims setup supplies reads the **claim comments** its claim tool writes onto tickets (host · session · branch · started · heartbeat) and renders them stalest-first. Use it to spot work stranded on another machine.
+*"What does this HOST hold?"* — an optional lens, available when a machine-lens command is configured (`PICKUP_MACHINE_LENS`, else `machine_lens` in the continuity configuration; without one, these flags report `machine_lens_unavailable`). The command a claims setup supplies reads the **claim comments** its claim tool writes onto tickets (host · session · branch · started · heartbeat) and renders them stalest-first. Use it to spot work stranded on another machine.
 
 ```bash
-bash <resume-work.sh> --machine
+bash <pickup.sh> --machine
 ```
 
 | Flag | Effect |
@@ -279,7 +279,7 @@ Check out the branch named in the row, and confirm its state before assuming the
 
 ## Distinct from `/wip`
 
-`/wip` is a within-session snapshot seeded by the SessionStart ticket injection and verified against live reality — "what is in flight *for this session*". `resume-work` needs no surviving session: the directory lens reads a dead session's transcript, the machine lens reads GitHub. Run `resume-work` first in a fresh terminal; run `/wip` once you are back inside a session with context.
+`/wip` is a within-session snapshot seeded by the SessionStart ticket injection and verified against live reality — "what is in flight *for this session*". `pickup` needs no surviving session: the directory lens reads a dead session's transcript, the machine lens reads GitHub. Run `pickup` first in a fresh terminal; run `/wip` once you are back inside a session with context.
 
 ## Related
 

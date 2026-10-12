@@ -89,7 +89,7 @@ configuration (see `INTERFACE.md`); with none, every session is attended and thi
 does not apply.
 
 - **After each ticket** in the slate (or the scope's work landing), checkpoint: write
-  the handoff with every unrecorded session item through `resume-checkpoint`'s script,
+  the handoff with every unrecorded session item through `checkpoint`'s script,
   as in step 5. Do not run the checklist;
   it would clean up worktrees and agents the slate still uses.
 - **After the whole slate**, once its completion command (the configured
@@ -146,9 +146,9 @@ and merge authorization belong to profiles and their bindings.
 ### 5. Write and validate the handoff — fixed
 
 After every profile addition, write the interactive session's handoff using the
-same checkpoint module as `resume-checkpoint`. Its slash skill is user-only;
+same checkpoint module as `checkpoint`. Its slash skill is user-only;
 call its script directly: `<checkpoint.sh>` is `scripts/checkpoint.sh` in that
-skill's real directory (`../resume-checkpoint/scripts/checkpoint.sh` from this
+skill's real directory (`../checkpoint/scripts/checkpoint.sh` from this
 one). Use the actual current session identity in either tool.
 
 ```bash

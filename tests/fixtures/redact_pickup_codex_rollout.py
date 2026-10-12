@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Build the Codex rollout fixtures for resume_work.py (#1453).
+"""Build the Codex rollout fixtures for pickup.py (#1453).
 
-Same rule as redact_resume_work_transcript.py: never hand-author a rollout.
+Same rule as redact_pickup_transcript.py: never hand-author a rollout.
 This starts from a REAL Codex rollout (``$CODEX_HOME/sessions/YYYY/MM/DD/
-rollout-<ts>-<thread>.jsonl``) and keeps only the records resume_work.py's
+rollout-<ts>-<thread>.jsonl``) and keeps only the records pickup.py's
 Codex normalizer reads, with free-text prose replaced by placeholders:
 
 - session_meta: identity and location only (id, session_id,
@@ -33,7 +33,7 @@ Command strings pass through untouched, as tool_use input does in the Claude
 fixture: ticket-op and file-path extraction read the command text itself.
 
 Usage:
-  redact_resume_work_codex_rollout.py [--first-turn] [--redact-commands] [--neutral-names] <source.jsonl> <out.jsonl>
+  redact_pickup_codex_rollout.py [--first-turn] [--redact-commands] [--neutral-names] <source.jsonl> <out.jsonl>
 
 --first-turn keeps records only through the first task_complete (a real
 prefix of the rollout), used to cut the paginated base/window pair down to
@@ -47,7 +47,7 @@ its pair keeps structure (identity, ordering, roles, phases, exit codes)
 and no command or file content.
 
 --neutral-names replaces each worktree and branch name (a ticket number and a
-work title) with a stand-in, as redact_resume_work_transcript.py's flag does:
+work title) with a stand-in, as redact_pickup_transcript.py's flag does:
 session_meta git.branch and the directory after ``/.worktrees/`` in every kept
 cwd. Each distinct name maps to feature-a, feature-b, ... in first-seen order;
 trunk names are kept.

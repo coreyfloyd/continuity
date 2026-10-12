@@ -22,8 +22,8 @@ import pytest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOOKS_FILE = os.path.join(ROOT, "hooks", "hooks.json")
 HANDOFF = os.path.join(ROOT, "scripts", "lib", "handoff.py")
-TRANSCRIPT_FIXTURE = os.path.join(ROOT, "tests", "fixtures", "resume-work-session.jsonl")
-SKILLS = ["checklist", "handoff-prompt", "improve-harness", "resume-checkpoint", "resume-work", "wip"]
+TRANSCRIPT_FIXTURE = os.path.join(ROOT, "tests", "fixtures", "pickup-session.jsonl")
+SKILLS = ["checklist", "checkpoint", "handoff-prompt", "improve-harness", "pickup", "wip"]
 CLAUDE = shutil.which("claude")
 needs_claude = pytest.mark.skipif(not CLAUDE, reason="the claude command is not installed")
 
@@ -52,7 +52,7 @@ def home(tmp_path):
 
 def clean_env(home, **extra):
     env = {key: value for key, value in os.environ.items()
-           if not key.startswith(("HANDOFF_", "CHECKLIST_", "CLAUDE_", "CODEX_", "RESUME_WORK_", "XDG_"))
+           if not key.startswith(("HANDOFF_", "CHECKLIST_", "CLAUDE_", "CODEX_", "PICKUP_", "XDG_"))
            and key != "CONTINUITY_CONFIG"}
     env.update(HOME=str(home), TMPDIR=str(home.parent / "tmp"), CLAUDE_CODE_ENTRYPOINT="cli",
                GIT_AUTHOR_NAME="Test", GIT_AUTHOR_EMAIL="test@example.com",
@@ -171,7 +171,7 @@ def test_a_checkpointed_session_is_offered_to_a_new_session_in_the_same_director
     start = fire("SessionStart", dict(base("SessionStart", "session-two", repo, home), source="startup"), env)
     assert start and "1 handoff exists for this repository" in context_of(start[0])
 
-    report = json.loads(subprocess.run(["bash", os.path.join(ROOT, "scripts", "resume-work.sh"), "--no-commitments"],
+    report = json.loads(subprocess.run(["bash", os.path.join(ROOT, "scripts", "pickup.sh"), "--no-commitments"],
                                        cwd=repo, capture_output=True, text=True, env=env).stdout)
     assert [(row["session_id"], row["headline"]) for row in report["candidates"]] == [
         ("session-one", "Left off at the parser")]
@@ -300,7 +300,7 @@ def test_resume_lists_this_directory_newest_first_and_marks_siblings(tmp_path, h
     time.sleep(1.1)  # handoffs record their write time to the second
     checkpoint(repo, "newer", env, "Newer here")
 
-    result = subprocess.run(["bash", os.path.join(ROOT, "scripts", "resume-work.sh"), "--no-commitments"],
+    result = subprocess.run(["bash", os.path.join(ROOT, "scripts", "pickup.sh"), "--no-commitments"],
                             cwd=repo, capture_output=True, text=True, env=env)
     assert result.returncode == 0, result.stdout + result.stderr
     rows = [(row["session_id"], row["group"]) for row in json.loads(result.stdout)["candidates"]]
@@ -313,7 +313,7 @@ def test_resume_without_a_handoff_falls_back_to_the_tools_session_history(tmp_pa
     project = home / ".claude" / "projects" / str(repo).replace("/", "-").replace(".", "-")
     project.mkdir(parents=True)
     shutil.copy(TRANSCRIPT_FIXTURE, project / "earlier-session.jsonl")
-    result = subprocess.run(["bash", os.path.join(ROOT, "scripts", "resume-work.sh"), "--no-commitments"],
+    result = subprocess.run(["bash", os.path.join(ROOT, "scripts", "pickup.sh"), "--no-commitments"],
                             cwd=repo, capture_output=True, text=True, env=env)
     assert result.returncode == 0, result.stdout + result.stderr
     report = json.loads(result.stdout)

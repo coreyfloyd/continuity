@@ -1,9 +1,9 @@
-"""#910 — resume_work.py (skills/resume-work/scripts/).
+"""#910 — pickup.py (skills/pickup/scripts/).
 
 Two kinds of fixture, deliberately:
 
-- tests/fixtures/resume-work-session.jsonl — a REDACTED COPY of a real
-  transcript (see tests/fixtures/redact_resume_work_transcript.py for what
+- tests/fixtures/pickup-session.jsonl — a REDACTED COPY of a real
+  transcript (see tests/fixtures/redact_pickup_transcript.py for what
   was stripped and why). It keeps the record structure and no command,
   tool output, or thinking text, so assertions about commands and results
   (ticket operations, scraped paths) build their rows with
@@ -28,10 +28,10 @@ Two kinds of fixture, deliberately:
   last row with any text, so it can actually fail if A1 regresses to
   "last row with any text" — asserted directly against the OLD algorithm's
   own answer, not against a description of it.
-- F9: RESUME_WORK_TRUNK env override, so a master/trunk/develop repo is not
+- F9: PICKUP_TRUNK env override, so a master/trunk/develop repo is not
   silently misclassified.
 
-Run with: uv run --with pytest pytest tests/test_resume_work.py -q
+Run with: uv run --with pytest pytest tests/test_pickup.py -q
 """
 import copy
 import json
@@ -43,11 +43,11 @@ from datetime import datetime, timezone
 import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-ENGINE_DIR = os.path.join(HERE, "..", "skills", "resume-work", "scripts")
+ENGINE_DIR = os.path.join(HERE, "..", "skills", "pickup", "scripts")
 sys.path.insert(0, ENGINE_DIR)
-import resume_work as rw  # noqa: E402
+import pickup as rw  # noqa: E402
 
-FIXTURE = os.path.join(HERE, "fixtures", "resume-work-session.jsonl")
+FIXTURE = os.path.join(HERE, "fixtures", "pickup-session.jsonl")
 ROOT = os.path.dirname(HERE)
 HANDOFF_LIB = os.path.join(ROOT, "scripts", "lib", "handoff.sh")
 HANDOFF_LINT = os.path.join(ROOT, "scripts", "lint-handoff.sh")
@@ -65,7 +65,7 @@ def sandboxed_codex_home(tmp_path, monkeypatch):
 def configured_commitment_owner(monkeypatch):
     """The commitments scan is scoped by a configured owner (#1572); the
     wrapper supplies it in a real run, so every engine-level test does too."""
-    monkeypatch.setenv("RESUME_WORK_COMMITMENT_OWNER", "alexrivera")
+    monkeypatch.setenv("PICKUP_COMMITMENT_OWNER", "alexrivera")
 
 
 @pytest.fixture(scope="module")
@@ -463,7 +463,7 @@ def test_f9_trunk_is_env_overridable(tmp_path, monkeypatch):
     _git(repo, "checkout", "-q", "trunk")
     _git(repo, "merge", "-q", "--ff-only", "feature")
 
-    monkeypatch.setenv("RESUME_WORK_TRUNK", "trunk")
+    monkeypatch.setenv("PICKUP_TRUNK", "trunk")
     assert rw.default_trunk() == "trunk"
 
     rep = rw.branch_state(repo, "feature", {}, {}, {}, [], "trunk")
@@ -472,7 +472,7 @@ def test_f9_trunk_is_env_overridable(tmp_path, monkeypatch):
 
 
 def test_f9_default_trunk_is_main_without_override_or_repo(monkeypatch):
-    monkeypatch.delenv("RESUME_WORK_TRUNK", raising=False)
+    monkeypatch.delenv("PICKUP_TRUNK", raising=False)
     assert rw.default_trunk() == "main"
 
 
@@ -483,7 +483,7 @@ def test_f9_auto_detects_trunk_via_origin_head_when_unset(tmp_path, monkeypatch)
     guess — it names the one branch the remote itself designates default.
     A bare remote (no actual push target) still lets `git remote set-head`
     configure this ref, so no real remote server is needed to test it."""
-    monkeypatch.delenv("RESUME_WORK_TRUNK", raising=False)
+    monkeypatch.delenv("PICKUP_TRUNK", raising=False)
     bare = str(tmp_path / "bare.git")
     subprocess.run(["git", "init", "-q", "--bare", "-b", "trunk", bare], check=True)
     repo = str(tmp_path / "repo")
@@ -510,7 +510,7 @@ def test_f9_env_override_wins_over_origin_head(tmp_path, monkeypatch):
     _git(repo, "push", "-q", "origin", "trunk")
     _git(repo, "remote", "set-head", "origin", "trunk")
 
-    monkeypatch.setenv("RESUME_WORK_TRUNK", "some-other-name")
+    monkeypatch.setenv("PICKUP_TRUNK", "some-other-name")
     assert rw.default_trunk(repo) == "some-other-name"
 
 
@@ -601,7 +601,7 @@ def stub_git(monkeypatch):
 def no_git_env(tmp_path):
     """Same seam as stub_git, for the subprocess/CLI tests below: a PATH
     whose only `git` always fails, so the CLI invocation cannot reach the
-    live checkout either. resume_work.py's git()/git_ok() already degrade
+    live checkout either. pickup.py's git()/git_ok() already degrade
     gracefully on a failing git call (that is the whole point of #909's
     fail-toward-the-alarm design), so this exercises real failure-handling
     rather than bypassing it."""
@@ -627,7 +627,7 @@ def test_a8_json_v2_preserves_every_v1_key(stub_git):
     assert V1_KEYS.issubset(report.keys())
     assert V1_GIT_KEYS.issubset(report["git"].keys())
     # additive-only: nothing from v1 was removed or renamed
-    assert report["session"] == "resume-work-session"
+    assert report["session"] == "pickup-session"
     assert isinstance(report["branches"], list)
     for b in report["branches"]:
         # #909's original branch-report keys, still all present
@@ -650,7 +650,7 @@ def test_a8_error_shape_is_always_an_object_never_an_array():
 
 def test_a8_json_is_well_formed_via_cli(no_git_env):
     out = subprocess.run(
-        [sys.executable, os.path.join(ENGINE_DIR, "resume_work.py"),
+        [sys.executable, os.path.join(ENGINE_DIR, "pickup.py"),
          "--repo-nwo", "alexrivera/example-config", FIXTURE],
         capture_output=True, text=True, env=no_git_env,
     )
@@ -662,7 +662,7 @@ def test_a8_json_is_well_formed_via_cli(no_git_env):
 
 def test_a8_json_flag_is_accepted_as_a_no_op_for_backward_compatibility(no_git_env):
     out = subprocess.run(
-        [sys.executable, os.path.join(ENGINE_DIR, "resume_work.py"),
+        [sys.executable, os.path.join(ENGINE_DIR, "pickup.py"),
          "--repo-nwo", "alexrivera/example-config", "--json", FIXTURE],
         capture_output=True, text=True, env=no_git_env,
     )
@@ -676,7 +676,7 @@ def test_main_reports_usage_error_on_missing_flag_value_instead_of_crashing():
     argv parser indexed argv[i+1] with no bounds check, so a trailing flag
     raised IndexError rather than a legible usage error."""
     out = subprocess.run(
-        [sys.executable, os.path.join(ENGINE_DIR, "resume_work.py"), "--repo-nwo"],
+        [sys.executable, os.path.join(ENGINE_DIR, "pickup.py"), "--repo-nwo"],
         capture_output=True, text=True,
     )
     assert out.returncode == 2
@@ -719,7 +719,7 @@ def _handoff(subject, repo, branch, headline, next_action, written_at,
                             "anchor": {"ticket": "alexrivera/#1024"}}],
         },
         "spawned_processes": [],
-        "suggested_skills": ["resume-work"],
+        "suggested_skills": ["pickup"],
     }
 
 
@@ -808,7 +808,7 @@ def test_prune_candidates_classifies_live_missing_and_stale_transcripts(tmp_path
     assert str(transcript_dir).endswith("project-with-dot")
 
 
-def test_resume_work_prune_archives_candidates_without_deleting_them(tmp_path):
+def test_pickup_prune_archives_candidates_without_deleting_them(tmp_path):
     state = tmp_path / "state"
     home = tmp_path / "home"
     current = tmp_path / "repo"
@@ -821,7 +821,7 @@ def test_resume_work_prune_archives_candidates_without_deleting_them(tmp_path):
     env.update({"HOME": str(home), "HANDOFF_STATE_DIR": str(state)})
 
     result = subprocess.run(
-        ["bash", os.path.join(ROOT, "scripts", "resume-work.sh"), "--prune"],
+        ["bash", os.path.join(ROOT, "scripts", "pickup.sh"), "--prune"],
         cwd=current, capture_output=True, text=True, env=env)
 
     assert result.returncode == 0, result.stderr
@@ -898,8 +898,8 @@ printf '%s\\n' '{"state":"OPEN","title":"Live","url":"https://example.test/1024"
     (["--handoff"], "usage"),
     (["--handoff", "/definitely/not/a/handoff.json"], "invalid_handoff"),
 ])
-def test_resume_work_wrapper_handoff_errors_are_one_json_object_and_nonzero(args, expected_error):
-    result = subprocess.run(["bash", os.path.join(ROOT, "scripts", "resume-work.sh")] + args,
+def test_pickup_wrapper_handoff_errors_are_one_json_object_and_nonzero(args, expected_error):
+    result = subprocess.run(["bash", os.path.join(ROOT, "scripts", "pickup.sh")] + args,
                             capture_output=True, text=True)
     assert result.returncode != 0
     report = json.loads(result.stdout)
@@ -913,8 +913,8 @@ def test_resume_work_wrapper_handoff_errors_are_one_json_object_and_nonzero(args
     (["--machine", "--session", "requested"], "--session"),
     (["--handoff", "/tmp/example.json", "--prune"], "--prune"),
 ])
-def test_resume_work_wrapper_rejects_unknown_and_conflicting_lens_options(args, option):
-    result = subprocess.run(["bash", os.path.join(ROOT, "scripts", "resume-work.sh")] + args,
+def test_pickup_wrapper_rejects_unknown_and_conflicting_lens_options(args, option):
+    result = subprocess.run(["bash", os.path.join(ROOT, "scripts", "pickup.sh")] + args,
                             capture_output=True, text=True)
     assert result.returncode != 0
     report = json.loads(result.stdout)
@@ -922,7 +922,7 @@ def test_resume_work_wrapper_rejects_unknown_and_conflicting_lens_options(args, 
     assert option in report["message"]
 
 
-def test_resume_work_wrapper_no_other_session_is_one_json_object(tmp_path):
+def test_pickup_wrapper_no_other_session_is_one_json_object(tmp_path):
     current = tmp_path / "repo"
     current.mkdir()
     slug = str(current).replace("/", "-").replace(".", "-")
@@ -933,14 +933,14 @@ def test_resume_work_wrapper_no_other_session_is_one_json_object(tmp_path):
     env["HOME"] = str(tmp_path / "home")
     env["CLAUDE_CODE_SESSION_ID"] = "current"
     env["HANDOFF_STATE_DIR"] = str(tmp_path / "state")
-    result = subprocess.run(["bash", os.path.join(ROOT, "scripts", "resume-work.sh")],
+    result = subprocess.run(["bash", os.path.join(ROOT, "scripts", "pickup.sh")],
                             cwd=current, capture_output=True, text=True, env=env)
     assert result.returncode == 0
     report = json.loads(result.stdout)
     assert report["error"] == "no_other_session"
 
 
-def test_resume_work_wrapper_explicit_session_bypasses_handoff_listing(tmp_path):
+def test_pickup_wrapper_explicit_session_bypasses_handoff_listing(tmp_path):
     current = tmp_path / "repo"
     current.mkdir()
     state = tmp_path / "state"
@@ -955,7 +955,7 @@ def test_resume_work_wrapper_explicit_session_bypasses_handoff_listing(tmp_path)
     env["HOME"] = str(tmp_path / "home")
     env["HANDOFF_STATE_DIR"] = str(state)
     result = subprocess.run(
-        ["bash", os.path.join(ROOT, "scripts", "resume-work.sh"), "--session", "requested",
+        ["bash", os.path.join(ROOT, "scripts", "pickup.sh"), "--session", "requested",
          "--no-commitments"],
         cwd=current, capture_output=True, text=True, env=env)
     assert result.returncode == 0, result.stderr
@@ -964,7 +964,7 @@ def test_resume_work_wrapper_explicit_session_bypasses_handoff_listing(tmp_path)
     assert "candidates" not in report
 
 
-def test_resume_work_wrapper_empty_explicit_session_fails_closed(tmp_path):
+def test_pickup_wrapper_empty_explicit_session_fails_closed(tmp_path):
     """An empty --session value is an invalid explicit selection, not auto mode.
 
     The otherwise-eligible fallback transcript makes this an end-to-end
@@ -980,7 +980,7 @@ def test_resume_work_wrapper_empty_explicit_session_fails_closed(tmp_path):
     env["HOME"] = str(tmp_path / "home")
     env["HANDOFF_STATE_DIR"] = str(tmp_path / "state")
     result = subprocess.run(
-        ["bash", os.path.join(ROOT, "scripts", "resume-work.sh"), "--session", "",
+        ["bash", os.path.join(ROOT, "scripts", "pickup.sh"), "--session", "",
          "--no-commitments"],
         cwd=current, capture_output=True, text=True, env=env)
 
@@ -992,12 +992,12 @@ def test_resume_work_wrapper_empty_explicit_session_fails_closed(tmp_path):
     assert "session" not in report
 
 
-def test_resume_work_engine_empty_transcript_session_rejects_usage(tmp_path):
+def test_pickup_engine_empty_transcript_session_rejects_usage(tmp_path):
     """Internal callers cannot reinterpret an empty explicit selection as auto."""
     current = tmp_path / "repo"
     current.mkdir()
     result = subprocess.run(
-        [sys.executable, os.path.join(ENGINE_DIR, "resume_work.py"),
+        [sys.executable, os.path.join(ENGINE_DIR, "pickup.py"),
          "--directory-resume", str(tmp_path / "state"), str(current), str(tmp_path / "home"),
          "--transcript-session", "", "--no-commitments"],
         capture_output=True, text=True)
@@ -1019,7 +1019,7 @@ def test_handoff_candidate_cli_and_transcript_fallback_contract(tmp_path, no_git
     _write_handoff(state / "current.json", _handoff(
         str(current), str(current), "main", "Resume current", "Run test",
         "2026-09-06T00:00:00Z"))
-    engine = os.path.join(ENGINE_DIR, "resume_work.py")
+    engine = os.path.join(ENGINE_DIR, "pickup.py")
     candidates = subprocess.run(
         [sys.executable, engine, "--handoff-candidates", str(state), str(current)],
         capture_output=True, text=True, env=no_git_env,
@@ -1125,7 +1125,7 @@ def test_unrelated_handoff_does_not_suppress_current_directory_transcript_fallba
     env = dict(os.environ)
     env["HOME"] = str(tmp_path / "home")
     env["HANDOFF_STATE_DIR"] = str(state)
-    result = subprocess.run(["bash", os.path.join(ROOT, "scripts", "resume-work.sh")],
+    result = subprocess.run(["bash", os.path.join(ROOT, "scripts", "pickup.sh")],
                             cwd=current, capture_output=True, text=True, env=env)
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)
@@ -1133,8 +1133,8 @@ def test_unrelated_handoff_does_not_suppress_current_directory_transcript_fallba
 
 
 # ================================================================== COMMITMENTS (#851, ported #910 r4)
-# Replaces tests/test-resume-work-commitments-json.sh, which sed-extracted the
-# real commitments_scan() out of scripts/resume-work.sh between the function
+# Replaces tests/test-pickup-commitments-json.sh, which sed-extracted the
+# real commitments_scan() out of scripts/pickup.sh between the function
 # name and the first column-0 "}" and sourced that text. Reformatting the
 # function silently changed what ran, and the extraction cannot survive the
 # port at all. These drive the real function against a stub `gh` on PATH.
@@ -1284,10 +1284,10 @@ def test_missing_gh_binary_is_distinguishable_from_a_failed_gh(tmp_path, monkeyp
 
 
 def test_commitment_limit_and_jobs_env_knobs_survive_the_port(monkeypatch):
-    """RESUME_WORK_COMMITMENT_LIMIT / _JOBS were bash locals before the port.
+    """PICKUP_COMMITMENT_LIMIT / _JOBS were bash locals before the port.
     A knob that silently stops being read is worse than one that was never
     offered, so the search argv is asserted directly."""
-    monkeypatch.setenv("RESUME_WORK_COMMITMENT_LIMIT", "7")
+    monkeypatch.setenv("PICKUP_COMMITMENT_LIMIT", "7")
     captured = {}
 
     def fake_gh(args):
@@ -1307,7 +1307,7 @@ def test_commitment_limit_and_jobs_env_knobs_survive_the_port(monkeypatch):
 def test_unconfigured_owner_is_not_collected_and_never_searches(monkeypatch):
     """Without a configured owner the search would be unscoped, so the scan is
     not run and the reason says why."""
-    monkeypatch.delenv("RESUME_WORK_COMMITMENT_OWNER")
+    monkeypatch.delenv("PICKUP_COMMITMENT_OWNER")
     calls = []
     monkeypatch.setattr(rw, "gh", lambda args: calls.append(args) or (0, "[]"))
     rows, reason = rw.collect_commitments("test-sid-1-e", host="node1")
@@ -1335,7 +1335,7 @@ def test_no_commitments_flag_yields_skipped_not_a_bare_null(tmp_path):
     """#910 eval round 3, F6: --no-commitments and an internal crash both used
     to produce the same bare null. The reason field separates them."""
     out = subprocess.run(
-        [sys.executable, os.path.join(ENGINE_DIR, "resume_work.py"),
+        [sys.executable, os.path.join(ENGINE_DIR, "pickup.py"),
          "--repo-nwo", "alexrivera/example-config", "--no-commitments", FIXTURE],
         capture_output=True, text=True,
     )
@@ -1353,7 +1353,7 @@ def test_engine_emits_a_populated_commitments_array_end_to_end(tmp_path):
     # The fixture transcript's own session id is what the join keys on, so the
     # stub's claim body must carry ITS 12-char prefix, not a made-up one.
     report = json.loads(subprocess.run(
-        [sys.executable, os.path.join(ENGINE_DIR, "resume_work.py"),
+        [sys.executable, os.path.join(ENGINE_DIR, "pickup.py"),
          "--repo-nwo", "alexrivera/example-config", "--no-commitments", FIXTURE],
         capture_output=True, text=True, env=env,
     ).stdout)
@@ -1361,7 +1361,7 @@ def test_engine_emits_a_populated_commitments_array_end_to_end(tmp_path):
     env = _gh_stub(tmp_path, claim_body=COMMITMENTS_STUB_CLAIM.replace(
         "session: test-sid-1-e", "session: %s" % sid[:12]))
     out = subprocess.run(
-        [sys.executable, os.path.join(ENGINE_DIR, "resume_work.py"),
+        [sys.executable, os.path.join(ENGINE_DIR, "pickup.py"),
          "--repo-nwo", "alexrivera/example-config",
          "--commitments-host", "macbook", FIXTURE],
         capture_output=True, text=True, env=env,
@@ -1391,7 +1391,7 @@ def test_handoff_briefing_shows_owned_files_and_carried_items(tmp_path, monkeypa
     assert "Implemented capture" in lines
 
 
-def test_resume_work_wrapper_lists_handoffs_from_the_configured_location(tmp_path):
+def test_pickup_wrapper_lists_handoffs_from_the_configured_location(tmp_path):
     """#1572: with no HANDOFF_STATE_DIR, the wrapper reads where the
     continuity configuration says handoffs are stored."""
     current = tmp_path / "repo"
@@ -1405,7 +1405,7 @@ def test_resume_work_wrapper_lists_handoffs_from_the_configured_location(tmp_pat
     env = {key: value for key, value in os.environ.items() if key != "HANDOFF_STATE_DIR"}
     env.update({"HOME": str(tmp_path / "home"), "CONTINUITY_CONFIG": str(config)})
     result = subprocess.run(
-        ["bash", os.path.join(ROOT, "scripts", "resume-work.sh"), "--no-commitments"],
+        ["bash", os.path.join(ROOT, "scripts", "pickup.sh"), "--no-commitments"],
         cwd=current, capture_output=True, text=True, env=env)
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)
@@ -1413,7 +1413,7 @@ def test_resume_work_wrapper_lists_handoffs_from_the_configured_location(tmp_pat
 
     config.write_text("{broken")
     result = subprocess.run(
-        ["bash", os.path.join(ROOT, "scripts", "resume-work.sh"), "--no-commitments"],
+        ["bash", os.path.join(ROOT, "scripts", "pickup.sh"), "--no-commitments"],
         cwd=current, capture_output=True, text=True, env=env)
     assert result.returncode != 0
     assert json.loads(result.stdout)["error"] == "handoff_config_error"

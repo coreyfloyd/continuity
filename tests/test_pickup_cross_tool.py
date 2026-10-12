@@ -1,7 +1,7 @@
-"""#1453 — cross-tool session reconstruction in resume_work.py.
+"""#1453 — cross-tool session reconstruction in pickup.py.
 
 A session id from either provider's store must resolve to reconstructed
-context whichever tool invokes /resume-work. Every case is named by its
+context whichever tool invokes /pickup. Every case is named by its
 source store and invoking environment, never "X-from-Y":
 
 - "Claude-source" / "Codex-source": the store that owns the transcript.
@@ -9,14 +9,14 @@ source store and invoking environment, never "X-from-Y":
   CLAUDE_* or CODEX_* variables the wrapper sees. Both families are stripped
   first, then one is set, so no case runs under a mixed env by accident.
 
-Fixtures are redacted real records (tests/fixtures/resume-work-session.jsonl
-for Claude, tests/fixtures/resume-work-codex-*.jsonl for Codex, provenance in
-tests/fixtures/resume-work-codex-PROVENANCE.md). Each test copies them into a
+Fixtures are redacted real records (tests/fixtures/pickup-session.jsonl
+for Claude, tests/fixtures/pickup-codex-*.jsonl for Codex, provenance in
+tests/fixtures/pickup-codex-PROVENANCE.md). Each test copies them into a
 sandboxed HOME and CODEX_HOME; nothing reads or writes the live stores. The
 PATH carries stub `git` and `gh` binaries that always fail, so no report
 reaches a live checkout or the network.
 
-Run with: uv run --with pytest pytest tests/test_resume_work_cross_tool.py -q
+Run with: uv run --with pytest pytest tests/test_pickup_cross_tool.py -q
 """
 import json
 import os
@@ -28,25 +28,25 @@ import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-WRAPPER = os.path.join(ROOT, "scripts", "resume-work.sh")
+WRAPPER = os.path.join(ROOT, "scripts", "pickup.sh")
 FIXTURES = os.path.join(HERE, "fixtures")
 
-CLAUDE_FIXTURE = os.path.join(FIXTURES, "resume-work-session.jsonl")
+CLAUDE_FIXTURE = os.path.join(FIXTURES, "pickup-session.jsonl")
 CLAUDE_GUID = "72a3dfb7-a0d3-4deb-9ec5-5f55f824ebd0"
 
-CODEX_FIXTURE = os.path.join(FIXTURES, "resume-work-codex-rollout.jsonl")
+CODEX_FIXTURE = os.path.join(FIXTURES, "pickup-codex-rollout.jsonl")
 CODEX_GUID = "01a078d6-8cc9-7630-9c55-b658dedb03fa"
 CODEX_NAME = "rollout-2026-09-06T16-28-41-%s.jsonl" % CODEX_GUID
 CODEX_CWD = "/Users/alex/Development/example-config/.worktrees/feature-a"
 
 PAGED_GUID = "01a0c5fd-cab8-7960-8ba7-8a5c9d3e6759"
-PAGED_BASE = os.path.join(FIXTURES, "resume-work-codex-paginated-base.jsonl")
+PAGED_BASE = os.path.join(FIXTURES, "pickup-codex-paginated-base.jsonl")
 PAGED_BASE_NAME = "rollout-2026-09-21T16-02-19-%s.jsonl" % PAGED_GUID
-PAGED_WINDOW = os.path.join(FIXTURES, "resume-work-codex-paginated-window.jsonl")
+PAGED_WINDOW = os.path.join(FIXTURES, "pickup-codex-paginated-window.jsonl")
 PAGED_WINDOW_NAME = ("rollout-2026-09-23T15-00-25-%s_01a0d011-d843-7552-b2ab-b25f304269ed.jsonl"
                      % PAGED_GUID)
 
-SUBAGENT_FIXTURE = os.path.join(FIXTURES, "resume-work-codex-subagent.jsonl")
+SUBAGENT_FIXTURE = os.path.join(FIXTURES, "pickup-codex-subagent.jsonl")
 SUBAGENT_GUID = "01a06f48-b1f1-7013-9ffa-40bf188e242d"
 SUBAGENT_PARENT = "01a06f48-b18c-7551-9ba3-6d17160c21ca"
 SUBAGENT_NAME = "rollout-2026-09-04T19-57-10-%s.jsonl" % SUBAGENT_GUID
@@ -466,8 +466,8 @@ def test_codex_source_with_a_read_error_after_its_first_record_fails_closed(sb, 
     are both faulted, so a loader that opens the file once still hits it."""
     import errno
     import sys
-    sys.path.insert(0, os.path.join(ROOT, "skills", "resume-work", "scripts"))
-    import resume_work as rw
+    sys.path.insert(0, os.path.join(ROOT, "skills", "pickup", "scripts"))
+    import pickup as rw
 
     sb.claude_store()
     rollout = str(sb.put_codex(CODEX_NAME, CODEX_FIXTURE))
@@ -754,7 +754,7 @@ def test_automatic_fallback_keeps_handoff_first(sb):
     """A handoff for this directory still wins over any transcript."""
     import sys
     sys.path.insert(0, HERE)
-    from test_resume_work import _handoff, _write_handoff
+    from test_pickup import _handoff, _write_handoff
     sb.put_codex(CODEX_NAME, CODEX_FIXTURE, cwd=sb.cwd)
     _write_handoff(sb.state / "current.json", _handoff(
         str(sb.cwd), str(sb.cwd), "main", "Resume current", "Run test",
@@ -1237,7 +1237,7 @@ def test_redact_commands_fixtures_keep_only_placeholder_command_fields(fixture):
 # Pruning uses the same real captured sources as reconstruction. Handoffs
 # are contract inputs; no transcript records are invented for these cases.
 def _put_prune_handoff(sb, guid):
-    from test_resume_work import _handoff, _write_handoff
+    from test_pickup import _handoff, _write_handoff
 
     path = sb.state / (guid + ".json")
     _write_handoff(path, _handoff(
@@ -1252,7 +1252,7 @@ def test_prune_keeps_existing_codex_rollout_and_archives_missing_one(sb, flavor,
     rollout = sb.put_codex(CODEX_NAME, CODEX_FIXTURE, archived=archived)
     handoff = _put_prune_handoff(sb, CODEX_GUID)
     env = {"CONTINUITY_CONFIG": str(sb.root / "absent-config.json"),
-           "RESUME_WORK_PRUNE_DAYS": "7"}
+           "PICKUP_PRUNE_DAYS": "7"}
 
     rc, report = sb.run(flavor, "--prune", env_extra=env)
     assert rc == 0, report
@@ -1282,7 +1282,7 @@ def test_prune_ages_codex_thread_by_newest_rollout(sb, window_archived, newest_d
 
     rc, report = sb.run("codex", env_extra={
         "CONTINUITY_CONFIG": str(sb.root / "absent-config.json"),
-        "RESUME_WORK_PRUNE_DAYS": "7"})
+        "PICKUP_PRUNE_DAYS": "7"})
     assert rc == 0, report
     expected = [(PAGED_GUID, "stale_transcript")] if stale else []
     assert [(row["session_id"], row["reason"]) for row in report["prune_candidates"]] == expected
@@ -1307,7 +1307,7 @@ def test_prune_threshold_is_shared_config_then_environment_then_default(
     for source in (claude, codex):
         os.utime(source, (modified, modified))
     env = {"CONTINUITY_CONFIG": "", "XDG_CONFIG_HOME": "",
-           "RESUME_WORK_PRUNE_DAYS": override}
+           "PICKUP_PRUNE_DAYS": override}
     if location == "explicit":
         config = sb.root / "config.json"
         env["CONTINUITY_CONFIG"] = str(config)
@@ -1332,7 +1332,7 @@ def test_invalid_prune_days_configuration_refuses_archiving(sb, invalid):
     config.write_text(json.dumps({"prune_days": invalid}))
 
     rc, report = sb.run("codex", "--prune", env_extra={
-        "CONTINUITY_CONFIG": str(config), "RESUME_WORK_PRUNE_DAYS": ""})
+        "CONTINUITY_CONFIG": str(config), "PICKUP_PRUNE_DAYS": ""})
     assert rc != 0
     assert report["error"] == "handoff_config_error"
     assert "prune_days" in report["message"]
@@ -1346,7 +1346,7 @@ def test_prune_refuses_unknown_codex_store_before_archiving(sb, unlistable):
 
     rc, report = sb.run("codex", "--prune", env_extra={
         "CONTINUITY_CONFIG": str(sb.root / "absent-config.json"),
-        "RESUME_WORK_PRUNE_DAYS": "7"})
+        "PICKUP_PRUNE_DAYS": "7"})
     assert rc != 0
     assert report["error"] == "session_store_unavailable"
     assert handoff.is_file()

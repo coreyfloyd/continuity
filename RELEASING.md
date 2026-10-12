@@ -84,8 +84,8 @@ Run the full suite against the exact commit to be released:
 ```bash
 git diff --check
 CONTINUITY_RELEASE_CHECK=1 python3 -m pytest tests
-bash tests/test-resume-work-wrapper.sh
-bash tests/test-resume-work-branch-scan.sh
+bash tests/test-pickup-wrapper.sh
+bash tests/test-pickup-branch-scan.sh
 python3 scripts/lib/reference_check.py --terms /path/to/terms.txt .
 ```
 

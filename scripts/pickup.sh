@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# resume-work.sh — cold-start re-entry, two lenses.
+# pickup.sh — cold-start re-entry, two lenses.
 #
 # Directory/session lens, plus a machine lens supplied by configuration.
 #
@@ -11,9 +11,9 @@
 #   --json remains a no-op for this path and controls the machine lens below.
 #
 # --machine / --all-hosts / --host (machine lens): "what does this MACHINE
-#   hold?" Runs the machine-lens command named by RESUME_WORK_MACHINE_LENS or
+#   hold?" Runs the machine-lens command named by PICKUP_MACHINE_LENS or
 #   the `machine_lens` configuration value, handing it the host filter and
-#   output form in RESUME_WORK_WANT_HOST and RESUME_WORK_AS_JSON. With none
+#   output form in PICKUP_WANT_HOST and PICKUP_AS_JSON. With none
 #   configured these flags report `machine_lens_unavailable`.
 #
 # The directory lens is primary because it does not depend on any claim
@@ -21,15 +21,15 @@
 # never emits a claim.
 #
 # Usage:
-#   resume-work.sh                 # handoff candidates, or local transcript fallback (JSON)
-#   resume-work.sh --handoff <p>   # selected handoff briefing (JSON)
-#   resume-work.sh --session <id>  # directory lens: a specific transcript (JSON)
-#   resume-work.sh --machine       # machine lens: this host's GitHub claims
-#   resume-work.sh --all-hosts     # machine lens: every host
-#   resume-work.sh --host <name>   # machine lens: a specific host
-#   resume-work.sh --json          # raw records (machine lens only)
-#   resume-work.sh --no-commitments  # skip the ~25 gh round trips COMMITMENTS costs
-#   resume-work.sh --prune           # archive dead-session handoffs (never delete)
+#   pickup.sh                 # handoff candidates, or local transcript fallback (JSON)
+#   pickup.sh --handoff <p>   # selected handoff briefing (JSON)
+#   pickup.sh --session <id>  # directory lens: a specific transcript (JSON)
+#   pickup.sh --machine       # machine lens: this host's GitHub claims
+#   pickup.sh --all-hosts     # machine lens: every host
+#   pickup.sh --host <name>   # machine lens: a specific host
+#   pickup.sh --json          # raw records (machine lens only)
+#   pickup.sh --no-commitments  # skip the ~25 gh round trips COMMITMENTS costs
+#   pickup.sh --prune           # archive dead-session handoffs (never delete)
 #
 # COMMITMENTS (#851, JSON since #910): the resumed session's COMMITMENTS —
 # tickets carrying ITS claim, at any status — as the directory lens's own
@@ -47,7 +47,7 @@
 # user's own setup. Scoped by claim, not by status label: status/next is a
 # repo-wide queue, a claim is session-scoped.
 #
-# The scan itself lives in skills/resume-work/scripts/resume_work.py: the
+# The scan itself lives in skills/pickup/scripts/pickup.py: the
 # directory lens is ONE python process. This
 # script keeps argument parsing and the machine lens only. It used to run
 # the scan in bash and merge two JSON structures through an environment
@@ -55,10 +55,10 @@
 set -uo pipefail
 
 # ---------------------------------------------------------------- args
-# The host name the commitments scan filters on: RESUME_WORK_HOST, else the
+# The host name the commitments scan filters on: PICKUP_HOST, else the
 # `host` configuration value, else "unknown" (resolved after the configuration
 # helpers below).
-host="${RESUME_WORK_HOST:-}"
+host="${PICKUP_HOST:-}"
 # The module that owns where handoffs are stored and reads the configuration.
 handoff_py="${HANDOFF_PY:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib/handoff.py}"
 # Expand a leading ~ in a configured path.
@@ -86,8 +86,8 @@ no_commitments=""
 prune=""
 directory_option=""
 machine_option=""
-# The handoff-marker state string and the RESUME_WORK_COMMITMENT_LIMIT /
-# RESUME_WORK_COMMITMENT_JOBS knobs live in resume_work.py --
+# The handoff-marker state string and the PICKUP_COMMITMENT_LIMIT /
+# PICKUP_COMMITMENT_JOBS knobs live in pickup.py --
 # one definition, read by the process that actually does the scan.
 
 # Every failure path emits the same JSON object, including argument parsing.
@@ -140,7 +140,7 @@ done
 
 if [ -z "$host" ]; then
   config_value host host \
-    || { json_error "handoff_config_error" "resume-work: $config_error"; exit 1; }
+    || { json_error "handoff_config_error" "pickup: $config_error"; exit 1; }
   host="${host:-unknown}"
 fi
 [ -n "$want_host_set" ] || want_host="$host"
@@ -150,22 +150,22 @@ fi
 # environment, else the `commitment_owner` configuration value; with neither,
 # commitments report `no_owner`. An unreadable configuration is reported as
 # `handoff_config_error`, never folded into `no_owner`.
-if [ -z "${RESUME_WORK_COMMITMENT_OWNER:-}" ]; then
-  config_value commitment_owner RESUME_WORK_COMMITMENT_OWNER \
-    || { json_error "handoff_config_error" "resume-work: $config_error"; exit 1; }
+if [ -z "${PICKUP_COMMITMENT_OWNER:-}" ]; then
+  config_value commitment_owner PICKUP_COMMITMENT_OWNER \
+    || { json_error "handoff_config_error" "pickup: $config_error"; exit 1; }
 fi
-export RESUME_WORK_COMMITMENT_OWNER="${RESUME_WORK_COMMITMENT_OWNER:-}"
+export PICKUP_COMMITMENT_OWNER="${PICKUP_COMMITMENT_OWNER:-}"
 
 # ================================================================== DIRECTORY LENS
 engine_path() {
   local self_dir
-  if [ -n "${RESUME_WORK_ENGINE:-}" ]; then
-    [ -f "$RESUME_WORK_ENGINE" ] && printf '%s' "$RESUME_WORK_ENGINE"
+  if [ -n "${PICKUP_ENGINE:-}" ]; then
+    [ -f "$PICKUP_ENGINE" ] && printf '%s' "$PICKUP_ENGINE"
     return 0
   fi
   self_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-  if [ -f "$self_dir/../skills/resume-work/scripts/resume_work.py" ]; then
-    printf '%s' "$self_dir/../skills/resume-work/scripts/resume_work.py"
+  if [ -f "$self_dir/../skills/pickup/scripts/pickup.py" ]; then
+    printf '%s' "$self_dir/../skills/pickup/scripts/pickup.py"
   fi
 }
 
@@ -173,7 +173,7 @@ run_engine_json() {
   local engine out_file err_file engine_rc
   engine="$(engine_path)"
   if [ -z "$engine" ]; then
-    json_error "engine_not_found" "cannot find resume_work.py (looked at RESUME_WORK_ENGINE and next to $0 under skills/resume-work/scripts)"
+    json_error "engine_not_found" "cannot find pickup.py (looked at PICKUP_ENGINE and next to $0 under skills/pickup/scripts)"
     return 1
   fi
   out_file="$(mktemp "${TMPDIR:-/tmp}/resume-report.XXXXXX" 2>/dev/null || mktemp /tmp/resume-report.XXXXXX 2>/dev/null)"
@@ -186,12 +186,12 @@ run_engine_json() {
   python3 "$engine" "$@" >"$out_file" 2>"$err_file"
   engine_rc=$?
   if ! python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' "$out_file" 2>/dev/null; then
-    json_error "engine_bad_output" "resume_work.py exited $engine_rc: $(tr '\n' ' ' < "$err_file" | tail -c 400)"
+    json_error "engine_bad_output" "pickup.py exited $engine_rc: $(tr '\n' ' ' < "$err_file" | tail -c 400)"
     rm -f "$out_file" "$err_file"
     return 1
   fi
   if [ "$engine_rc" -ne 0 ] && ! python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("error") else 1)' "$out_file" 2>/dev/null; then
-    json_error "engine_failed" "resume_work.py exited $engine_rc: $(tr '\n' ' ' < "$err_file" | tail -c 400)"
+    json_error "engine_failed" "pickup.py exited $engine_rc: $(tr '\n' ' ' < "$err_file" | tail -c 400)"
     rm -f "$out_file" "$err_file"
     return "$engine_rc"
   fi
@@ -202,17 +202,17 @@ run_engine_json() {
 
 # ---------------------------------------------------------------- dispatch
 if [ "$lens" = "machine" ]; then
-  machine_lens="${RESUME_WORK_MACHINE_LENS:-}"
+  machine_lens="${PICKUP_MACHINE_LENS:-}"
   if [ -z "$machine_lens" ]; then
     config_value machine_lens machine_lens \
-      || { json_error "handoff_config_error" "resume-work: $config_error"; exit 1; }
+      || { json_error "handoff_config_error" "pickup: $config_error"; exit 1; }
   fi
   machine_lens="$(expand_home "$machine_lens")"
   if [ ! -f "$machine_lens" ]; then
-    json_error "machine_lens_unavailable" "resume-work: no machine lens is configured (RESUME_WORK_MACHINE_LENS or machine_lens in the continuity configuration)"
+    json_error "machine_lens_unavailable" "pickup: no machine lens is configured (PICKUP_MACHINE_LENS or machine_lens in the continuity configuration)"
     exit 1
   fi
-  RESUME_WORK_WANT_HOST="$want_host" RESUME_WORK_AS_JSON="$as_json" exec bash "$machine_lens"
+  PICKUP_WANT_HOST="$want_host" PICKUP_AS_JSON="$as_json" exec bash "$machine_lens"
 else
   if [ -n "$want_handoff" ]; then
     run_engine_json --handoff "$want_handoff"
@@ -220,15 +220,15 @@ else
     # The handoff module owns where handoffs are stored (HANDOFF_STATE_DIR,
     # else the continuity configuration, else its default).
     if ! state_dir="$(python3 "$handoff_py" state-dir 2>&1)"; then
-      json_error "handoff_config_error" "resume-work: $state_dir"
+      json_error "handoff_config_error" "pickup: $state_dir"
       exit 1
     fi
     # Both transcript providers use this one threshold. Leave an explicit
     # environment override intact; the engine supplies 7 when neither is set.
-    if [ -z "${RESUME_WORK_PRUNE_DAYS:-}" ]; then
+    if [ -z "${PICKUP_PRUNE_DAYS:-}" ]; then
       config_value prune_days prune_days \
-        || { json_error "handoff_config_error" "resume-work: $config_error"; exit 1; }
-      [ -z "$prune_days" ] || export RESUME_WORK_PRUNE_DAYS="$prune_days"
+        || { json_error "handoff_config_error" "pickup: $config_error"; exit 1; }
+      [ -z "$prune_days" ] || export PICKUP_PRUNE_DAYS="$prune_days"
     fi
     current_session="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
     # The invoking Codex thread is excluded too (#1453): the automatic lens

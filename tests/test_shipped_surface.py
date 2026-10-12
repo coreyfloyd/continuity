@@ -83,8 +83,8 @@ def test_no_shipped_file_names_a_script_the_package_does_not_ship():
     assert not missing, {name: sorted(paths) for name, paths in missing.items()}
 
 
-def test_the_resume_work_skill_names_no_claim_tool():
-    text = read_text(os.path.join(ROOT, "skills", "resume-work", "SKILL.md"))
+def test_the_pickup_skill_names_no_claim_tool():
+    text = read_text(os.path.join(ROOT, "skills", "pickup", "SKILL.md"))
     assert "claim-comment" not in text and "claim-heartbeat" not in text
 
 
