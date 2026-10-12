@@ -160,3 +160,36 @@ def test_edit_preserves_unrelated_line_endings(tmp_path):
     assert target.read_bytes()==captured.replace(old.encode(),b'# Unique replacement heading',1)
     m.revert(journal,1)
     assert target.read_bytes()==captured
+
+
+@pytest.mark.parametrize('tool', ['claude', 'codex'])
+@pytest.mark.parametrize('field', ['description', 'when_to_use'])
+def test_multiline_plain_discovery_scalar_is_not_silently_undercounted(tool,field,tmp_path):
+    m=helper(); body=(FIX/'SKILL.md').read_text().split('---',2)[2]
+    # Continuations are real captured prose; the first line alone is below the limit.
+    prose=' '.join(word for word in body.split() if word.isalpha())[:1100]
+    target=tmp_path/'SKILL.md'
+    target.write_text('---\nname: captured\n'+field+': '+prose[:100]+'\n  '+prose[100:600]+'\n  '+prose[600:]+'\n---\n')
+    assert len(prose[:100]) < 1024 < len(prose)
+    # Explicit refusal naming the field is supported; silently measuring 100 is not.
+    with pytest.raises(ValueError,match='unsupported.*'+field):
+        m.measure(dict(tool=tool,files=[entry(target,'skill','listed')]))
+
+
+@pytest.mark.parametrize('tool', ['claude', 'codex'])
+@pytest.mark.parametrize('loads', [('listed','full'), ('full','listed')])
+def test_listed_and_full_skill_merge_retains_all_sizes_and_limits(tool,loads,tmp_path):
+    m=helper();body=(FIX/'SKILL.md').read_text().split('---',2)[2]
+    description=' '.join(body.split())[:1100]
+    target=tmp_path/'SKILL.md'
+    text='---\nname: captured\ndescription: '+json.dumps(description)+'\n---\n'+body
+    target.write_text(text)
+    result=m.measure(dict(tool=tool,files=[entry(target,'skill',load) for load in loads]))
+    assert len(result['over_limit'])==1
+    row=result['over_limit'][0]
+    assert row['size']==dict(lines=len(text.splitlines()),words=len(text.split()),
+                             bytes=len(text.encode()),description_characters=len(description))
+    assert {item['unit']:item['measured'] for item in row['limits']}=={
+        'description characters':1100, 'body lines':len(body.splitlines())}
+    assert {item['unit']:item['limit'] for item in row['limits']}=={
+        'description characters':1024, 'body lines':500}

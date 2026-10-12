@@ -35,6 +35,13 @@ Reject unsupported discovery-field syntax rather than silently undercount it.
         if not match:
             continue
         key,value=match.groups()
+        if value not in ('|','|-','|+','>','>-','>+'):
+            continuation=i
+            while continuation < end and (not lines[continuation].strip()
+                    or lines[continuation].lstrip().startswith('#')):
+                continuation+=1
+            if continuation < end and lines[continuation][0:1].isspace():
+                raise ValueError('unsupported multiline skill discovery scalar: '+key)
         if value in ('|','|-','|+','>','>-','>+'):
             block=[]
             while i < end and (lines[i][0:1].isspace() or not lines[i].strip()):
@@ -97,6 +104,7 @@ role_paths from the actual definition and chain from root to session start.
                 limits.append(dict(unit=unit,measured=count,limit=limit))
         if kind=='skill':
             fields,_=frontmatter(text);desc=fields.get('description','');when=fields.get('when_to_use','')
+            stats['description_characters']=len(desc)
             descriptions.append(dict(path=str(path),characters=len(desc)))
             if len(desc)>1024:
                 limits.append(dict(unit='description characters',measured=len(desc),limit=1024))
@@ -112,6 +120,7 @@ role_paths from the actual definition and chain from root to session start.
             # One row per file, even if two limits are exceeded or the manifest repeats it.
             existing=next((r for r in result['over_limit'] if r['source']==row['source']),None)
             if existing:
+                existing['size'].update(row['size'])
                 for violation in limits:
                     if violation not in existing['limits']:existing['limits'].append(violation)
             else:result['over_limit'].append(row)
