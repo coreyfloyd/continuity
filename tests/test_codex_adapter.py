@@ -288,6 +288,41 @@ def test_reinstalls_preserve_config_syntax_inside_user_strings(
         assert config.read_text() == configured
 
 
+@pytest.mark.parametrize('first_install', [True, False])
+@pytest.mark.parametrize('final_newline', [True, False])
+@pytest.mark.parametrize('before_agent_block', [True, False])
+def test_install_inserts_trust_with_config_crlf(
+        sandbox, codex_installer, monkeypatch, trust_then_foreign_block,
+        first_install, final_newline, before_agent_block):
+    home, _ = sandbox
+    codex = home / '.codex'
+    codex.mkdir()
+    config = codex / 'config.toml'
+    monkeypatch.setattr(sys, 'argv', [str(INSTALL), '--codex-home', str(codex),
+                                    '--codex', shutil.which('codex')])
+    original = ''
+    if not first_install:
+        assert codex_installer.main() == 0
+        original = config.read_text()
+        keys = json.loads((codex / 'continuity-install.json').read_text())['trust_keys']
+        original = codex_installer.remove_trust(original, {keys[0]})
+    _, _, block = trust_then_foreign_block
+    if before_agent_block:
+        block = codex_installer.trust.AGENT_BLOCK_START + '\n' + block
+    original += block
+    configured = original.replace('\n', '\r\n').encode('utf-8')
+    if not final_newline:
+        configured = configured.removesuffix(b'\r\n')
+    config.write_bytes(configured)
+    assert codex_installer.main() == 0
+    installed = config.read_bytes()
+    assert b'\n' not in installed.replace(b'\r\n', b'')
+    assert block.rstrip('\n').replace('\n', '\r\n').encode('utf-8') in installed
+    # The newly generated CRLF table must stay stable through another reinstall.
+    assert codex_installer.main() == 0
+    assert config.read_bytes() == installed
+
+
 @pytest.mark.parametrize('separator', ['\x0b', '\x0c', '\x1c', '\x1d', '\x1e', '\x85', '\u2028', '\u2029'])
 @pytest.mark.parametrize('ending', ['\n', '\r\n', ''])
 @pytest.mark.parametrize('newline', ['\n', '\r\n'])

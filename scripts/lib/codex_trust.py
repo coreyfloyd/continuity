@@ -335,20 +335,26 @@ def update_config_text(text: str, hashes: dict[str, str]) -> str:
             (index for index, line in enumerate(lines)
              if line.rstrip("\r\n") == AGENT_BLOCK_START), len(lines)
         )
+        # Prefer the nearest preceding terminator, then the following config.
+        surrounding = lines[:insert_at][::-1] + lines[insert_at:]
+        ending = next(
+            (config_line_ending(line) for line in surrounding if config_line_ending(line)),
+            "\n",
+        )
         block: list[str] = []
         if insert_at > 0:
             if not lines[insert_at - 1].endswith("\n"):
-                block.append("\n")
+                block.append(ending)
             if lines[insert_at - 1].rstrip("\r\n") != "":
-                block.append("\n")
+                block.append(ending)
         for key, assignment in missing:
-            if block and block[-1] != "\n":
-                block.append("\n")
+            if block and block[-1] != ending:
+                block.append(ending)
             block.extend(
-                (f"[hooks.state.{json.dumps(key, ensure_ascii=False)}]\n", assignment + "\n")
+                (f"[hooks.state.{json.dumps(key, ensure_ascii=False)}]" + ending, assignment + ending)
             )
         if insert_at < len(lines):
-            block.append("\n")
+            block.append(ending)
         lines[insert_at:insert_at] = block
     return "".join(lines)
 
