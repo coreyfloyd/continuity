@@ -79,7 +79,7 @@ def assignment_key(line):
 
 def remove_trust(text, keys, replacements=None):
     """Remove owned tables, or refresh their hash while retaining user values."""
-    lines=text.splitlines(keepends=True); result=[];skip=False
+    lines=trust.config_lines(text); result=[];skip=False
     quote=None; depth=0; escaped=False
     preserve_table=False; preserve_value=False
     for line in lines:
@@ -90,7 +90,9 @@ def remove_trust(text, keys, replacements=None):
                 preserve_table=skip and replacements is not None and key in replacements
                 if skip:
                     if replacements is not None and key in replacements:
-                        result.extend((line, f'trusted_hash = {json.dumps(replacements[key])}\n'))
+                        ending=trust.config_line_ending(line) or '\n'
+                        result.extend((line if line.endswith('\n') else line + ending,
+                                       f'trusted_hash = {json.dumps(replacements[key])}' + ending))
                     continue
             if not skip or not re.match(r'^\s*[^#\s][^=]*=', line):
                 result.append(line)
@@ -201,7 +203,7 @@ def main():
     if package.exists() and not saved:
         raise ValueError('existing package directory is not owned by continuity')
     old_hooks=target.read_text() if target.exists() else None
-    old_config=config.read_text() if config.exists() else None
+    old_config=config.read_bytes().decode('utf-8') if config.exists() else None
     hooks=read_hooks(target)
     cleaned=remove_managed(hooks,managed) if saved else hooks
     clean_config=remove_trust(old_config or '',set(saved['trust_keys'])) if saved else old_config or ''
