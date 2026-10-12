@@ -34,6 +34,61 @@ Fixing an *existing* rule edits it where it already lives; placement applies to 
 
 **A single rule asked for mid-session** ("from now on…", "remember this") gets the same lookup: place it, state the placement (which surface, which trigger) so the user can redirect, and follow the mode rules below.
 
+## Produced surfaces routing contract
+
+The routing file may include a **Produced surfaces** section. Each entry names
+one canonical source path and every produced surface's path and regeneration
+command. Paths resolve relative to the routing file unless absolute; expand
+home/environment references and resolve symlinks before matching a source.
+An explicit empty list declares that a source produces no surfaces. Example:
+
+```yaml
+Produced surfaces:
+  rules/shared.md:
+    - path: generated/AGENTS.md
+      regeneration command: "make instructions"
+  skills/local/SKILL.md: []
+```
+
+This mapping records ownership; it does not authorize running generators or
+editing generated files. `/slim-harness` asks the user when a source has no entry.
+
+## Over-limit files — independent size pass
+
+During this pass, compare every covered file in context this session with its
+running-tool limit. Read `../slim-harness/references/claude.md` in Claude Code or
+`../slim-harness/references/codex.md` in Codex for units and scope. In context means
+auto-loaded rules/output style, or skills and dispatched agent definitions read
+in full. A skill only listed gets description checks only. Check no other-tool
+loaded files. The parent resolves and measures each role path the definition
+instructs its agent to read; report unresolved paths without a measurement.
+
+Use `../slim-harness/scripts/harness.py measure <manifest.json>`; the manifest
+schema is in `../slim-harness/SKILL.md` under Measurement manifest. Include Codex's
+actual root-to-session-start project chain, alongside its per-file checks and
+separate user file. Words and bytes accompany line limits. A file under or equal
+to its limit gets no row. Several exceeded limits on one file share one row.
+
+Present a separate **Over-limit files** block, outside the grounded lesson table:
+
+| File | Measured size | Limit | Action |
+|---|---|---|---|
+| <loaded source path> | <lines, words, bytes; description characters when relevant> | <unit and threshold> | run /slim-harness on `<file>` |
+
+A combined Codex chain over 32 KiB gets a chain row listing its members and their
+sizes even if no individual file exceeds 200 lines; ask the user which single
+member to run `/slim-harness` on. Size rows are **exempt** from the grounding rule:
+the measurement is their evidence. The user chooses; improve-harness **runs nothing**
+on its own. No prior-review log is kept; repeat flags until files are under limit.
+Codex listing truncation notices get the budget/largest-descriptions report from
+its reference, with no automatic trigger.
+
+In an unattended run, file each over-limit row wherever the routing file names
+for unattended proposals. With no such destination, carry each row as a `lesson`
+item so the checklist keeps it in the handoff as an open loop. Preserve the file,
+measurement, limit and suggested command; no conversation incident or proposed
+diff is required for this measurement-only row. Do not invoke slim-harness.
+
 ## The one rule that makes this safe: every edit must be grounded
 
 A proposed edit is legitimate only if you can point at the **specific moment in this conversation** that motivates it. The failure mode is generating plausible-sounding improvements traceable to nothing — that is how rules files bloat and skills drift from how they actually behave.
@@ -124,7 +179,7 @@ One table for all surfaces. Grounding gets a candidate INTO the table; impact de
 | old-path memory | — | memory → delete | Recorded path no longer exists | `ls` failed on it | 1 turn | Misleads every recall until removed | the whole file; `−1 file` | apply |
 ```
 
-**"Nothing grounded" is a normal, good outcome.** Say so plainly and stop — "skills used this session all ran cleanly; no rule friction; memories verified." Manufacturing edits to fill the table is the failure mode, not the absence of them.
+**"Nothing grounded" is a normal, good outcome.** Still report the independent size pass, then say so plainly and stop — "skills used this session all ran cleanly; no rule friction; memories verified." Manufacturing edits to fill the table is the failure mode, not the absence of them.
 
 **Limitation:** self-detecting under-trigger is best-effort. If you never knew a skill existed, you may not realize it at wrap-up either. The retrospective scan catches most of it; the user's mid-task corrections catch the rest.
 

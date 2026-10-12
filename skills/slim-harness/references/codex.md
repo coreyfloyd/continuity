@@ -1,0 +1,49 @@
+# Codex limits and loading
+
+Checked 2026-10-12. Measure only the Codex session's loaded files. Auto-loaded
+instructions and skills/agent definitions read in full are in context; a
+listed-only skill gets the description check only. Parent sessions resolve and
+measure every required role path themselves; report an unresolved path, not a size.
+Codex has no known output-style equivalent as of 2026-10-12.
+
+| File | Limit | Unit |
+|---|---:|---|
+| Each project AGENTS.md or rules/required role file | 200 | lines |
+| Combined project AGENTS.md chain, root to session start folder | 32 KiB (32,768) | UTF-8 bytes |
+| User-level ~/.codex/AGENTS.md | 32 KiB (32,768) | UTF-8 bytes |
+| SKILL.md body (exclude frontmatter) | 500 | lines |
+| Skill description | 1,024 | characters |
+| agents/*.toml, whole file, and each required role file | 200 | lines |
+
+The default `project_doc_max_bytes` is 32 KiB; text past the combined project
+budget is silently dropped. Check the chain even if every member is under 200
+lines. The user-file byte check and 200-line rules/agent thresholds are this
+skill's review policy; do not claim the project-chain setting is a per-file cap.
+Report lines, words and bytes together; trigger only strictly above each limit.
+Use the session's actual discovery chain, including override/fallback selection,
+not every file named AGENTS.md found on disk. Measure the configured user file
+separately, never include it in the project-chain total.
+
+Situational material moves behind a pointer by default. Offer a nested AGENTS.md
+only after the user **confirms** Codex sessions for that area **start** in that
+folder: discovery walks from the repository root down to the session's start
+folder once at session start, not whenever matching files are touched. Do not
+assume nested instructions cover sessions started at the root.
+
+When Codex reports shortened skill descriptions, report its skill-listing budget:
+2% of context window, or 8,000 characters if unknown, and the largest descriptions
+loaded. This has no per-file automatic trigger. Do not fabricate a truncation
+notice or measure descriptions absent from the session's listing.
+
+Sources (checked 2026-10-12):
+
+- [Codex AGENTS.md](https://developers.openai.com/codex/guides/agents-md): project
+  discovery from repository root to start folder and `project_doc_max_bytes`
+  (32 KiB default). Per-project-file 200-line checks are this skill's policy.
+- [Codex skills](https://developers.openai.com/codex/skills):
+  listing budget and description rendering; this is a shared listing budget,
+  not a per-file review trigger.
+- [Agent Skills specification](https://agentskills.io/specification): description
+  maximum of 1,024 characters in both tools.
+- [Skill best practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices):
+  body under 500 lines, shared skill-authoring guidance, not a Codex truncation cap.
