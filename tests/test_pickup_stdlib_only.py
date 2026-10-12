@@ -1,8 +1,8 @@
-"""#910: resume_work.py runs under scripts/resume-work.sh's
+"""#910: pickup.py runs under scripts/pickup.sh's
 bare `python3` invocation, where pydantic and python-dotenv are NOT
 installed (same class of requirement as factory/run_trace.py, pinned in
 factory/tests/test_run_trace.py::test_cli_imports_without_third_party_dependencies).
-A future import of either would break every resume-work invocation on a box
+A future import of either would break every pickup invocation on a box
 that never installed them, invisibly, since the dev/test environment (this
 one, under uv) has both."""
 import importlib.util
@@ -10,14 +10,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "skills" / "resume-work" / "scripts" / "resume_work.py"
+MODULE_PATH = Path(__file__).resolve().parents[1] / "skills" / "pickup" / "scripts" / "pickup.py"
 
 
 def test_module_imports_without_third_party_dependencies():
     probe = (
         "import sys, importlib.util;"
         "sys.modules['pydantic'] = None; sys.modules['dotenv'] = None;"
-        "spec = importlib.util.spec_from_file_location('resume_work', %r);"
+        "spec = importlib.util.spec_from_file_location('pickup', %r);"
         "mod = importlib.util.module_from_spec(spec);"
         "spec.loader.exec_module(mod)"
     ) % str(MODULE_PATH)
@@ -64,6 +64,6 @@ def test_every_top_level_import_is_stdlib():
         if probe.returncode != 0:
             offenders.append(root)
     assert not offenders, (
-        "non-stdlib import(s) %s would break every resume-work invocation on a "
+        "non-stdlib import(s) %s would break every pickup invocation on a "
         "box that never installed them" % offenders
     )

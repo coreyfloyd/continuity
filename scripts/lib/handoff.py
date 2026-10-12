@@ -482,7 +482,7 @@ def overlay_checkpoint(supplied: Mapping[str, Any], cwd: str, session_id: str, t
                        repository_root: str | None = None, branch: str | None = None,
                        head: str | None = None) -> dict[str, Any]:
     if not isinstance(supplied, Mapping):
-        raise ValueError("resume-checkpoint: JSON object required")
+        raise ValueError("checkpoint: JSON object required")
     subject = canonical_subject(cwd)
     root = repository_root if repository_root is not None else globals()["repository_root"](subject)
     branch = branch if branch is not None else (_run_git(subject, "branch", "--show-current") if root else "")
@@ -527,7 +527,7 @@ def overlay_checkpoint(supplied: Mapping[str, Any], cwd: str, session_id: str, t
 def checkpoint(supplied: Mapping[str, Any], cwd: str, session_id: str, trigger: str) -> CheckpointResult:
     path = resolve_path(cwd, session_id)
     if not path:
-        raise ValueError("resume-checkpoint: a session id is required (--session-id or CLAUDE_SESSION_ID)")
+        raise ValueError("checkpoint: a session id is required (--session-id or CLAUDE_SESSION_ID)")
     handoff = overlay_checkpoint(supplied, cwd, session_id, trigger)
     atomic_write(path, handoff)
     code, lint = lint_output(path)
@@ -867,7 +867,7 @@ def post_compact(payload: Mapping[str, Any]) -> None:
         count = count_for_repository(cwd)
         if count:
             noun = "handoff exists" if count == 1 else "handoffs exist"
-            _emit_hook_context(f"{count} {noun} for this repository; resume-work lists {'it' if count == 1 else 'them'}.")
+            _emit_hook_context(f"{count} {noun} for this repository; pickup lists {'it' if count == 1 else 'them'}.")
         return
     path = resolve_path(cwd, str(payload.get("session_id") or ""))
     if not path or not os.path.isfile(path):
@@ -1042,7 +1042,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "(missing subject/git or malformed):\n  "
                     + "\n  ".join(problems)
                     + "\nUse `handoff.py checkpoint` (the handoff_checkpoint shell helper, "
-                    "or resume-checkpoint's checkpoint.sh), which composes subject/git and lints.\n"
+                    "or checkpoint's checkpoint.sh), which composes subject/git and lints.\n"
                 )
                 return 2
             atomic_write(args.path, raw)

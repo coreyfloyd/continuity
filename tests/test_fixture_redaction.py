@@ -1,6 +1,6 @@
 """The shipped Claude session fixture carries structure, not session content.
 
-tests/fixtures/resume-work-session.jsonl is cut from a private session. The
+tests/fixtures/pickup-session.jsonl is cut from a private session. The
 redactor's --redact-commands mode removes every command, tool result, thinking
 block, and claude.ai session URL; these tests pin that the shipped copy has
 none, and that running the redactor over it again changes nothing.
@@ -17,8 +17,8 @@ import sys
 import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-FIXTURE = os.path.join(HERE, "fixtures", "resume-work-session.jsonl")
-REDACTOR = os.path.join(HERE, "fixtures", "redact_resume_work_transcript.py")
+FIXTURE = os.path.join(HERE, "fixtures", "pickup-session.jsonl")
+REDACTOR = os.path.join(HERE, "fixtures", "redact_pickup_transcript.py")
 SESSION_URL = re.compile(r"claude\.ai/(code/)?session_")
 
 
@@ -118,8 +118,8 @@ def test_no_fixture_keeps_a_worktree_or_branch_name():
 
 
 COMMIT_HASH = re.compile(r'"commit_hash"\s*:\s*"[0-9a-fA-F]{40}"')
-CODEX_REDACTOR = os.path.join(HERE, "fixtures", "redact_resume_work_codex_rollout.py")
-CODEX_FIXTURES = sorted(Path(HERE, "fixtures").glob("resume-work-codex-*.jsonl"))
+CODEX_REDACTOR = os.path.join(HERE, "fixtures", "redact_pickup_codex_rollout.py")
+CODEX_FIXTURES = sorted(Path(HERE, "fixtures").glob("pickup-codex-*.jsonl"))
 
 
 def test_no_fixture_keeps_a_commit_hash():

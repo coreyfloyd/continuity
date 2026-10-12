@@ -43,10 +43,10 @@ an empty configuration.
 | `checklist_state_dir` | string | Where the checklist keeps its marker. |
 | `checklist_surfaces` | list of strings | Standing surfaces the surface detector reports in addition to the session's own repository. |
 | `checklist_suite_baselines_dir` | string | Directory of per-repository suite baseline files the surface detector reports. |
-| `commitment_owner` | string | The GitHub owner whose issues carry claim comments. Without it `resume-work` reports commitments as `no_owner`. |
-| `machine_lens` | string | A command `resume-work --machine` runs, given `RESUME_WORK_WANT_HOST` and `RESUME_WORK_AS_JSON` in its environment. Without it the flag reports `machine_lens_unavailable`. |
-| `prune_days` | positive integer | Age in days at which a handoff becomes a `stale_transcript` prune candidate. Shared by Claude and Codex; `RESUME_WORK_PRUNE_DAYS` overrides it. Default: 7. |
-| `host` | string | The host name the commitments scan filters on, unless `RESUME_WORK_HOST` is set. |
+| `commitment_owner` | string | The GitHub owner whose issues carry claim comments. Without it `pickup` reports commitments as `no_owner`. |
+| `machine_lens` | string | A command `pickup --machine` runs, given `PICKUP_WANT_HOST` and `PICKUP_AS_JSON` in its environment. Without it the flag reports `machine_lens_unavailable`. |
+| `prune_days` | positive integer | Age in days at which a handoff becomes a `stale_transcript` prune candidate. Shared by Claude and Codex; `PICKUP_PRUNE_DAYS` overrides it. Default: 7. |
+| `host` | string | The host name the commitments scan filters on, unless `PICKUP_HOST` is set. |
 | `cycle_sessions` | object | Maps a session name to a directory under the home directory, for a consumer that cycles sessions (section 8). |
 | `unattended` | object | Optional unattended mode, section 6. |
 
@@ -79,7 +79,7 @@ returned, so a broken hook never blocks a session.
 `scripts/lib/handoff.sh` is a sourceable shell library over the same commands:
 `handoff_checkpoint`, `resolve_handoff_path`, `handoff_repository_root`, and the rest.
 
-A checkpoint's input is the continuation JSON described in `skills/resume-checkpoint/SKILL.md`:
+A checkpoint's input is the continuation JSON described in `skills/checkpoint/SKILL.md`:
 `resume.headline`, `resume.next_action`, `resume.session_summary`, `resume.open_loops[]`,
 `spawned_processes`, and `session_items[]`. Each session item has a `type` (progress,
 commitment, decision, knowledge, lesson, artifact, or open_loop), `context` (at most 600
@@ -88,7 +88,7 @@ has `author` and `location`; an artifact has `location` and a `keep` or `remove`
 disposition. An item carried in a handoff keeps its producer's identity and date until a
 slot binding consumes it.
 
-## 4. Resume: `scripts/resume-work.sh`
+## 4. Pickup: `scripts/pickup.sh`
 
 Prints one JSON object. With no arguments it lists handoff candidates for the current
 directory (siblings marked), falling back to recent sessions from the tool's own history.
@@ -104,8 +104,8 @@ directory (siblings marked), falling back to recent sessions from the tool's own
 Every failure prints the same object shape, `{"version": 2, "error": CODE, "message": TEXT,
 ...}`, and exits non-zero. Codes include `usage`, `handoff_config_error` (the configuration
 is unreadable or mistyped), `machine_lens_unavailable` (no lens configured),
-`engine_not_found`, `engine_failed`, and `engine_bad_output`. `RESUME_WORK_ENGINE` names the
-engine (`skills/resume-work/scripts/resume_work.py`) when an adapter installs it away from
+`engine_not_found`, `engine_failed`, and `engine_bad_output`. `PICKUP_ENGINE` names the
+engine (`skills/pickup/scripts/pickup.py`) when an adapter installs it away from
 the scripts.
 
 Prune discovery checks Claude's `~/.claude/projects/<cwd-slug>/<session-id>.jsonl`
@@ -117,9 +117,9 @@ a transcript at least `prune_days` old is a `stale_transcript` candidate. Listin
 reports candidates without moving them; only `--prune` archives them. An unavailable
 Codex store returns `session_store_unavailable` before archiving.
 
-Other settings: `RESUME_WORK_HOST`, `RESUME_WORK_COMMITMENT_OWNER`,
-`RESUME_WORK_COMMITMENT_LIMIT`, `RESUME_WORK_COMMITMENT_JOBS`, `RESUME_WORK_TRUNK`,
-`RESUME_WORK_PRUNE_DAYS`, `RESUME_WORK_MACHINE_LENS`. The package ships no claim tool.
+Other settings: `PICKUP_HOST`, `PICKUP_COMMITMENT_OWNER`,
+`PICKUP_COMMITMENT_LIMIT`, `PICKUP_COMMITMENT_JOBS`, `PICKUP_TRUNK`,
+`PICKUP_PRUNE_DAYS`, `PICKUP_MACHINE_LENS`. The package ships no claim tool.
 Claims, if any, come from the user's own setup.
 
 ## 5. Hooks
@@ -228,8 +228,8 @@ tool-specific home directory.
 
 | Skill | Role |
 |---|---|
-| `resume-checkpoint` | Checkpoint the current session. `scripts/checkpoint.sh` is the entry point the checklist also calls. |
-| `resume-work` | Resume after a cold start. Its engine is `scripts/resume_work.py`. |
+| `checkpoint` | Checkpoint the current session. `scripts/checkpoint.sh` is the entry point the checklist also calls. |
+| `pickup` | Resume after a cold start. Its engine is `scripts/pickup.py`. |
 | `checklist` | The wrap-up spine. |
 | `handoff-prompt` | A copy-pasteable prompt that hands a slice of work to another session. |
 | `wip` | In-flight work, blockers, and pending approvals for the current session. |

@@ -1,10 +1,10 @@
 ---
-name: resume-checkpoint
-description: Write and lint the current interactive session's handoff, then print a short paste block for resuming it. Use when the user runs /resume-checkpoint or asks to checkpoint a session now.
+name: checkpoint
+description: Write and lint the current interactive session's handoff, then print a short paste block for resuming it. Use when the user runs /checkpoint or asks to checkpoint a session now.
 disable-model-invocation: true
 ---
 
-# Resume checkpoint
+# Checkpoint
 
 Write the handoff for the current subject now. Do not ask which form to produce.
 

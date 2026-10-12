@@ -8,7 +8,7 @@ disable-model-invocation: true
 # Handoff prompt
 
 Produce one fenced, copy-pasteable prompt that hands the current work to a fresh session,
-another agent, another tool, or work in a different repository. This is not `/resume-checkpoint`:
+another agent, another tool, or work in a different repository. This is not `/checkpoint`:
 it transfers context deliberately; it does not create or update this session's machine-local
 resume record.
 

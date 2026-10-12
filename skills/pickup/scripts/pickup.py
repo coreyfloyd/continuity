@@ -1,31 +1,31 @@
 #!/usr/bin/env python3
-"""resume-work directory-lens engine (#910).
+"""pickup directory-lens engine (#910).
 
 Ported out of the inline ``python3 -c`` block that used to live in
-``scripts/resume-work.sh`` (#909's branch/worktree scan plus
+``scripts/pickup.sh`` (#909's branch/worktree scan plus
 the original directory-lens message/git logic), into the published skill
-layout (``skills/resume-work/scripts/``) so it is self-contained and
+layout (``skills/pickup/scripts/``) so it is self-contained and
 distributable rather than living as an unreadable heredoc.
 
 STDLIB ONLY. Ops scripts invoke this under a bare ``python3`` with no
 pydantic / python-dotenv on the path (see
-``tests/test_resume_work_stdlib_only.py``).
+``tests/test_pickup_stdlib_only.py``).
 
-Usage (called by scripts/resume-work.sh, not normally run directly):
+Usage (called by scripts/pickup.sh, not normally run directly):
 
-    resume_work.py --repo-nwo <owner/repo> [--sid-out <path>] \
+    pickup.py --repo-nwo <owner/repo> [--sid-out <path>] \
         <candidate.jsonl> [<candidate.jsonl> ...]
 
 Always prints a single JSON object to stdout ("version: 2") and exits 0 —
 there is no human-rendered mode (the owner's call: the script emits JSON, the
-agent renders the briefing from it; see skills/resume-work/SKILL.md). Every
+agent renders the briefing from it; see skills/pickup/SKILL.md). Every
 v1 field is still present (session, messages, first_ts, last_ts, first_user,
 last_user, last_assistant, ticket_refs, git, branches) alongside the #910
 worklog additions: ticket write-ops ranking, commit subjects per branch, a
 per-repo file list (committed/uncommitted/transcript-scraped), and a
 staleness flag. When no substantive transcript is found, the emitted object
 carries an "error" key instead of the report fields — it is still always a
-JSON OBJECT, never a differently-shaped array (see resume-work.sh's dir_scan
+JSON OBJECT, never a differently-shaped array (see pickup.sh's dir_scan
 for why that distinction matters: a caller parsing this unattended cannot
 tolerate a shape that varies with cwd).
 
@@ -37,7 +37,7 @@ crash lost the documented error shape, the env round-trip was
 size-unbounded, and the merge step was never exercised with a populated
 array. The directory lens is one Python process now: this module resolves
 the session, runs the gh scan itself, and prints ONE object carrying
-"commitments" and "commitments_reason". resume-work.sh keeps argument
+"commitments" and "commitments_reason". pickup.sh keeps argument
 parsing and the machine lens (host_scan) only.
 """
 import concurrent.futures
@@ -100,7 +100,7 @@ def transcript_path(home, cwd, session_id):
 
 
 def _prune_days(value=None):
-    raw = str(value if value is not None else os.environ.get("RESUME_WORK_PRUNE_DAYS", "7"))
+    raw = str(value if value is not None else os.environ.get("PICKUP_PRUNE_DAYS", "7"))
     try:
         days = int(raw)
     except ValueError:
@@ -411,7 +411,7 @@ COMMITMENT_LIMIT_DEFAULT = 25
 # commitments_reason vocabulary. null means "collected, complete".
 REASON_SKIPPED = "skipped"                        # --no-commitments
 REASON_NO_SESSION_ID = "no_session_id"            # nothing to key the join on
-REASON_NO_OWNER = "no_owner"                      # RESUME_WORK_COMMITMENT_OWNER unset: nothing to scope the search
+REASON_NO_OWNER = "no_owner"                      # PICKUP_COMMITMENT_OWNER unset: nothing to scope the search
 REASON_GH_NOT_FOUND = "gh_not_found"              # gh absent from PATH
 REASON_GH_SEARCH_FAILED = "gh_search_failed"      # gh ran and failed (auth, network, rate limit)
 REASON_PARTIAL = "partial_claim_fetch"            # rows resolved, but >=1 claim fetch failed
@@ -491,21 +491,21 @@ def collect_commitments(session_id, host=None, limit=None, jobs=None, state=None
     Claim bodies are fetched concurrently: one serial `gh api` per issue put
     ~25 round trips (measured ~14s) on the default path. A thread pool, not a
     process pool — the work is subprocess I/O, and this module is loaded by
-    spec_from_file_location in tests/test_resume_work_stdlib_only.py, where a
+    spec_from_file_location in tests/test_pickup_stdlib_only.py, where a
     process pool would re-import __main__."""
     if not session_id:
         return None, REASON_NO_SESSION_ID
 
     state = state or COMMITMENT_STATE_DEFAULT
     if limit is None:
-        limit = _env_int("RESUME_WORK_COMMITMENT_LIMIT", COMMITMENT_LIMIT_DEFAULT)
+        limit = _env_int("PICKUP_COMMITMENT_LIMIT", COMMITMENT_LIMIT_DEFAULT)
     if jobs is None:
-        jobs = _env_int("RESUME_WORK_COMMITMENT_JOBS", limit)
+        jobs = _env_int("PICKUP_COMMITMENT_JOBS", limit)
     jobs = max(1, min(jobs, 32))
 
     # The GitHub owner whose issues carry claims is setup-specific, so it is
     # configured, never assumed; the scan is unscoped without it.
-    owner = os.environ.get("RESUME_WORK_COMMITMENT_OWNER", "").strip()
+    owner = os.environ.get("PICKUP_COMMITMENT_OWNER", "").strip()
     if not owner:
         return None, REASON_NO_OWNER
 
@@ -724,18 +724,18 @@ def git_ok(cwd, *args):
 def default_trunk(repo_cwd=None):
     """#910 eval F9 (round 1) hardcoded "main" at six new call sites,
     silently breaking every classification and log range on a
-    master/trunk/develop repo. round 1's fix added RESUME_WORK_TRUNK but
+    master/trunk/develop repo. round 1's fix added PICKUP_TRUNK but
     rejected auto-detection on the theory that it meant guessing among
     main/master/trunk/develop by trial — which conflated detection with
     guessing (#910 eval round 2 correction). `git symbolic-ref
     refs/remotes/origin/HEAD` is DETERMINISTIC: it names the one branch the
     remote itself designates as default, and is simply empty when unset —
-    never a wrong guess between candidates. RESUME_WORK_TRUNK still wins
+    never a wrong guess between candidates. PICKUP_TRUNK still wins
     when set (an explicit override always should); "main" is the last
     resort only for a repo with no remote HEAD configured at all, which is
     not a guess between competing names either — it is the one case
     nothing else answers."""
-    override = os.environ.get("RESUME_WORK_TRUNK")
+    override = os.environ.get("PICKUP_TRUNK")
     if override:
         return override
     if repo_cwd:
@@ -1942,7 +1942,7 @@ def main(argv):
     current_sessions = []
     codex_home = None
     transcript_fallback = False
-    # --commitments-host, not --host: in resume-work.sh "--host" already means
+    # --commitments-host, not --host: in pickup.sh "--host" already means
     # "machine lens, this host", and reusing the string across the two argument
     # parsers is how a future edit wires the wrong one.
     commitments_host = None
@@ -2050,7 +2050,7 @@ def main(argv):
         report["source"] = "transcript_fallback"
         report["notice"] = "No handoff was found for this directory; used the transcript miner."
 
-    # --sid-out is no longer used by resume-work.sh (the commitments scan runs
+    # --sid-out is no longer used by pickup.sh (the commitments scan runs
     # in this process now, so the session id never has to cross a process
     # boundary), but the flag is still honored: dropping a documented flag is
     # not part of this change.

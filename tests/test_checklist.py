@@ -588,7 +588,7 @@ class ChecklistTests(unittest.TestCase):
     def test_guard_denies_subagents_and_factory_sessions_the_checklist(self):
         commands = ["python3 ~/.local/share/continuity/scripts/lib/checklist.py plan --unattended",
                     "python3 scripts/lib/checklist.py wrap-check --written-handoff h.json",
-                    "bash \"$HOME/.local/share/continuity/skills/resume-checkpoint/scripts/checkpoint.sh\" <<'JSON'\n{}\nJSON",
+                    "bash \"$HOME/.local/share/continuity/skills/checkpoint/scripts/checkpoint.sh\" <<'JSON'\n{}\nJSON",
                     "python3 scripts/lib/handoff.py checkpoint --cwd ."]
         for command in commands:
             payload = {"session_id": "s", "tool_name": "Bash", "tool_input": {"command": command}}

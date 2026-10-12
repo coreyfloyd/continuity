@@ -35,7 +35,7 @@ def valid_payload():
             "open_loops": [{"context": "Test module seam", "disposition": "file if needed"}],
         },
         "spawned_processes": [],
-        "suggested_skills": ["resume-work"],
+        "suggested_skills": ["pickup"],
     }
 
 
@@ -99,7 +99,7 @@ def test_resolve_cli_accepts_the_plain_bash_session_environment(tmp_path):
 
 def test_write_cli_refuses_a_subject_less_handoff(tmp_path):
     """#1411: the low-level `write` primitive must fail loud on a payload missing
-    the subject/git blocks, not silently emit a handoff resume-work cannot read."""
+    the subject/git blocks, not silently emit a handoff pickup cannot read."""
     target = tmp_path / "bad.json"
     incomplete = json.dumps(
         {"schema_version": 2, "headline": "x", "next_action": "y", "open_loops": []}

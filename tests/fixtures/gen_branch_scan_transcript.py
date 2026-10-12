@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a synthetic resume-work transcript for tests/test-resume-work-branch-scan.sh.
+"""Build a synthetic pickup transcript for tests/test-pickup-branch-scan.sh.
 
 #909 review: never hand-author a .jsonl with invented field
 shapes. This clones real "user" and "assistant" rows from a REAL transcript
@@ -49,7 +49,7 @@ asst_template = next(
 )
 
 # (cwd, gitBranch) pairs the fixture repo builds — see
-# tests/test-resume-work-branch-scan.sh for what state each one is in.
+# tests/test-pickup-branch-scan.sh for what state each one is in.
 pairs = [
     (repo_path, "main"),
     (repo_path + "/.worktrees/dirty-branch", "dirty-branch"),

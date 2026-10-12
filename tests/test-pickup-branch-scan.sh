@@ -1,5 +1,5 @@
 #!/bin/bash
-# #909: resume-work.sh must resolve EVERY branch/worktree a
+# #909: pickup.sh must resolve EVERY branch/worktree a
 # session touched, not just the last-seen one, and classify each into the
 # required states. This exercises the alarm paths (dirty, unmerged,
 # deleted-with-no-merge) against a disposable, hermetic git repo -- no
@@ -8,14 +8,14 @@
 # was filed), so the alarm states need a constructed fixture.
 #
 # #910 eval round 1 (F1, F8) reworked this suite:
-#   - resume-work.sh's directory lens is JSON-only now (no text render at
+#   - pickup.sh's directory lens is JSON-only now (no text render at
 #     all), so this asserts against the parsed --json object's `branches[]`
 #     structure directly, not grepped emoji/text lines. Case E's guard is
 #     `merge_evidence is None`, which is strictly stronger than the old
 #     `grep -F shared-scope | grep -Fq shared-scope-2` substring heuristic
 #     (that heuristic would also fire on an unrelated co-occurrence).
 #   - The row-shape template is the COMMITTED fixture
-#     tests/fixtures/resume-work-session.jsonl, not a scan of the developer's
+#     tests/fixtures/pickup-session.jsonl, not a scan of the developer's
 #     live $HOME/.claude/projects/*/*.jsonl. The live scan made this suite's
 #     result depend on whatever happened to be on the box running it, and
 #     silently reported PASS-shaped SKIP (exit 0) on a box with no local
@@ -23,17 +23,17 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-SCRIPT="$REPO_DIR/scripts/resume-work.sh"
+SCRIPT="$REPO_DIR/scripts/pickup.sh"
 GEN="$REPO_DIR/tests/fixtures/gen_branch_scan_transcript.py"
-TEMPLATE="$REPO_DIR/tests/fixtures/resume-work-session.jsonl"
+TEMPLATE="$REPO_DIR/tests/fixtures/pickup-session.jsonl"
 
-# resume-work.sh hard-requires `gh` at its own top (`command -v gh || exit
+# pickup.sh hard-requires `gh` at its own top (`command -v gh || exit
 # 1`) and the tested path calls `gh repo view` for repo_nwo -- gh really is
 # invoked here, so this SKIP is a genuine inapplicability on a gh-less box,
 # not a defensive guard hiding a live-state dependency (unlike the template
 # scan above, which this rework removed).
-command -v gh >/dev/null 2>&1 || { echo "test-resume-work-branch-scan: SKIP (gh not installed)"; exit 0; }
-[ -f "$TEMPLATE" ] || { echo "test-resume-work-branch-scan: FAIL — missing fixture $TEMPLATE"; exit 1; }
+command -v gh >/dev/null 2>&1 || { echo "test-pickup-branch-scan: SKIP (gh not installed)"; exit 0; }
+[ -f "$TEMPLATE" ] || { echo "test-pickup-branch-scan: FAIL — missing fixture $TEMPLATE"; exit 1; }
 
 # Resolve to the REAL path: mktemp -d on macOS returns /var/folders/... but
 # /var is itself a symlink to /private/var, and `git worktree list
@@ -96,7 +96,7 @@ python3 "$GEN" "$TEMPLATE" "$PDIR/$SESSION_ID.jsonl" "$TEST_REPO"
 # ---------------------------------------------------------------- run + assert
 OUT="$(cd "$TEST_REPO" && HOME="$TEST_HOME" CODEX_HOME="$TEST_HOME/.codex" bash "$SCRIPT" --json --session "$SESSION_ID" --no-commitments 2>&1)"
 
-fail() { echo "test-resume-work-branch-scan: FAIL — $1"; echo "----- output -----"; echo "$OUT"; exit 1; }
+fail() { echo "test-pickup-branch-scan: FAIL — $1"; echo "----- output -----"; echo "$OUT"; exit 1; }
 
 printf '%s' "$OUT" | python3 -c '
 import json, sys
@@ -172,4 +172,4 @@ if b["merge_evidence"] is not None:
 print("STRUCTURE_OK")
 ' || fail "JSON structure assertions failed (see output above)"
 
-echo "test-resume-work-branch-scan: PASS"
+echo "test-pickup-branch-scan: PASS"

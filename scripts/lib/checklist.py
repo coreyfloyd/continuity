@@ -23,7 +23,7 @@ TYPES = {"progress", "commitment", "decision", "knowledge", "lesson", "artifact"
 TITLES = ("Reconcile the record", "Capture knowledge", "Fold in lessons", "Persist")
 SPINE = (*SLOTS, "handoff")
 # The one step allowed after the handoff: removing the session's own worktree earlier
-# would leave the handoff naming no repository, so `/resume-work` could not find it.
+# would leave the handoff naming no repository, so `/pickup` could not find it.
 AFTER_HANDOFF = "own-worktree"
 # What an unbound slot leaves in the handoff: the item types its step exists for.
 CARRIES = {"record": ["progress", "commitment", "decision", "artifact"], "knowledge": ["knowledge"],

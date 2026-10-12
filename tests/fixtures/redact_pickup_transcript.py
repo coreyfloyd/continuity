@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Build tests/fixtures/resume-work-session.jsonl for #910's pytest suite.
+"""Build tests/fixtures/pickup-session.jsonl for #910's pytest suite.
 
 example-config#910 / repo rule: never hand-author a .jsonl with invented
 field shapes. This starts from a REAL Claude Code transcript and redacts
 only the free-text prose (user/assistant "text" content blocks) that isn't
-needed to exercise resume_work.py's logic. Everything the extraction code
+needed to exercise pickup.py's logic. Everything the extraction code
 actually reads is left INTACT:
 
 - stop_reason, isSidechain, isMeta, cwd, gitBranch, timestamp — every
@@ -20,10 +20,10 @@ actually reads is left INTACT:
 
 Row types irrelevant to the directory lens (attachment/mode/atis-latch/
 bridge-session/last-prompt/ai-title/system/file-history-*/queue-operation)
-are dropped entirely — resume_work.py never reads them, and cutting them
+are dropped entirely — pickup.py never reads them, and cutting them
 took this fixture from ~2.9MB to a fraction of that.
 
-Usage: redact_resume_work_transcript.py [--redact-commands] [--neutral-names] <source.jsonl> <out.jsonl>
+Usage: redact_pickup_transcript.py [--redact-commands] [--neutral-names] <source.jsonl> <out.jsonl>
 
 --redact-commands (the shipped package's fixture) additionally removes every
 command, tool result, and thinking block, the way the Codex rollout script's

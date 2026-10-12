@@ -8,7 +8,7 @@
     {
       "name": "continuity",
       "source": "./",
-      "description": "Checkpoint, wrap, and resume interactive sessions through a thin handoff."
+      "description": "Checkpoint, wrap, and pick up interactive sessions through a thin handoff."
     }
   ]
 }

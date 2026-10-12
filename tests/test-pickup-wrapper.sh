@@ -1,7 +1,7 @@
 #!/bin/bash
-# test-resume-work-wrapper.sh — #910 round 4.
+# test-pickup-wrapper.sh — #910 round 4.
 #
-# scripts/resume-work.sh's own contract, at the one seam it still owns: it
+# scripts/pickup.sh's own contract, at the one seam it still owns: it
 # finds the engine, runs it, and is answerable for what reaches stdout when the
 # engine does not behave. Its header (":72-75") promises that EVERY failure
 # path prints the same JSON shape. Three ways that used to be false:
@@ -14,7 +14,7 @@
 #   (new) an engine that exits 0 having printed something that is not JSON.
 #
 # The engine is stubbed by building a two-file temp tree — a copy of
-# resume-work.sh next to a fake skills/resume-work/scripts/resume_work.py — so
+# pickup.sh next to a fake skills/pickup/scripts/pickup.py — so
 # the $0-relative engine lookup the script header calls load-bearing is the
 # thing under test, and no production surface gains a test-only env var.
 #
@@ -22,11 +22,11 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REAL="$ROOT/scripts/resume-work.sh"
+REAL="$ROOT/scripts/pickup.sh"
 
 # Missing gh is a hard FAIL, not a silent SKIP-as-PASS: a "no local X" skip
 # must never look like a passing run (#910 eval round 1 F8, round 4 F-C).
-command -v gh >/dev/null 2>&1 || { echo "FAIL: test-resume-work-wrapper: gh is not installed (required by the wrapper under test)"; exit 1; }
+command -v gh >/dev/null 2>&1 || { echo "FAIL: test-pickup-wrapper: gh is not installed (required by the wrapper under test)"; exit 1; }
 
 FAILURES=0
 fail() { echo "FAIL: $*"; FAILURES=$((FAILURES + 1)); }
@@ -59,26 +59,26 @@ STUB
 chmod +x "$STUB_DIR/gh"
 
 # build_engine <python-body> — a temp tree whose layout matches the $0-relative
-# lookup: <tree>/scripts/resume-work.sh and <tree>/skills/resume-work/scripts/.
+# lookup: <tree>/scripts/pickup.sh and <tree>/skills/pickup/scripts/.
 build_engine() {
     TREE="$SANDBOX/tree.$RANDOM"
-    mkdir -p "$TREE/scripts/lib" "$TREE/skills/resume-work/scripts"
-    cp "$REAL" "$TREE/scripts/resume-work.sh"
+    mkdir -p "$TREE/scripts/lib" "$TREE/skills/pickup/scripts"
+    cp "$REAL" "$TREE/scripts/pickup.sh"
     # The wrapper asks the handoff module where handoffs are stored (#1572).
     cp "$ROOT/scripts/lib/handoff.py" "$TREE/scripts/lib/handoff.py"
-    printf '%s\n' "$1" > "$TREE/skills/resume-work/scripts/resume_work.py"
+    printf '%s\n' "$1" > "$TREE/skills/pickup/scripts/pickup.py"
 }
 
 run_wrapper() {  # -> stdout on fd1, rc in $RC
     OUT=$( cd "$WORKDIR" && HOME="$FAKE_HOME" CODEX_HOME="$FAKE_HOME/.codex" PATH="$STUB_DIR:$PATH" \
-        TMPDIR="$SANDBOX/tmp" bash "$TREE/scripts/resume-work.sh" \
+        TMPDIR="$SANDBOX/tmp" bash "$TREE/scripts/pickup.sh" \
         --session "$SESSION_ID" 2>/dev/null )
     RC=$?
 }
 
 run_handoff_wrapper() {  # -> stdout on fd1, rc in $RC
     OUT=$( cd "$WORKDIR" && HOME="$FAKE_HOME" CODEX_HOME="$FAKE_HOME/.codex" PATH="$STUB_DIR:$PATH" \
-        TMPDIR="$SANDBOX/tmp" bash "$TREE/scripts/resume-work.sh" \
+        TMPDIR="$SANDBOX/tmp" bash "$TREE/scripts/pickup.sh" \
         --handoff "$SANDBOX/selected.json" 2>/dev/null )
     RC=$?
 }
@@ -163,14 +163,14 @@ else fail "W5: selected-handoff crash returned 0"; fi
 # come from the environment or the continuity configuration. The engine is a
 # stub that reports the owner it was handed.
 OWNER_ENGINE='import json, os
-print(json.dumps({"version": 2, "owner": os.environ.get("RESUME_WORK_COMMITMENT_OWNER")}))'
+print(json.dumps({"version": 2, "owner": os.environ.get("PICKUP_COMMITMENT_OWNER")}))'
 CFG="$SANDBOX/continuity.json"
 
 run_configured() {  # run_configured <config-file-or-empty> <args...> -> $OUT, $RC
     _cfg="$1"; shift
     OUT=$( cd "$WORKDIR" && HOME="$FAKE_HOME" CODEX_HOME="$FAKE_HOME/.codex" PATH="$STUB_DIR:$PATH" \
         TMPDIR="$SANDBOX/tmp" CONTINUITY_CONFIG="$_cfg" HANDOFF_STATE_DIR="$SANDBOX/handoffs" \
-        bash "$TREE/scripts/resume-work.sh" "$@" 2>/dev/null )
+        bash "$TREE/scripts/pickup.sh" "$@" 2>/dev/null )
     RC=$?
 }
 
@@ -192,7 +192,7 @@ if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | python3 -c 'import json,sys; assert j
 else fail "W8: expected machine_lens_unavailable, rc=$RC: [$OUT]"; fi
 
 LENS="$SANDBOX/lens.sh"
-printf '#!/bin/bash\nprintf "host=%%s json=%%s owner=%%s\\n" "$RESUME_WORK_WANT_HOST" "$RESUME_WORK_AS_JSON" "$RESUME_WORK_COMMITMENT_OWNER"\n' > "$LENS"
+printf '#!/bin/bash\nprintf "host=%%s json=%%s owner=%%s\\n" "$PICKUP_WANT_HOST" "$PICKUP_AS_JSON" "$PICKUP_COMMITMENT_OWNER"\n' > "$LENS"
 printf '{"commitment_owner": "configured-owner", "machine_lens": "%s"}' "$LENS" > "$CFG"
 run_configured "$CFG" --host box1 --json
 if [ "$RC" -eq 0 ] && [ "$OUT" = "host=box1 json=1 owner=configured-owner" ]; then
@@ -221,6 +221,6 @@ if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | python3 -c 'import json,sys; d = json
 else fail "W12: expected handoff_config_error naming commitment_owner, rc=$RC: [$OUT]"; fi
 
 echo
-if [ "$FAILURES" -eq 0 ]; then echo "test-resume-work-wrapper: PASS"; exit 0; fi
-echo "test-resume-work-wrapper: FAIL — $FAILURES assertion(s)"
+if [ "$FAILURES" -eq 0 ]; then echo "test-pickup-wrapper: PASS"; exit 0; fi
+echo "test-pickup-wrapper: FAIL — $FAILURES assertion(s)"
 exit 1
