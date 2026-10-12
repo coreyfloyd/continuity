@@ -218,7 +218,10 @@ def main():
         for name in SKILLS:
             path=skills/name
             if path.is_symlink():path.unlink()
-        shutil.rmtree(package)
+        try:
+            shutil.rmtree(package)
+        except FileNotFoundError:
+            pass
         manifest.unlink()
         print('continuity removed from Codex; handoffs and checklist state retained')
         return 0
