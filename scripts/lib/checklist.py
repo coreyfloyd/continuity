@@ -85,7 +85,7 @@ def compose(profiles: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Merge user then repository additions; no profile can alter the spine."""
     bindings: dict[str, Any] = {
         "record": None, "knowledge": None,
-        "lessons": {"command": "/harness-improve", "consumes": ["lesson"]},
+        "lessons": {"command": "/improve-harness", "consumes": ["lesson"]},
         "persist": None,
     }
     additions: dict[str, list[dict[str, Any]]] = {anchor: [] for anchor in ("before-spine", *SPINE)}

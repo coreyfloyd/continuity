@@ -18,7 +18,7 @@ steps after the persist step. The shared checklist owns their ordering.
       "section": "Capture knowledge"
     },
     "lessons": {
-      "command": "/harness-improve",
+      "command": "/improve-harness",
       "consumes": ["lesson"],
       "section": "Fold in lessons"
     },

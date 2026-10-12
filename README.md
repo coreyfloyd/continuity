@@ -11,7 +11,7 @@ This repository is the shared package. It holds the parts neither tool owns:
 |---|---|
 | Handoff engine: resolve, checkpoint, lint, ledger, hook decisions | `scripts/lib/handoff.py` (standard library only) |
 | Checklist engine: spine, profiles, slots, carried items, wrap check | `scripts/lib/checklist.py` (standard library only) |
-| Six skills: `resume-checkpoint`, `resume-work`, `checklist`, `handoff-prompt`, `wip`, `harness-improve` | `skills/` |
+| Six skills: `resume-checkpoint`, `resume-work`, `checklist`, `handoff-prompt`, `wip`, `improve-harness` | `skills/` |
 | Six hook adapters, each a few lines over the engines | `scripts/` and `hooks/` |
 | Glossary of the twelve terms | `docs/glossary.md` |
 | Storage, configuration, and profile contracts | `INTERFACE.md` |
@@ -91,7 +91,7 @@ claude plugin install continuity --marketplace coreyfloyd/continuity
 Inside a session, `/plugin install continuity --marketplace coreyfloyd/continuity` does the
 same. Nothing needs configuring. The skills are namespaced by the plugin: `/continuity:checklist`,
 `/continuity:resume-work`, `/continuity:resume-checkpoint`, `/continuity:handoff-prompt`,
-`/continuity:wip`, and `/continuity:harness-improve`.
+`/continuity:wip`, and `/continuity:improve-harness`.
 
 `claude plugin uninstall continuity@continuity` removes the plugin. Handoffs are stored
 outside the plugin's directories, so every handoff stays where it is.

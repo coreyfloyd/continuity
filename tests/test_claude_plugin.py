@@ -23,7 +23,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOOKS_FILE = os.path.join(ROOT, "hooks", "hooks.json")
 HANDOFF = os.path.join(ROOT, "scripts", "lib", "handoff.py")
 TRANSCRIPT_FIXTURE = os.path.join(ROOT, "tests", "fixtures", "resume-work-session.jsonl")
-SKILLS = ["checklist", "handoff-prompt", "harness-improve", "resume-checkpoint", "resume-work", "wip"]
+SKILLS = ["checklist", "handoff-prompt", "improve-harness", "resume-checkpoint", "resume-work", "wip"]
 CLAUDE = shutil.which("claude")
 needs_claude = pytest.mark.skipif(not CLAUDE, reason="the claude command is not installed")
 

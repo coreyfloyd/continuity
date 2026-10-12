@@ -183,7 +183,7 @@ composes and checks it. It writes no handoff and runs no skill.
 | `actor-guard`, `is-completion-command` | Hook helpers. The first prints a deny decision; the second exits 0 when the command completes an unattended slate. |
 
 **The spine** has five steps in this order: `record`, `knowledge`, `lessons`, `persist`,
-`handoff`. The first four are slots. `lessons` is bound to `/harness-improve`, consuming
+`handoff`. The first four are slots. `lessons` is bound to `/improve-harness`, consuming
 `lesson` items. Unbound slots are carried: the items they would consume stay in the handoff
 as open loops. `handoff` is not a slot and is the last spine step; only a profile step
 `own-worktree` may follow it.
@@ -233,7 +233,7 @@ tool-specific home directory.
 | `checklist` | The wrap-up spine. |
 | `handoff-prompt` | A copy-pasteable prompt that hands a slice of work to another session. |
 | `wip` | In-flight work, blockers, and pending approvals for the current session. |
-| `harness-improve` | Route a lesson to the user's rules, skills, agent definitions, or memory. |
+| `improve-harness` | Route a lesson to the user's rules, skills, agent definitions, or memory. |
 
 ## 8. For consumers that cycle sessions
 
