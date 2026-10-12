@@ -138,6 +138,8 @@ def redact_row(row, counter):
             kept["cwd"] = neutral_path(kept["cwd"], counter)
         if isinstance(kept.get("git"), dict) and "branch" in kept["git"]:
             kept["git"] = dict(kept["git"], branch=neutral_name(kept["git"]["branch"], counter))
+        if isinstance(kept.get("git"), dict) and "commit_hash" in kept["git"]:
+            kept["git"] = dict(kept["git"], commit_hash="[REDACTED COMMIT HASH]")
         head["payload"] = kept
         return head
     if kind == "turn_context":

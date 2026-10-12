@@ -9,9 +9,12 @@ Run with: uv run --with pytest pytest tests/test_fixture_redaction.py -q
 """
 import json
 import os
+from pathlib import Path
 import re
 import subprocess
 import sys
+
+import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURE = os.path.join(HERE, "fixtures", "resume-work-session.jsonl")
@@ -112,3 +115,32 @@ def test_no_fixture_keeps_a_worktree_or_branch_name():
         names |= {(name, m) for m in re.findall(r'/\.worktrees/([^"/]*)', text)}
     assert names
     assert not [n for n in names if not NEUTRAL_NAME.match(n[1])], sorted(names)
+
+
+COMMIT_HASH = re.compile(r'"commit_hash"\s*:\s*"[0-9a-fA-F]{40}"')
+CODEX_REDACTOR = os.path.join(HERE, "fixtures", "redact_resume_work_codex_rollout.py")
+CODEX_FIXTURES = sorted(Path(HERE, "fixtures").glob("resume-work-codex-*.jsonl"))
+
+
+def test_no_fixture_keeps_a_commit_hash():
+    fixtures = Path(HERE, "fixtures")
+    leaked = [str(path.relative_to(fixtures)) for path in sorted(fixtures.rglob("*"))
+              if path.suffix in (".json", ".jsonl")
+              and COMMIT_HASH.search(path.read_text(encoding="utf-8"))]
+    assert not leaked, leaked
+
+
+@pytest.mark.parametrize("fixture", CODEX_FIXTURES, ids=lambda path: path.name)
+def test_codex_redactor_replaces_commit_hash(fixture, tmp_path):
+    # Use the captured metadata record; no rollout records are invented.
+    first_line = fixture.read_text(encoding="utf-8").splitlines()[0]
+    row = json.loads(first_line)
+    src, out = tmp_path / "in.jsonl", tmp_path / "out.jsonl"
+    row["payload"]["git"]["commit_hash"] = "a" * 40
+    src.write_text(json.dumps(row) + "\n", encoding="utf-8")
+    result = subprocess.run([sys.executable, "-I", CODEX_REDACTOR, str(src), str(out)],
+                            capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    redacted = json.loads(out.read_text(encoding="utf-8"))
+    assert redacted["payload"]["git"] == dict(row["payload"]["git"],
+                                             commit_hash="[REDACTED COMMIT HASH]")
