@@ -124,6 +124,301 @@ Use improve-harness to route the lesson from the mistake we just corrected.
 Use slim-harness to review this instruction file with me.
 ```
 
+## Where things live
+
+The defaults below are shared by both tools ([storage contract](INTERFACE.md#1-storage)
+and [configuration contract](INTERFACE.md#2-configuration)). Each comment names its
+contents and the setting that changes its location. The ledger follows the parent
+of the resolved handoff directory unless its own override is set.
+
+```text
+~/
+├── .local/state/continuity/
+│   ├── handoffs/                       # handoff JSON; HANDOFF_STATE_DIR, else handoff_dir
+│   ├── session-touched-paths.<id>.jsonl # per-session ledger; HANDOFF_LEDGER_DIR
+│   ├── compact-state/                  # raw pre-compaction inputs; HANDOFF_COMPACT_STATE_DIR
+│   └── checklist/                      # unattended-wrap markers; CHECKLIST_STATE_DIR, else checklist_state_dir
+├── .config/continuity/config.json      # shared configuration; CONTINUITY_CONFIG, else XDG_CONFIG_HOME/continuity/config.json
+├── .config/checklist/profile.md        # user profile; CHECKLIST_USER_PROFILE, else XDG_CONFIG_HOME/checklist/profile.md
+└── <repository>/.claude/checklist-profile.md # additive repository profile; explicit --repository-profile arguments
+```
+
+`XDG_CONFIG_HOME` defaults to `~/.config`. These shared state locations and the
+user configuration and profile are outside either tool's own data area. The
+repository profile is a user-maintained file in that repository. Uninstall removes
+the adapter's registrations and installed files; it leaves shared handoffs,
+ledgers, backups, checklist state, configuration, and user-maintained profiles in
+place. Removing a tool does not remove the record, which your bindings maintain.
+
+## What the package writes
+
+These outlines describe outputs and the inputs they depend on. The normative
+contracts are [handoff commands and continuation input](INTERFACE.md#3-handoff-engine-scriptslibhandoffpy)
+and [checklist commands and profiles](INTERFACE.md#6-checklist-engine-scriptslibchecklistpy).
+[Examples and provenance](docs/examples/PROVENANCE.md) distinguish captured outputs
+from validated inputs. Commands below are relative to the package root.
+
+### Handoffs
+
+Location: `handoffs/<readable-subject>-<12-hex-subject-hash>-<session-id>.json`
+under the resolved state directory. `python3 scripts/lib/handoff.py checkpoint`
+(wrapped by the checkpoint skill, also called by wrap) writes schema version 2;
+the stop hook can write a skeleton when none exists. Pickup, the restore hook,
+and checklist `plan`, `settle`, and `wrap-check` read it next.
+[Captured handoff](docs/examples/handoff.json).
+
+```text
+handoff JSON
+├── schema_version                     # 2 for current checkpoint output
+├── written_at                         # UTC checkpoint time
+├── trigger                            # checkpoint, wrap, or manual
+├── subject
+│   ├── working_directory              # canonical subject path
+│   └── session_id                     # calling interactive session identity
+├── git
+│   ├── repository_root                # common root shared by sibling worktrees, or empty
+│   ├── branch                         # branch at checkpoint, or empty
+│   └── head                           # commit at checkpoint, or empty
+├── resume
+│   ├── headline                       # one-line continuation headline
+│   ├── next_action                    # concrete next action
+│   ├── session_summary                # current session's one-line continuation context
+│   ├── session_history[]              # earlier summaries plus the current producer
+│   │   └── session_id, produced_at, summary # producer, UTC time, one-line context
+│   └── open_loops[]                   # unconsumed items, with original provenance
+├── uncommitted_files[]                # absolute changed paths owned by this session in the ledger
+├── spawned_processes[]                # processes to reconcile before adoption or teardown
+│   └── pid, started_at                # process identity; a PID alone can name a different process
+└── suggested_skills[]                 # optional continuation suggestions supplied by the session
+```
+
+`session_items[]` is checkpoint **input**, not a stored top-level field. Every
+item has `type`, `context` (at most 600 characters), `disposition` (what to do
+next), `session_id` (producer), and `produced_at` (ISO timestamp with timezone).
+All seven types carry those fields:
+
+```text
+session_items[] / typed resume.open_loops[]
+├── progress                           # unrecorded progress or a pointer needing reconciliation
+├── commitment                         # commitment still needing reconciliation
+├── decision                           # also author (who decided), location (where decided)
+├── knowledge                          # knowledge still needing capture
+├── lesson                             # lesson text in context, pending routing
+├── artifact                           # also location; disposition must be keep or remove
+└── open_loop                          # other continuation with an explicit disposition
+```
+
+An optional `anchor` with `ticket` or `project` points at the record; legacy
+untyped loops need an anchor or disposition. Only an item already saved in the
+record may have `recorded: true` in the input; checkpoint omits it. Other input
+items move into `resume.open_loops`. Pending artifacts are supplied from the
+ledger, preserving their producer and time. Extra session-supplied fields are
+preserved rather than constituting a closed schema.
+
+A handoff never holds anything the record holds: no live ticket list, project
+status, runtime posture, or monitor doctrine. Its short continuation summaries
+are not the bound record's session summary described below.
+
+### Ledger (one file per session)
+
+Location: `session-touched-paths.<URL-encoded-session-id>.jsonl` in the resolved
+ledger directory. The tool hook writes observations and file entries;
+`python3 scripts/lib/handoff.py ledger-file` registers shell-driven edits,
+`ledger-artifact` registers published artifacts, and checklist `plan` appends its
+start marker. Checkpoint and the stop and wrap checks read it next.
+[Captured ledger](docs/examples/ledger.jsonl).
+
+```text
+ledger JSONL                          # one JSON object per line
+├── file entry
+│   └── kind, path, checkout, session_id, ts
+│       # kind=file; absolute changed path, owning checkout, producer, UTC write time
+├── artifact entry
+│   └── kind, type, location, context, disposition, status,
+│       session_id, produced_at, working_directory, ts
+│       # kind/type=artifact; published location; context="Published artifact";
+│       # keep/remove; pending/recorded/removed; producer; original production time;
+│       # canonical subject; UTC append time
+├── start marker
+│   └── kind, session_id, ts
+│       # kind=checklist-start; current session; UTC plan start
+└── repository observation (tool hook; no kind field)
+    └── repo_root, head, remote_heads[], ts, commit (when attributed)
+        # common repository root; observed HEAD; remote tip hashes; UTC observation;
+        # optional session-owned commit hash
+```
+
+Repeated events append lines. Pending artifact updates preserve production time;
+a recorded or removed status stops that artifact being carried. The wrap check
+uses the latest start marker to exclude the checklist's own later writes from
+record freshness. The captured example contains file, artifact, and marker lines;
+repository observations are written by the hook, not those capture commands.
+
+### Checklist plan
+
+Location: JSON on stdout, saved wherever the caller chooses. The command
+`python3 scripts/lib/checklist.py plan` composes it from the user and repository
+profiles, optionally routing a resumed handoff. The checklist skill reads and
+executes it; the engine does not run bindings.
+[Captured plan](docs/examples/plan.json).
+
+```text
+plan JSON
+├── profiles[]                         # resolved profile paths in composition order
+├── unattended                         # whether the caller passed --unattended
+├── when_answer_needed                 # only unattended: carry pending answers and continue
+└── steps[]                            # execution order, including additions at their anchors
+    ├── id, title                      # step identity; spine title or optional added title
+    ├── slot                           # only record, knowledge, lessons, persist
+    ├── binding                        # null if unbound, else command, consumes[], optional instructions
+    ├── carries[]                      # only unbound slots: item types left in the handoff
+    ├── carried_items[]                 # slot inputs selected by binding.consumes
+    │   └── index, item                # original open-loop index and intact producer's item
+    └── after, instructions, profile   # added steps: anchor, work to run, originating profile name
+```
+
+The spine is `record` (reconcile the record), `knowledge` (capture knowledge),
+`lessons` (fold in lessons), `persist`, then `handoff` (write and validate).
+The first four are slots; `handoff` has only `id` and `title`. With no profile,
+record, knowledge, and persist are unbound; lessons binds `/improve-harness`
+and consumes `lesson`. Unbound slots carry items without failing. Profile steps
+may run `before-spine` or after `record`, `knowledge`, `lessons`, or `persist`;
+only `own-worktree` may follow `handoff`. Additions retain declaration order
+within profile order. Carried open loops go to bindings consuming their types;
+untyped and unacknowledged loops remain continuation context.
+
+### Checklist report input
+
+Location: a caller-chosen JSON file passed to checklist `report --results`.
+The interactive session writes it as it runs the plan; `report` checks it.
+There is no example because this is session-written input, not package output.
+
+```text
+results JSON array                    # one result for every planned step, in execution order
+└── each result
+    ├── id                            # planned step identity
+    ├── status                        # run, carried (unbound), pending, or failed
+    ├── writes[]                      # paths or locations saved by the step
+    └── reason                        # explanation; pending names the answer required
+```
+
+Pending steps write nothing. A pending or failed step does not omit later
+results; unattended, the handoff step must still report `run`.
+
+### Session summary
+
+Location: a file named by the bound record, passed to checklist `report --summary`.
+The package does **not** compose it. After its ticket step, a bound record
+composes it from final ticket outcomes and writes each project's durable history
+to its record. The checklist report starts with that summary unedited. There is
+no example because the bound record writes it, not the package.
+
+```text
+bound record's summary text           # binding-defined format, not a package JSON schema
+├── milestone and epic outcomes       # live ticket outcomes once closes are final
+└── each project's goal, shipped work, follow-up tickets, and decisions
+
+report command output                 # JSON on stdout, checked by the reporting session
+├── summary                           # unedited file text, or null
+├── summary_unavailable               # reason when no summary was composed
+├── report                            # ok after validation
+└── pending[]                         # identities of pending steps
+```
+
+If none was composed, pass `--no-summary` with the record's reason; an older
+binding can be reported as `<command> composed no session summary`. With record
+unbound, omit both arguments and the engine supplies that reason. A bound record
+with neither summary nor reason fails validation.
+
+### Configuration file
+
+Location: `${XDG_CONFIG_HOME:-~/.config}/continuity/config.json`, overridden by
+`CONTINUITY_CONFIG`. The user writes it; both engines, pickup, and the surface
+detector read it. [Validated configuration input](docs/examples/config.json).
+All keys are optional; absence means an empty configuration.
+
+```text
+configuration JSON object             # shared settings, not a profile
+├── handoff_dir: string               # handoff storage (~ expands)
+├── checklist_state_dir: string       # unattended-wrap marker directory
+├── checklist_surfaces: string[]      # standing surface-detector candidates
+├── checklist_suite_baselines_dir: string # per-repository suite baseline directory
+├── commitment_owner: string          # issue owner for pickup's commitments scan
+├── machine_lens: string              # command for pickup's optional machine view
+├── prune_days: positive integer      # stale-transcript prune age, default 7; PICKUP_PRUNE_DAYS overrides
+├── host: string                      # commitments host filter; PICKUP_HOST overrides
+├── cycle_sessions: object            # consumer session-name to home-relative directory mapping
+└── unattended: object                # optional unattended-mode integration
+    ├── state_module                  # Python file providing state_path and read_state
+    ├── completion_command            # regex identifying the slate completion command
+    └── completed_by[]                # accepted updated_by values after that command
+```
+
+The example exercises one existing storage-test input. `config-get` validates
+that input's string key; it is not a full validator for the object-valued
+`cycle_sessions` and `unattended` integrations. Their consumers validate those
+settings when used. See [the full settings table](INTERFACE.md#2-configuration).
+
+### Profile file
+
+Location: `${XDG_CONFIG_HOME:-~/.config}/checklist/profile.md`, overridden by
+`CHECKLIST_USER_PROFILE`, plus each repository's `.claude/checklist-profile.md`.
+The user or repository author writes profiles; the skill resolves them and passes
+`--user-profile` and repeatable `--repository-profile` arguments to the engine's
+profile loader and composer. [Validated profile input](docs/examples/profile.md).
+
+```text
+JSON object, or one checklist-profile JSON fence in Markdown
+├── name                              # non-empty profile name
+├── bindings                          # user profile only: bind one or more of the four slots
+│   └── <slot>: command, consumes[], instructions (optional)
+│       # command to run; accepted session-item types; execution guidance
+└── steps[]                           # additive steps, never spine removal or replacement
+    └── id, after, instructions, title (optional)
+        # unique identity, allowed anchor, execution guidance, display title
+
+Markdown section references           # available on a binding or added step
+└── section                           # level-two heading whose text becomes instructions
+```
+
+The loader replaces `section` with that heading's text. Repository profiles add
+steps only; they cannot replace bindings. A binding can consume any of the seven
+session-item types. Added steps use the anchors listed in the plan outline;
+`own-worktree` must anchor after `handoff`. Existing unfenced repository profiles
+are read by the skill through their `Slot:` declarations; the engine loader
+requires JSON or a single fence. The example is a loader fixture showing format
+and composition, not a recommended cleanup or persistence policy.
+
+### Pre-compaction backups
+
+Location: `compact-state/pre-compact-<YYYYMMDD_HHMMSS>.json` under its resolved
+directory. The pre-compaction hook calls `handoff.py pre-compact` to write the raw
+hook input; recovery or inspection can read it. It retains the five newest
+matching files. These are adapter payloads, not schema-version-2 handoffs.
+
+```text
+raw hook input                        # adapter-specific JSON, preserved as supplied
+└── session_id, cwd, ...               # calling identity, subject, other adapter event fields
+```
+
+No example is required: these payloads are adapter inputs, outside the three
+captured output formats above.
+
+### Checklist state (the unattended-wrap marker)
+
+Location: `checklist/<sanitized-session-id>.unattended-wrap`. Checklist
+`wrap-cadence` writes the marker after a successful configured completion command;
+`wrap-cadence` and `wrap-check` read it. Passing `wrap-check --unattended` removes it.
+
+```text
+marker file                           # existence keeps the cadence unattended-checklist
+├── session_id                        # session whose unattended wrap is due
+└── completed_at                      # completion state's updated_at value
+```
+
+No example is required: this operational marker is not one of the example
+formats. Without optional unattended configuration, it is not used.
+
 ## Architecture
 
 [`docs/architecture/runtime.html`](docs/architecture/runtime.html) is the runtime
@@ -140,6 +435,8 @@ For a guided explanation, open the standalone
 [presentation](docs/presentation.html), with keyboard and on-screen controls.
 The [glossary](docs/glossary.md) defines the vocabulary; [INTERFACE.md](INTERFACE.md)
 is the contract for adapter and profile authors.
+[docs/examples/](docs/examples/PROVENANCE.md) holds captured outputs, validated
+inputs, and their provenance.
 
 ## Installation and configuration
 
