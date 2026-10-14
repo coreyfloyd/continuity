@@ -143,7 +143,8 @@ def test_storage_artifacts_have_readme_outlines_and_examples_have_links():
     assert "## What the package writes" in readme
     section = readme.split("## What the package writes", 1)[1].split("\n## ", 1)[0]
     storage = (ROOT / "INTERFACE.md").read_text().split("## 1. Storage", 1)[1].split("## 2.", 1)[0]
-    rows = re.findall(r"^\| ([^|]+) \|", storage, re.M)[2:]
+    # The separator row does not match; skip only the column header.
+    rows = re.findall(r"^\| ([^|]+) \|", storage, re.M)[1:]
     for artifact in rows:
         title = artifact.strip().split(" (", 1)[0]
         assert f"### {title}" in section
