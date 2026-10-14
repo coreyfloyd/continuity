@@ -1,6 +1,6 @@
 # Session Continuity Glossary
 
-Defines the twelve terms the session-continuity package uses. Other glossaries that mention these terms point here instead of defining them. "Artifact" is a session-item type (see **Open loop**), not a term of its own.
+Defines the thirteen terms the session-continuity package uses. Other glossaries that mention these terms point here instead of defining them. "Artifact" is a session-item type (see **Open loop**), not a term of its own.
 
 ## Language
 
@@ -15,6 +15,10 @@ _Avoid_: handoff, session memory
 **Handoff**:
 The thin pointer one interactive session writes for one subject, so the next session can find its way back to the record. A handoff is identified by its subject and its session together, so two sessions on the same subject never overwrite each other. It holds where to find the record, the session's open loops, and the uncommitted files the session changed. It holds nothing the record holds. Checkpoint and wrap both end by writing it.
 _Avoid_: summary, record
+
+**Successor**:
+The interactive session that resumed another session's handoff through `pickup`. The session whose handoff it resumed is the **resumed session**, which is never used again. Every contract bound to the resumed session's id — claims, pending approvals, pending replies, granted scopes, and any other record keyed by session id — is carried to the successor's id. See [The successor rule](../skills/pickup/SKILL.md#the-successor-rule) for transfer ownership and the fallback when no transfer tool is available.
+_Avoid_: resumed session (when referring to the successor)
 
 **Subject**:
 What a handoff is about: the working directory of an ordinary session, or the channel of a session that answers one channel.

@@ -236,9 +236,15 @@ Each object: `repo`, `number`, `title`, `status_labels` (the ticket's `status/*`
 
 **Scoped by claim, not by status label.** `status/next` is a repo-wide queue — with several sessions in one repo a successor cannot tell its inheritance from the general pool. The claim comment already binds host · session · branch, so the query is: every **open** issue labeled for this host whose claim comment names the **resumed session's id**. Any status, so a `status/next` or `status/deployed` commitment shows up where the machine lens (`status/active` only) would never see it.
 
-### The successor re-claim rule
+### The successor rule
 
-Re-claim each row under **your** session id with the claim tool your setup uses; the package ships none. Succession is the one legal claim-over-claim takeover: the re-claim is what *retires* the handoff marker, since a claim by a different session clears `state:` while a heartbeat deliberately preserves it, so the marker survives until someone actually inherits it. Without a claim tool, state in the briefing which rows you are taking over and leave the markers alone.
+The [successor](../../docs/glossary.md#language) is the interactive session that resumed another session's handoff through `pickup`. The **resumed session** is the session whose handoff you resumed; it is never used again. Every contract bound to the resumed session's id — claims, pending approvals, pending replies, granted scopes, and any other record keyed by session id — is carried to **your** session id as the successor.
+
+Your adapter or setup owns any transfer operation; the package ships no transfer tool. Ticket claims are the one contract kind for which the package documents a transfer:
+
+Re-claim each row under **your** session id with the claim tool your adapter or setup uses; the package ships none. Succession is the one legal claim-over-claim takeover: the re-claim is what *retires* the handoff marker, since a claim by a different session clears `state:` while a heartbeat deliberately preserves it, so the marker survives until someone actually inherits it.
+
+Without a transfer tool for a contract kind (including a claim tool for ticket claims), state in the briefing which contracts you are taking over and leave their markers alone.
 
 ### Bounds and known gaps
 
