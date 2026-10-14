@@ -222,7 +222,7 @@ completion command succeeds it answers `unattended-checklist` until a passing
 
 ## 7. Skills
 
-Six skills, each a directory with a `SKILL.md`. An adapter installs them where its tool
+Seven skills, each a directory with a `SKILL.md`. An adapter installs them where its tool
 looks for skills. Each resolves its scripts from its own real directory, never from a
 tool-specific home directory.
 
@@ -230,10 +230,11 @@ tool-specific home directory.
 |---|---|
 | `checkpoint` | Checkpoint the current session. `scripts/checkpoint.sh` is the entry point the checklist also calls. |
 | `pickup` | Resume after a cold start. Its engine is `scripts/pickup.py`. |
-| `checklist` | The wrap-up spine. |
+| `checklist` | Wrap through the spine plus profile steps. |
 | `handoff-prompt` | A copy-pasteable prompt that hands a slice of work to another session. |
 | `wip` | In-flight work, blockers, and pending approvals for the current session. |
 | `improve-harness` | Route a lesson to the user's rules, skills, agent definitions, or memory. |
+| `slim-harness` | Review one instruction source with the user, resolve conflicts, and leave edits uncommitted. |
 
 ## 8. For consumers that cycle sessions
 
@@ -253,7 +254,7 @@ repository. `tests/test_shipped_surface.py` runs the check over the whole tree w
 ## 10. Codex installation and normalization
 
 `python3 scripts/install-codex.py [--codex-home PATH] [--codex PATH]` installs a
-runtime copy, the six skill links, six continuity hooks and the optional actor
+runtime copy, the seven skill links, six continuity hooks and the optional actor
 guard. The installer owns only the registrations and links recorded in
 `continuity-install.json`; other hooks and configuration survive. Its seven
 handlers must match `hooks/list` with `trustStatus: trusted`, or it restores the
