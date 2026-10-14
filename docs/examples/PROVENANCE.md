@@ -42,6 +42,7 @@ so the captured file entry refers to an actual uncommitted edit.
 
 ```bash
 git init -q "$REPO"
+git -C "$REPO" symbolic-ref HEAD refs/heads/main
 git -C "$REPO" add README.md
 git -C "$REPO" -c user.name=Example -c user.email=example@example.invalid \
   -c commit.gpgsign=false commit -qm 'Initialize capture sandbox'
