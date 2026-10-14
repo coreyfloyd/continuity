@@ -108,9 +108,12 @@ python3 "$PACKAGE/scripts/lib/handoff.py" config-get handoff_dir
 With `CONTINUITY_CONFIG` set as above it returned `~/state/session-handoffs`.
 The profile was validated through the engine's `load_profile` and `compose`
 functions, and consumed by the real `plan` command. The documentation tests
-repeat these validations, lint the redacted handoff, compare ledger fields with
-fresh command output, and recompose the complete plan from the profile and
-handoff. Only the plan's machine-local profile path is normalized for comparison.
+repeat these validations, lint the redacted handoff, regenerate the checkpoint
+from the capture input, and compare the complete handoff and ledger rows with
+fresh command output. They normalize capture-specific paths, timestamps, and
+git commit identity while retaining semantic values and field presence. They
+also recompose the complete plan from the profile and handoff; only the plan's
+machine-local profile path is normalized for that comparison.
 
 No report-input or session-summary example is included: the interactive session
 and bound record produce those inputs, rather than the package.

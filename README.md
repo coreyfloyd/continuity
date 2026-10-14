@@ -160,8 +160,8 @@ from validated inputs. Commands below are relative to the package root.
 
 ### Handoffs
 
-Location: `handoffs/<readable-subject>-<12-hex-subject-hash>-<session-id>.json`
-under the resolved state directory. `python3 scripts/lib/handoff.py checkpoint`
+Location: `<readable-subject>-<12-hex-subject-hash>-<session-id>.json`
+directly in the resolved handoff directory. `python3 scripts/lib/handoff.py checkpoint`
 (wrapped by the checkpoint skill, also called by wrap) writes schema version 2;
 the stop hook can write a skeleton when none exists. Pickup, the restore hook,
 and checklist `plan`, `settle`, and `wrap-check` read it next.
@@ -264,7 +264,7 @@ executes it; the engine does not run bindings.
 
 ```text
 plan JSON
-├── profiles[]                         # resolved profile paths in composition order
+├── profiles[]                         # supplied profile paths in composition order
 ├── unattended                         # whether the caller passed --unattended
 ├── when_answer_needed                 # only unattended: carry pending answers and continue
 └── steps[]                            # execution order, including additions at their anchors
@@ -391,7 +391,7 @@ and composition, not a recommended cleanup or persistence policy.
 
 ### Pre-compaction backups
 
-Location: `compact-state/pre-compact-<YYYYMMDD_HHMMSS>.json` under its resolved
+Location: `pre-compact-<YYYYMMDD_HHMMSS>.json` in the resolved backup
 directory. The pre-compaction hook calls `handoff.py pre-compact` to write the raw
 hook input; recovery or inspection can read it. It retains the five newest
 matching files. These are adapter payloads, not schema-version-2 handoffs.
