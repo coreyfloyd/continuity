@@ -64,6 +64,25 @@ def test_derived_fixtures_keep_the_probe_hashes():
         assert hashlib.sha256((FIX/name).read_bytes()).hexdigest() == digest
 
 
+# Byte hashes of the five raw payloads the live CLI 0.160.0 probe recorded on
+# 2026-10-02. The raw payloads carry a real session id and host paths, so they
+# stay private; only their hashes are published here.
+PROBE_PAYLOAD_SHA256 = {
+    'PostToolUse.json': 'f405ef6ef1299cc23644c8071bfb4233782774059ede34d1533ecb416d4fa882',
+    'PreCompact.json': 'e868263077338748c617f39a84b7d5bb8721b64b81f01bde84100220c2c13504',
+    'SessionStart.json': '42ab6875c94bc3dd19d807669ab22a8353b4eefc081b28ae343facbd3ef60012',
+    'Stop.json': '421ef1620e610615f64b5d2ba5b3e7127be6db1cc7d143661f7f92faa2332b07',
+    'UserPromptSubmit.json': 'c66ace59ff47d240694c0936aac7f411f1917e21c2ccd7dadda12cd853f413bf',
+}
+
+
+def test_each_derived_payload_traces_to_its_recorded_probe_payload():
+    manifest = json.loads((FIX/'manifest.json').read_text())
+    assert manifest['source_payload_sha256'] == PROBE_PAYLOAD_SHA256
+    assert sorted(manifest['derived_payload_sha256']) == sorted(PROBE_PAYLOAD_SHA256)
+    assert all((FIX/name).is_file() for name in PROBE_PAYLOAD_SHA256)
+
+
 def test_one_install_registers_six_hooks_and_guard_preserves_other_entries_and_uninstalls(sandbox):
     home, work = sandbox
     codex = home/'.codex';codex.mkdir()

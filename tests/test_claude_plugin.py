@@ -122,6 +122,15 @@ def write_event(session_id, cwd, home, path):
     return payload
 
 
+def fill_context(transcript):
+    """Append the recorded session's last assistant turn again, now reading 540,000 cached tokens."""
+    with open(TRANSCRIPT_FIXTURE, encoding="utf-8") as handle:
+        last = [json.loads(line) for line in handle if '"type":"assistant"' in line.replace(" ", "")][-1]
+    last["message"]["usage"]["cache_read_input_tokens"] = 540_000
+    with open(transcript, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(last) + "\n")
+
+
 def context_of(output):
     return json.loads(output)["hookSpecificOutput"]["additionalContext"]
 
@@ -186,6 +195,25 @@ def test_a_session_that_compacts_gets_its_handoff_back(tmp_path, home):
     assert before and before[0].startswith("COMPACTION IMMINENT")
     after = fire("SessionStart", dict(base("SessionStart", "session-one", repo, home), source="compact"), env)
     assert after and "Halfway through the migration" in context_of(after[0])
+    assert "Re-validate before acting" in context_of(after[0])
+
+
+def test_a_new_session_hears_nothing_when_the_repository_has_no_handoff(tmp_path, home):
+    env = clean_env(home)
+    repo = new_repo(tmp_path / "work")
+    assert fire("SessionStart", dict(base("SessionStart", "session-two", repo, home), source="startup"), env) == []
+
+
+def test_the_startup_count_names_pickup_for_one_handoff_and_for_several(tmp_path, home):
+    env = clean_env(home)
+    repo = new_repo(tmp_path / "work")
+    start = dict(base("SessionStart", "session-three", repo, home), source="startup")
+    checkpoint(repo, "session-one", env, "First thread")
+    assert [context_of(out) for out in fire("SessionStart", start, env)] == [
+        "1 handoff exists for this repository; pickup lists it."]
+    checkpoint(repo, "session-two", env, "Second thread")
+    assert [context_of(out) for out in fire("SessionStart", start, env)] == [
+        "2 handoffs exist for this repository; pickup lists them."]
 
 
 def test_a_session_at_half_its_context_window_is_told_to_checkpoint(tmp_path, home):
@@ -198,15 +226,11 @@ def test_a_session_at_half_its_context_window_is_told_to_checkpoint(tmp_path, ho
     # The recorded session peaked at 46% of the window: no warning yet.
     assert fire("UserPromptSubmit", payload, env) == []
 
-    # Its last assistant turn again, now reading 540,000 cached tokens.
-    with open(TRANSCRIPT_FIXTURE, encoding="utf-8") as handle:
-        last = [json.loads(line) for line in handle if '"type":"assistant"' in line.replace(" ", "")][-1]
-    last["message"]["usage"]["cache_read_input_tokens"] = 540_000
-    with open(transcript, "a", encoding="utf-8") as handle:
-        handle.write(json.dumps(last) + "\n")
+    fill_context(transcript)
     warned = fire("UserPromptSubmit", payload, env)
     assert warned and warned[0].startswith("CONTEXT USAGE: 54% of context window")
     assert "handoff_checkpoint" in warned[0]
+    assert warned[0].index("save durable progress to your record") < warned[0].index("handoff_checkpoint")
 
 
 def test_a_session_that_stops_with_work_newer_than_its_handoff_is_told_it_is_stale(tmp_path, home):
@@ -286,6 +310,42 @@ def test_a_subagent_gets_no_hook_output(tmp_path, home):
     assert fire("SessionStart", start, env) == []
     commit = dict(bash_event("session-one", repo, home, "git commit -m x", "[main 1] x"), agent_id="agent-1")
     assert fire("PostToolUse", commit, env) == []
+
+
+@pytest.mark.parametrize(("entrypoint", "agent_id"), [("sdk-cli", None), ("cli", "agent-1")],
+                         ids=["headless-worker", "subagent"])
+def test_pre_compact_context_guard_and_ledger_stay_silent_outside_an_interactive_session(
+        tmp_path, home, entrypoint, agent_id):
+    env = clean_env(home)
+    repo = new_repo(tmp_path / "work")
+    checkpoint(repo, "session-one", env, "Parent work")
+    transcript = tmp_path / "session.jsonl"
+    shutil.copy(TRANSCRIPT_FIXTURE, transcript)
+    fill_context(transcript)
+    events = [
+        ("PreCompact", dict(base("PreCompact", "session-one", repo, home), trigger="auto", custom_instructions="")),
+        ("UserPromptSubmit", dict(base("UserPromptSubmit", "session-one", repo, home), transcript_path=str(transcript),
+                                  permission_mode="default", prompt="carry on")),
+        ("PostToolUse", write_event("session-one", repo, home, repo / "notes.txt")),
+    ]
+    # The interactive session hears the two warnings, so silence below is the gate.
+    assert [event for event, payload in events if fire(event, payload, env)] == ["PreCompact", "UserPromptSubmit"]
+    gated = clean_env(home, CLAUDE_CODE_ENTRYPOINT=entrypoint)
+    for event, payload in events:
+        if agent_id:
+            payload = dict(payload, agent_id=agent_id)
+        assert fire(event, payload, gated) == [], event
+
+
+def test_a_subagent_edit_is_recorded_in_the_parent_sessions_ledger(tmp_path, home):
+    env = clean_env(home)
+    repo = new_repo(tmp_path / "work")
+    edited = repo / "subagent-edit.txt"
+    assert fire("PostToolUse", dict(write_event("session-one", repo, home, edited), agent_id="agent-1"), env) == []
+    ledger = home / ".local" / "state" / "continuity" / "session-touched-paths.session-one.jsonl"
+    rows = [json.loads(line) for line in ledger.read_text().splitlines()]
+    assert {"kind": "file", "path": str(edited), "checkout": str(repo), "session_id": "session-one"}.items() <= next(
+        row for row in rows if row.get("kind") == "file").items()
 
 
 # ------------------------------------------------------------------ resume
