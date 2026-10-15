@@ -1,6 +1,6 @@
 ---
 name: improve-harness
-description: "Fold what a session taught into rules files, skills, agent definitions, or memory, with one placement per lesson. Use at wrap-up, or when the user says \"from now on\", \"remember this\", \"make this a durable rule\", \"always/never do X\", or asks where a rule belongs. Interactive: proposes, then waits. Unattended: edits nothing."
+description: "Fold what a session taught into rules files, skills, agent definitions, or memory, with one placement per lesson. Use at wrap-up, or when the user says \"from now on\", \"remember this\", \"make this a durable rule\", \"always/never do X\", or asks where a rule belongs. Interactive: proposes, then waits. Unattended: carries proposals."
 ---
 
 # Improve Harness
@@ -11,7 +11,7 @@ Rules, skills and agent definitions, and memory are covered in one pass, because
 
 ## Routing: the user's file, or the default
 
-Look for a **routing file**: `$IMPROVE_HARNESS_ROUTING` when set, otherwise `improve-harness/routing.md` under `$XDG_CONFIG_HOME` (default `~/.config`). When it exists, read the whole file: it **replaces** the default routing table below, and it may also name where the sources live, where unattended proposals are filed, recording conventions, and extra steps for this procedure. Follow it wherever it differs from this skill. When it does not exist, use the default routing; it needs no configuration.
+Look for a **routing file**: `$IMPROVE_HARNESS_ROUTING` when set, otherwise `improve-harness/routing.md` under `$XDG_CONFIG_HOME` (default `~/.config`). When it exists, read the whole file: it **replaces** the default routing table below, and it may also name where the sources live, recording conventions, and extra steps for this procedure. Follow it wherever it differs from this skill. When it does not exist, use the default routing; it needs no configuration.
 
 ### Default routing
 
@@ -24,9 +24,29 @@ Make the placement call **once per lesson**, then write to whichever surface won
 | Behavior of one agent type | **That agent's definition** |
 | A constraint of one repository | **That repository's instruction file**: `AGENTS.md` when present (both tools read it), else `CLAUDE.md` |
 | Something every session must obey, in any repository | **The user-level rules file** (`~/.claude/CLAUDE.md` for Claude Code, `~/.codex/AGENTS.md` for Codex; both when it binds both tools). Last resort for rules |
-| A cross-session fact the agent needs that is not a rule and has no narrower trigger | **Memory** (the tool's memory store). Never for rules |
+| A cross-session fact the agent needs that is not a rule and has no narrower trigger | **Memory**, when the running tool has an agent-written store; otherwise flag the missing destination |
 
-**Memory is never for rules.** A memory that instructs future behavior ("always X", "before Y do Z") was misfiled; place it up the table and delete the memory.
+### Memory policy
+
+The routing file accepts `memory-policy` with values `native` | `promote`;
+absent means `native` (including when there is no routing file). Example:
+
+```yaml
+memory-policy: native
+```
+
+- **`native`**: leave placement to the tool's memory system; propose no memory moves. Index hygiene and handling of verification failures still run.
+- **`promote`**: propose moving each in-scope memory with a configured home to that home, then deleting the memory. Keep only facts with no other home. Use the routing table's destinations, not an instruction-versus-fact test: a knowledge destination can take facts too. With default routing, behavior instructions move to rules, skills, agent definitions, or hooks; facts without a home stay in memory.
+
+A routing file can replace the default table with non-rule destinations, for example:
+
+| A lesson is… | It goes to |
+|---|---|
+| User context or reference knowledge | A note in `knowledge/context/` or `knowledge/wiki/`, relative to the routing file |
+
+These destinations and the policy apply in both tools; a missing memory store
+skips only the memory step. Promotion makes knowledge available beyond one tool's
+memory; native placement preserves the tool's own choices.
 
 **Recording form.** Write each rule as the rule plus a one-line why with its date and source, and keep inline whatever mechanism is needed to apply it (the exact command or construct). One home per rule: other sites get a one-line pointer if discovery matters, never a second copy. A pointer to the canonical home beats a restatement.
 
@@ -83,9 +103,8 @@ on its own. No prior-review log is kept; repeat flags until files are under limi
 Codex listing truncation notices get the budget/largest-descriptions report from
 its reference, with no automatic trigger.
 
-In an unattended run, file each over-limit row wherever the routing file names
-for unattended proposals. With no such destination, carry each row as a `lesson`
-item so the checklist keeps it in the handoff as an open loop. Preserve the file,
+In an unattended run, carry each over-limit row as a `lesson` item so the
+checklist keeps it in the handoff as an open loop. Preserve the file,
 measurement, limit and suggested command; no conversation incident or proposed
 diff is required for this measurement-only row. Do not invoke slim-harness.
 
@@ -102,7 +121,7 @@ Legitimate motivations:
 - **A stale reference** — a named path, flag, command, or label vocabulary no longer exists.
 - **A contradiction** — two rules, or a rule and reality, conflict and this session had to resolve it.
 - **A trigger miss** — a skill should have fired (or fired wrongly) for what the user asked.
-- **A memory that failed verification** — a recalled fact that no longer holds.
+- **A memory that failed verification** — a recalled or newly written fact that no longer holds.
 
 If you can't cite the moment, don't propose the edit. "This could be clearer" with no incident behind it is not grounds. A rule the user dictates is its own grounding.
 
@@ -111,13 +130,18 @@ If you can't cite the moment, don't propose the edit. "This could be clearer" wi
 | Mode | Detection | Behavior |
 |---|---|---|
 | **HITL** | interactive session the user is present in | Proposal table → **wait** → apply approved edits |
-| **AFK** | the user left the session to run unattended, or it is a scheduled or pipeline run | **Edit nothing.** Record proposals durably — see below |
+| **AFK** | the user left the session to run unattended, or it is a scheduled or pipeline run | Carry proposals as `lesson` items; only mechanical memory-index hygiene may edit files |
 
-The AFK branch exists because the alternative is worse than doing nothing: an unattended session either stalls forever on an approval that will never come, or self-approves its own edits to the files that govern every future session. Neither is acceptable, so autonomous runs propose in a durable place and stop. Running as a subagent does not make a session AFK; a subagent inherits its parent's mode.
+Unattended runs carry proposals because approval needs a present user; waiting stalls the run, and self-approval defeats the gate. A subagent inherits its parent's mode.
 
-**AFK output — one proposal per placement decision**, not one per surface touched. If a lesson resolves to "this belongs in the skill's gotchas, not in memory", that is one proposal carrying both halves. File it where the routing file says (for example, a ticket in the repository that owns the target file). With no such instruction, report each proposal as a `lesson` item so the checklist carries it in the handoff as an open loop.
-
-Each proposal must be **self-contained** — the proposed diff inline, the target file and section, and the grounding evidence (what happened, in this session, that motivates it). A proposal that only names a session id is unadjudicable later.
+**AFK output — one proposal per placement decision.** Carry each as a `lesson`
+item in the handoff, not one item per surface. Do not file tickets or apply the
+proposal. Include the full proposed text or diff, target file and section, and
+grounding evidence from this session. A memory move includes the memory file,
+target, proposed text, grounding, and deletion of the original as one proposal.
+The checklist's `lessons` slot presents these at the next interactive
+`/improve-harness` run; retain pending items until approved and applied. This
+reaches only sessions that resume the handoff, not unrelated future sessions.
 
 ## Procedure
 
@@ -135,9 +159,25 @@ When (c) holds and the skill genuinely applied, the fix is almost always a **des
 
 **(d) Agent definitions dispatched this session.** If a subagent misbehaved because its *definition* was wrong — stale path, missing constraint, an instruction that produced the wrong behavior — same grounded-edit pattern applied to that agent's definition file. An agent never dispatched this session is out of scope.
 
-**(e) Memory.** Memories **recalled this session**, especially any that led you wrong; on an explicit full audit only, every file in the memory store this session actually uses (resolve symlinks first). For each, check the recorded fact against reality — do the files, flags, paths, commands it names still exist? Has a later decision superseded it? Verdicts: **keep** (still true, still memory-shaped) · **update** (core fact holds, details drifted) · **delete** (wrong, superseded, or duplicates another memory) · **promote** (it instructs future behavior, so place it up the routing table, then **delete the memory**; never keep the same content in two places).
+**(e) Memory.** Use only the running tool's own agent-written memory store
+(resolve symlinks first). If none exists or memory is disabled, skip this step
+and report why; do not emulate a store or use another tool's. Codex currently
+has no comparable agent-written store, so report it skipped. Routing still runs
+for the other surfaces.
 
-If the store keeps an index file, cross-check it mechanically: every memory file gets one index line, every line points at an existing file. Orphans and dangling lines are mechanical fixes — **do them without asking**, in both modes.
+Review memories **recalled or written this session**; no full-store sweep.
+Check their facts, paths, flags, and commands against reality and later decisions.
+Under `native`, propose no placement changes; flag verification failures and
+propose correction or deletion through the mode's approval path. Under `promote`,
+also check each memory against the configured destinations: propose every move
+as one HITL table row or AFK `lesson` item with its target text and deletion of
+the original. Keep only facts with no other home; never delete before the target
+has been written successfully. Accuracy corrections use the same approval path.
+
+In both modes and under either policy, mechanically cross-check any index:
+every memory file gets one index line, every line points at an existing file.
+Fix orphan and dangling index entries without asking; this index check may list
+the store, but does not broaden the memory-content review.
 
 ### 2. Place each candidate
 
@@ -179,7 +219,7 @@ One table for all surfaces. Grounding gets a candidate INTO the table; impact de
 | old-path memory | — | memory → delete | Recorded path no longer exists | `ls` failed on it | 1 turn | Misleads every recall until removed | the whole file; `−1 file` | apply |
 ```
 
-**"Nothing grounded" is a normal, good outcome.** Still report the independent size pass, then say so plainly and stop — "skills used this session all ran cleanly; no rule friction; memories verified." Manufacturing edits to fill the table is the failure mode, not the absence of them.
+**"Nothing grounded" is a normal, good outcome.** Still report the independent size pass, then say so plainly and stop — "skills used this session all ran cleanly; no rule friction; memory reviewed or skipped as reported." Manufacturing edits to fill the table is the failure mode, not the absence of them.
 
 **Limitation:** self-detecting under-trigger is best-effort. If you never knew a skill existed, you may not realize it at wrap-up either. The retrospective scan catches most of it; the user's mid-task corrections catch the rest.
 
@@ -195,7 +235,8 @@ After approval (HITL) — surgical edits only. Don't reflow unrelated content; m
 
 ```
 Routing: <routing file path | default>
-Surfaces scanned: rules · skills+agents (<list>) · memory (<n> recalled)
+Surfaces scanned: rules · skills+agents (<list>) · memory (<n> recalled or written)
+Memory: <policy; reviewed count | skipped — reason>
 Mode: HITL | AFK
 
 <the table from step 5 with impact, strip/compress, and recommend columns, or "nothing grounded — <one line on what was checked>">
@@ -208,11 +249,12 @@ Applied:
 Repositories now dirty: <list>
 
 [AFK]
-Proposed: <where each was filed, or "carried as lesson items"> — <lesson>   (edited nothing)
+Proposed: carried as lesson items — <full proposals>
+Index hygiene: <mechanical fixes | none>
 ```
 
 ## Gotchas
 
-- **Memory is the last rung, not a parking spot.** A "memory" that instructs future behavior was misfiled at write time. Promote it and delete the original — a duplicate in two places drifts, and the memory copy is the one nobody re-reads.
+- **Memory placement follows the policy.** `native` leaves it alone; `promote` uses configured destinations, including knowledge folders. Propose the move and deletion together so two copies cannot drift.
 - **Symlinked sources.** Editing through a symlink is fine, but resolve it before reasoning about which repository the change commits to; getting this wrong leaves the edit uncommitted in a repository you never look at.
 - **Don't route a skill-local lesson into a shared rules file.** A user-level rules file loads in *every* session. A gotcha that only matters inside one skill costs every unrelated session context if it lands there.

@@ -108,6 +108,39 @@ def test_improve_harness_skill_publishes_the_new_routing_contract():
     assert "default `~/.config`" in text
 
 
+def test_memory_policy_contract_defaults_and_destination_routing():
+    text = read_text(os.path.join(ROOT, "skills", "improve-harness", "SKILL.md"))
+    assert "### Memory policy" in text
+    routing = text.split("### Memory policy", 1)[1].split("**Recording form.", 1)[0]
+    for clause in ("memory-policy: native", "`native` | `promote`", "absent means `native`",
+                   "no memory moves", "configured home", "knowledge/context/", "knowledge/wiki/",
+                   "no other home", "instruction-versus-fact"):
+        assert clause in routing, clause
+    assert "**Memory is never for rules.**" not in text
+    assert "Promote it and delete the original" not in text
+
+
+def test_memory_review_is_session_scoped_and_running_tool_specific():
+    text = read_text(os.path.join(ROOT, "skills", "improve-harness", "SKILL.md"))
+    memory = text.split("**(e) Memory.**", 1)[1].split("### 2.", 1)[0]
+    for clause in ("recalled or written this session", "no full-store sweep", "running tool",
+                   "Codex", "skip", "do not emulate", "index", "both modes",
+                   "verification", "`native`", "`promote`", "table row", "deletion"):
+        assert clause in memory, clause
+    assert "<n> recalled or written" in text
+    assert "Memory: <policy; reviewed count | skipped — reason>" in text
+
+
+def test_unattended_proposals_carry_full_memory_move_until_interactive_resume():
+    text = read_text(os.path.join(ROOT, "skills", "improve-harness", "SKILL.md"))
+    afk = text.split("**AFK output", 1)[1].split("## Procedure", 1)[0]
+    for clause in ("`lesson`", "memory file", "target", "proposed text", "grounding",
+                   "deletion", "`lessons`", "next interactive", "resume the handoff",
+                   "Do not file tickets"):
+        assert clause in afk, clause
+    assert "where unattended proposals are filed" not in text
+
+
 def test_shipped_sources_use_only_the_current_lessons_skill_name():
     retired = "-".join(("harness", "improve"))
     retired_variable = "_".join(("HARNESS", "IMPROVE"))
