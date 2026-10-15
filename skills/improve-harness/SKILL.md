@@ -11,7 +11,7 @@ Rules, skills and agent definitions, and memory are covered in one pass, because
 
 ## Routing: the user's file, or the default
 
-Look for a **routing file**: `$IMPROVE_HARNESS_ROUTING` when set, otherwise `improve-harness/routing.md` under `$XDG_CONFIG_HOME` (default `~/.config`). When it exists, read the whole file: it **replaces** the default routing table below, and it may also name where the sources live, recording conventions, and extra steps for this procedure. Follow it wherever it differs from this skill. When it does not exist, use the default routing; it needs no configuration.
+Look for a **routing file**: `$IMPROVE_HARNESS_ROUTING` when set, otherwise `improve-harness/routing.md` under `$XDG_CONFIG_HOME` (default `~/.config`). When it exists, read the whole file: it **replaces** the default routing table below, and it may also name where the sources live, where unattended proposals are filed, recording conventions, and extra steps for this procedure. Follow it wherever it differs from this skill. When it does not exist, use the default routing; it needs no configuration.
 
 ### Default routing
 
@@ -103,8 +103,8 @@ on its own. No prior-review log is kept; repeat flags until files are under limi
 Codex listing truncation notices get the budget/largest-descriptions report from
 its reference, with no automatic trigger.
 
-In an unattended run, carry each over-limit row as a `lesson` item so the
-checklist keeps it in the handoff as an open loop. Preserve the file,
+In an unattended run, use the configured proposal destination; otherwise emit
+each row as a `lesson` item through the AFK delivery path below. Preserve the file,
 measurement, limit and suggested command; no conversation incident or proposed
 diff is required for this measurement-only row. Do not invoke slim-harness.
 
@@ -130,16 +130,27 @@ If you can't cite the moment, don't propose the edit. "This could be clearer" wi
 | Mode | Detection | Behavior |
 |---|---|---|
 | **HITL** | interactive session the user is present in | Proposal table → **wait** → apply approved edits |
-| **AFK** | the user left the session to run unattended, or it is a scheduled or pipeline run | Carry proposals as `lesson` items; only mechanical memory-index hygiene may edit files |
+| **AFK** | the user left the session to run unattended, or it is a scheduled or pipeline run | Record proposals through the AFK delivery path below; do not apply them (mechanical memory-index hygiene is exempt) |
 
 Unattended runs carry proposals because approval needs a present user; waiting stalls the run, and self-approval defeats the gate. A subagent inherits its parent's mode.
 
-**AFK output — one proposal per placement decision.** Carry each as a `lesson`
-item in the handoff, not one item per surface. Do not file tickets or apply the
-proposal. Include the full proposed text or diff, target file and section, and
-grounding evidence from this session. A memory move includes the memory file,
-target, proposed text, grounding, and deletion of the original as one proposal.
-The checklist's `lessons` slot presents these at the next interactive
+**AFK output — one proposal per placement decision.** By default, emit each as
+a `lesson` item for the checklist to carry in the handoff, not one per surface.
+Without an override, do not file tickets. Never self-approve or apply proposals.
+Include the full proposed text or diff, target file and section, and grounding
+evidence. A memory move includes the memory file, target, proposed text,
+grounding, and deletion of the original as one proposal.
+
+A routing file's configured durable sink overrides this default: file the full
+proposal there, including tickets when explicitly configured, and report its
+receipt. This preserves user-owned proposal routing for headless runs too.
+Without a configured sink, an unattended interactive session carries `lesson`
+items in its handoff. Factory sessions and subagents never write handoffs or run
+the checklist: return the full `lesson` items to the parent or caller for durable
+retention. With no parent or sink, report the persistence blocker alongside the
+full proposals; do not claim they were saved or will reach interactive review.
+
+For carried items, the checklist's `lessons` slot presents them at the next interactive
 `/improve-harness` run; retain pending items until approved and applied. This
 reaches only sessions that resume the handoff, not unrelated future sessions.
 
@@ -249,7 +260,8 @@ Applied:
 Repositories now dirty: <list>
 
 [AFK]
-Proposed: carried as lesson items — <full proposals>
+Proposed: <configured sink + receipt | handoff lesson items | parent/caller | persistence blocker>
+<full proposals>
 Index hygiene: <mechanical fixes | none>
 ```
 

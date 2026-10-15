@@ -136,9 +136,30 @@ def test_unattended_proposals_carry_full_memory_move_until_interactive_resume():
     afk = text.split("**AFK output", 1)[1].split("## Procedure", 1)[0]
     for clause in ("`lesson`", "memory file", "target", "proposed text", "grounding",
                    "deletion", "`lessons`", "next interactive", "resume the handoff",
-                   "Do not file tickets"):
+                   "Without an override", "do not file tickets"):
         assert clause in afk, clause
-    assert "where unattended proposals are filed" not in text
+    assert "where unattended proposals are filed" in text
+
+
+@pytest.mark.parametrize("surface", ["routing", "size", "mode", "output"])
+def test_afk_routing_preserves_configured_sink_and_headless_delivery(surface):
+    text = read_text(os.path.join(ROOT, "skills", "improve-harness", "SKILL.md"))
+    sections = {
+        "routing": text.split("### Default routing", 1)[0],
+        "size": text.split("In an unattended run,", 1)[1].split("## The one rule", 1)[0],
+        "mode": text.split("**AFK output", 1)[1].split("## Procedure", 1)[0],
+        "output": text.split("## Output format", 1)[1].split("## Gotchas", 1)[0],
+    }
+    required = {
+        "routing": ("where unattended proposals are filed",),
+        "size": ("configured proposal destination", "`lesson`"),
+        "mode": ("configured durable sink", "overrides this default", "including tickets",
+                 "Factory sessions and subagents never write handoffs", "parent or caller",
+                 "no parent or sink", "report the persistence blocker"),
+        "output": ("configured sink + receipt", "parent/caller", "persistence blocker"),
+    }
+    for clause in required[surface]:
+        assert clause in sections[surface], clause
 
 
 def test_shipped_sources_use_only_the_current_lessons_skill_name():

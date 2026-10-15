@@ -87,7 +87,9 @@ tool's limit. You choose that file for `slim-harness`, which reads the source
 and neighboring instructions, asks about conflicts and produced surfaces,
 then applies the agreed edits. It reports numbered changes for rejection and
 leaves them uncommitted. It does not automatically slim every flagged file;
-unattended lessons are carried as `lesson` items for sessions that resume the handoff.
+unattended lessons default to `lesson` items for sessions that resume the handoff.
+A routing file can override this with a durable proposal sink; headless runners
+without one return full proposals to their parent or report a persistence blocker.
 The [routing contract](skills/improve-harness/SKILL.md#memory-policy) accepts
 `memory-policy: native` (default, no placement changes) or `promote` (propose
 moving session memories to configured destinations after approval). Codex skips memory review because it
