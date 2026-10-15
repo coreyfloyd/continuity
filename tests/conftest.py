@@ -1,4 +1,6 @@
 """Keep continuity tests independent of the caller's live handoff ledger."""
+import os
+
 import pytest
 
 
@@ -18,3 +20,16 @@ def isolate_codex_identity(monkeypatch):
     """No test takes its invoking worker's Codex session as an input."""
     monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
     monkeypatch.delenv("CONTINUITY_HARNESS", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def isolate_git_configuration(monkeypatch):
+    """Fixture repositories never use the caller's git identity or configuration."""
+    for key in os.environ:
+        if key.startswith("GIT_"):
+            monkeypatch.delenv(key)
+    monkeypatch.setenv("GIT_CONFIG_GLOBAL", os.devnull)
+    monkeypatch.setenv("GIT_CONFIG_NOSYSTEM", "1")
+    for role in ("AUTHOR", "COMMITTER"):
+        monkeypatch.setenv(f"GIT_{role}_NAME", "Test")
+        monkeypatch.setenv(f"GIT_{role}_EMAIL", "test@example.com")
