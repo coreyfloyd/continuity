@@ -228,12 +228,17 @@ def test_the_repository_own_url_is_allowed_and_other_owner_uses_count(tmp_path):
         f"see github.com/{owner}/other\n"
         f"{OWN_REPOSITORY}-fork\n"
         f"written by {owner[:5].title()}\n"
+        f"{OWN_REPOSITORY}.private\n"
+        f"{OWN_REPOSITORY}.docs/README.md\n"
+        f"{OWN_REPOSITORY}.github\n"
+        f"see {OWN_REPOSITORY}#34, {OWN_REPOSITORY}/issues?q=x or \"{OWN_REPOSITORY}\".\n"
+        f"clone {OWN_REPOSITORY}.git.\n"
     )
 
     result = run_check("--terms", str(terms), str(dirty))
 
     assert result.returncode == 1
-    assert [int(line.split(":")[1]) for line in result.stdout.splitlines()] == [3, 3, 4, 4, 5]
+    assert [int(line.split(":")[1]) for line in result.stdout.splitlines()] == [3, 3, 4, 4, 5, 6, 6, 7, 7, 8, 8]
 
 
 def test_terms_file_from_environment(tmp_path, terms):

@@ -40,7 +40,9 @@ SEPARATORS = "-_. \t"
 SEPARATOR_RUN = r"[-_.\s]*"
 PLURAL_SUFFIXES = ("", "s", "es")
 # The repository's own public slug, which its install commands and links must name.
-OWN_REPOSITORY = re.compile(r"(?<![\w.-])coreyfloyd/continuity(?![\w-])", re.IGNORECASE)
+# It may end with ``.git``; after that only a URL continuation or punctuation may
+# follow, so ``.private`` or ``-fork`` names a different repository and still counts.
+OWN_REPOSITORY = re.compile(r"(?<![\w.-])coreyfloyd/continuity(?:\.git)?(?![\w-])(?!\.\w)", re.IGNORECASE)
 
 
 class UsageError(Exception):
