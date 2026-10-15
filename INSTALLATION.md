@@ -106,15 +106,15 @@ credentials; your agent CLI retains its own authentication requirements.
 
 ## Install a downloaded signed release
 
-Download the matching assets into one directory: `continuity-0.1.0.tar.gz`,
-`continuity-0.1.0.tar.gz.sha256`, `continuity-0.1.0.tar.gz.asc`,
+Download the matching assets into one directory: `continuity-0.1.1.tar.gz`,
+`continuity-0.1.1.tar.gz.sha256`, `continuity-0.1.1.tar.gz.asc`,
 `continuity-release.asc`, and `verify-release.sh`. The signature is over the
 checksum file. Verify before extracting:
 
 ```bash
-bash verify-release.sh continuity-0.1.0.tar.gz continuity-release.asc \
+bash verify-release.sh continuity-0.1.1.tar.gz continuity-release.asc \
   09674AFF392661238F4ACBD9F32B3A412CD5EFC5
-tar -xzf continuity-0.1.0.tar.gz
+tar -xzf continuity-0.1.1.tar.gz
 cd continuity
 ```
 
