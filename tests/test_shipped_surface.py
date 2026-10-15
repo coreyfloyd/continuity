@@ -108,6 +108,60 @@ def test_improve_harness_skill_publishes_the_new_routing_contract():
     assert "default `~/.config`" in text
 
 
+def test_memory_policy_contract_defaults_and_destination_routing():
+    text = read_text(os.path.join(ROOT, "skills", "improve-harness", "SKILL.md"))
+    assert "### Memory policy" in text
+    routing = text.split("### Memory policy", 1)[1].split("**Recording form.", 1)[0]
+    for clause in ("memory-policy: native", "`native` | `promote`", "absent means `native`",
+                   "no memory moves", "configured home", "knowledge/context/", "knowledge/wiki/",
+                   "no other home", "instruction-versus-fact"):
+        assert clause in routing, clause
+    assert "**Memory is never for rules.**" not in text
+    assert "Promote it and delete the original" not in text
+
+
+def test_memory_review_is_session_scoped_and_running_tool_specific():
+    text = read_text(os.path.join(ROOT, "skills", "improve-harness", "SKILL.md"))
+    memory = text.split("**(e) Memory.**", 1)[1].split("### 2.", 1)[0]
+    for clause in ("recalled or written this session", "no full-store sweep", "running tool",
+                   "Codex", "skip", "do not emulate", "index", "both modes",
+                   "verification", "`native`", "`promote`", "table row", "deletion"):
+        assert clause in memory, clause
+    assert "<n> recalled or written" in text
+    assert "Memory: <policy; reviewed count | skipped — reason>" in text
+
+
+def test_unattended_proposals_carry_full_memory_move_until_interactive_resume():
+    text = read_text(os.path.join(ROOT, "skills", "improve-harness", "SKILL.md"))
+    afk = text.split("**AFK output", 1)[1].split("## Procedure", 1)[0]
+    for clause in ("`lesson`", "memory file", "target", "proposed text", "grounding",
+                   "deletion", "`lessons`", "next interactive", "resume the handoff",
+                   "Without an override", "do not file tickets"):
+        assert clause in afk, clause
+    assert "where unattended proposals are filed" in text
+
+
+@pytest.mark.parametrize("surface", ["routing", "size", "mode", "output"])
+def test_afk_routing_preserves_configured_sink_and_headless_delivery(surface):
+    text = read_text(os.path.join(ROOT, "skills", "improve-harness", "SKILL.md"))
+    sections = {
+        "routing": text.split("### Default routing", 1)[0],
+        "size": text.split("In an unattended run,", 1)[1].split("## The one rule", 1)[0],
+        "mode": text.split("**AFK output", 1)[1].split("## Procedure", 1)[0],
+        "output": text.split("## Output format", 1)[1].split("## Gotchas", 1)[0],
+    }
+    required = {
+        "routing": ("where unattended proposals are filed",),
+        "size": ("configured proposal destination", "`lesson`"),
+        "mode": ("configured durable sink", "overrides this default", "including tickets",
+                 "Factory sessions and subagents never write handoffs", "parent or caller",
+                 "no parent or sink", "report the persistence blocker"),
+        "output": ("configured sink + receipt", "parent/caller", "persistence blocker"),
+    }
+    for clause in required[surface]:
+        assert clause in sections[surface], clause
+
+
 def test_shipped_sources_use_only_the_current_lessons_skill_name():
     retired = "-".join(("harness", "improve"))
     retired_variable = "_".join(("HARNESS", "IMPROVE"))
