@@ -176,6 +176,66 @@ def test_upstream_lines_count_outside_a_provenance_file(tmp_path, terms):
     assert result.returncode == 1
 
 
+def test_a_term_matches_whole_words_only(tmp_path, terms):
+    """continuity#34: a term inside a longer word is not a reference; a camel-case join or plural is."""
+    dirty = tmp_path / "dirty.md"
+    dirty.write_text(
+        "deploy to example-host-1 now\n"
+        "var examplehost12 = null;\n"
+        "notexamplehandle\n"
+        "ExampleHandleLogs\n"
+        "two examplehandles\n"
+    )
+
+    result = run_check("--terms", terms, str(dirty))
+
+    assert result.returncode == 1
+    assert result.stdout.splitlines() == [
+        f"{dirty}:1:11: example-host-1: deploy to example-host-1 now",
+        f"{dirty}:4:1: examplehandle: ExampleHandleLogs",
+        f"{dirty}:5:5: examplehandle: two examplehandles",
+    ]
+
+
+def test_two_terms_written_as_one_word_still_count(tmp_path):
+    terms = tmp_path / "terms.txt"
+    terms.write_text("example\nhandle\n")
+    dirty = tmp_path / "dirty.md"
+    dirty.write_text("examplehandle\nexamplehandler\n")
+
+    result = run_check("--terms", str(terms), str(dirty))
+
+    assert result.returncode == 1
+    assert [line.split(": ")[:2] for line in result.stdout.splitlines()] == [
+        [f"{dirty}:1:1", "example"],
+        [f"{dirty}:1:8", "handle"],
+    ]
+
+
+# The repository's own public slug; the owner login appears in this file only inside it.
+OWN_REPOSITORY = "coreyfloyd/continuity"
+
+
+def test_the_repository_own_url_is_allowed_and_other_owner_uses_count(tmp_path):
+    """continuity#34: the owner login in the repository's own URL is not a reference; anywhere else it is."""
+    owner = OWN_REPOSITORY.split("/")[0]
+    terms = tmp_path / "terms.txt"
+    terms.write_text(f"{owner[:5]}\n{owner[5:]}\n")
+    dirty = tmp_path / "dirty.md"
+    dirty.write_text(
+        f"git clone https://github.com/{OWN_REPOSITORY}.git\n"
+        f"claude plugin install continuity --marketplace {OWN_REPOSITORY}\n"
+        f"see github.com/{owner}/other\n"
+        f"{OWN_REPOSITORY}-fork\n"
+        f"written by {owner[:5].title()}\n"
+    )
+
+    result = run_check("--terms", str(terms), str(dirty))
+
+    assert result.returncode == 1
+    assert [int(line.split(":")[1]) for line in result.stdout.splitlines()] == [3, 3, 4, 4, 5]
+
+
 def test_terms_file_from_environment(tmp_path, terms):
     dirty = tmp_path / "dirty.md"
     dirty.write_text("examplehandle\n")
