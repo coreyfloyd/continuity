@@ -117,7 +117,7 @@ def remove_trust(text, keys, replacements=None):
                 elif line.startswith(quote, index):
                     width=len(quote)
                     if width == 3:
-                        # TOML permits one or two literal quotes before a closing triple.
+                        # TOML permits one or two literal quote characters before a closing triple.
                         while index + width < len(line) and line[index + width] == quote[0]:
                             width += 1
                     quote=None

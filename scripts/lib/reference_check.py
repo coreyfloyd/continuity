@@ -5,9 +5,15 @@ The terms come from a file the caller names, so this module carries none of
 them. Matching is case-insensitive and otherwise literal, except that a
 separator (``-``, ``_``, ``.``, or whitespace) between two letters or digits of
 a term matches any run of separators or none: ``example-host`` also reports
-``Example Host``, ``example_host``, and ``examplehost``. In a provenance file
-(``PROVENANCE.md``), lines that describe the upstream source are exempt
-unless they also name a fork or carry a ticket link.
+``Example Host``, ``example_host``, and ``examplehost``. A term matches whole
+words only: where a term starts or ends with a letter or digit, the text
+beside the match must not continue the word. A camel-case join is a word
+boundary (``ExampleHostLogs`` reports ``example-host``, ``exampleHostname``
+does not), and a trailing plural ``s`` or ``es`` is part of the match.
+The repository's own public slug (``coreyfloyd/continuity``, also inside its
+GitHub URL) is allowed. In a provenance file (``PROVENANCE.md``), lines that
+describe the upstream source are exempt unless they also name a fork or
+carry a ticket link.
 
 Usage:
     reference_check.py --terms TERMS_FILE PATH [PATH ...]
@@ -32,6 +38,11 @@ SKIPPED_DIRS = {".git"}
 TICKET_LINK = re.compile(r"#\d+|/(issues|pull)/\d+")
 SEPARATORS = "-_. \t"
 SEPARATOR_RUN = r"[-_.\s]*"
+PLURAL_SUFFIXES = ("", "s", "es")
+# The repository's own public slug, which its install commands and links must name.
+# It may end with ``.git``; after that only a URL continuation or punctuation may
+# follow, so ``.private`` or ``-fork`` names a different repository and still counts.
+OWN_REPOSITORY = re.compile(r"(?<![\w.-])coreyfloyd/continuity(?:\.git)?(?![\w-])(?!\.\w)", re.IGNORECASE)
 
 
 class UsageError(Exception):
@@ -73,6 +84,36 @@ def term_pattern(term):
     return re.compile("".join(parts), re.IGNORECASE)
 
 
+def continues_word(before, after):
+    """True when ``after`` carries on the word ``before`` ends, so the two are not split by a word boundary."""
+    if not after.isalnum() or not before.isalnum():
+        return False
+    return not (before.islower() and after.isupper())
+
+
+def is_whole_word(term, line, start, end, starts, ends):
+    """True when the match ``line[start:end]`` of ``term`` is not part of a longer word.
+
+    A side that runs straight into another term's match (in ``starts`` or
+    ``ends``) is a boundary, so two terms written as one word still count.
+    """
+    if term[0].isalnum() and start > 0 and start not in ends and continues_word(line[start - 1], line[start]):
+        return False
+    if not term[-1].isalnum() or end in starts:
+        return True
+    for suffix in PLURAL_SUFFIXES:
+        stop = end + len(suffix)
+        if line[end:stop].lower() == suffix and (
+            stop == len(line) or not continues_word(line[stop - 1], line[stop])
+        ):
+            return True
+    return False
+
+
+def allowed_spans(line):
+    return [match.span() for match in OWN_REPOSITORY.finditer(line)]
+
+
 def iter_files(paths):
     for path in paths:
         if os.path.isdir(path):
@@ -108,12 +149,24 @@ def check_text(path, text, terms):
     for number, line in enumerate(text.splitlines(), start=1):
         if provenance and is_upstream_line(line):
             continue
-        hits = []
+        allowed = allowed_spans(line)
+        matches = []
         for term, pattern in patterns:
             match = pattern.search(line)
             while match:
-                hits.append((match.start() + 1, term))
+                matches.append((term, match.start(), match.end()))
                 match = pattern.search(line, match.start() + 1)
+        kept = [(term, start, end) for term, start, end in matches
+                if not any(low <= start and end <= high for low, high in allowed)]
+        # A match that leans on a neighbour for its boundary counts only while that neighbour does.
+        while True:
+            starts = {start for _, start, _ in kept}
+            ends = {end for _, _, end in kept}
+            whole = [m for m in kept if is_whole_word(m[0], line, m[1], m[2], starts, ends)]
+            if len(whole) == len(kept):
+                break
+            kept = whole
+        hits = [(start + 1, term) for term, start, _ in kept]
         for column, term in sorted(hits):
             findings.append((number, column, term, line.strip()))
     return findings

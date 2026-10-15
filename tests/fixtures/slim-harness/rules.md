@@ -111,7 +111,7 @@ person] for an include/leave decision (2026-10-07).
 
 ## Fleet context & computer control (IMPORTANT)
 
-Before remote work on a Mac Mini or other [redacted-identity] device, read `[redacted-
+Before remote work on a build host or other [redacted-identity] device, read `[redacted-
 path]]/context/devices-and-applications.md` for the authoritative host, account, role, and network
 route; use the documented endpoint, never one inferred from a shell shortcut. Never control
 [redacted-person]'s screen, keyboard, or mouse without explicit permission for that action; reading
@@ -288,7 +288,7 @@ the current runtime's catalog is authoritative — absence from the other tool's
 
 **Self-authored implementations.** Use self-authored skills and tools; treat external skills and
 tools as inspiration, never as maintained forks or merge sources, and retain provenance when
-adopting an idea ([redacted-person] 2026-10-07: moved here from the harness-cross-machine-workflows
+adopting an idea ([redacted-person] 2026-10-07: moved here from the [redacted-project]
 project's autonomous posture).
 
 ## Claude/Codex parity (IMPORTANT)
