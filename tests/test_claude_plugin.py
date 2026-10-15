@@ -79,12 +79,12 @@ def fire(event, payload, env, plugin_root=ROOT, hooks_file=HOOKS_FILE):
 
 
 def git(repo, *args):
-    return subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, text=True).stdout.strip()
+    return subprocess.run(["git", "-C", str(repo), *args], check=True, stdout=subprocess.PIPE, text=True).stdout.strip()
 
 
 def new_repo(path):
     path.mkdir(parents=True)
-    subprocess.run(["git", "init", "-q", "-b", "main", str(path)], check=True)
+    git(path, "init", "-q", "-b", "main")
     git(path, "commit", "-q", "--allow-empty", "-m", "init")
     return path.resolve()
 
@@ -133,6 +133,21 @@ def fill_context(transcript):
 
 def context_of(output):
     return json.loads(output)["hookSpecificOutput"]["additionalContext"]
+
+
+# ------------------------------------------------------------------ fixture isolation
+
+def test_fixture_commits_have_a_test_identity(tmp_path):
+    repo = new_repo(tmp_path / "work")
+    assert git(repo, "log", "-1", "--format=%an <%ae>%n%cn <%ce>") == (
+        "Test <test@example.com>\nTest <test@example.com>"
+    )
+
+
+def test_fixture_git_failure_exposes_gits_stderr(tmp_path, capfd):
+    with pytest.raises(subprocess.CalledProcessError):
+        git(tmp_path, "rev-parse", "--verify", "HEAD")
+    assert "fatal:" in capfd.readouterr().err
 
 
 # ------------------------------------------------------------------ registration
