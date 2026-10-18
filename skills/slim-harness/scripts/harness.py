@@ -6,6 +6,8 @@ No semantic review, file discovery, generator execution, or git mutation occurs 
 from __future__ import annotations
 
 import argparse
+from difflib import SequenceMatcher
+import unicodedata
 import json
 from pathlib import Path
 import re
@@ -151,6 +153,111 @@ role_paths from the actual definition and chain from root to session start.
     return result
 
 
+def markdown_table_cells(line):
+    """Split unescaped pipes, allowing one optional outer delimiter per side."""
+    line=line.strip(); cells=[]; start=0; escaped=False; has_pipe=False
+    for index,char in enumerate(line):
+        if char=='|' and not escaped:
+            cells.append(line[start:index].strip());start=index+1;has_pipe=True
+        escaped=char=='\\' and not escaped
+    cells.append(line[start:].strip())
+    if line.startswith('|'):cells.pop(0)
+    if start==len(line) and has_pipe:cells.pop()
+    return cells,has_pipe
+
+
+def instruction_sentences(text):
+    """Extract prose with physical line coordinates; see references/duplicates.md."""
+    lines=text.splitlines(); start=0
+    if lines and lines[0].strip()=='---':
+        end=next((i for i in range(1,len(lines)) if lines[i].strip()=='---'),None)
+        if end is None:raise ValueError('unterminated instruction frontmatter')
+        start=end+1
+    blocks=[]; block=[]; fence=None; comment=False; table=False; delimiter_line=None
+    for number,line in enumerate(lines[start:],start+1):
+        stripped=line.strip()
+        marker=re.match(r'^(`{3,}|~{3,})',stripped)
+        if fence:
+            if re.fullmatch(re.escape(fence[0])+'{'+str(len(fence))+',}',stripped):fence=None
+            continue
+        if marker:
+            if block:blocks.append(block);block=[]
+            fence=marker.group(1);table=False;continue
+        if comment or '<!--' in stripped:
+            comment='-->' not in stripped;table=False
+            if block:blocks.append(block);block=[]
+            continue
+        if table:
+            if number==delimiter_line:continue
+            # A table can contain short rows without a pipe; a blank or new
+            # Markdown block ends it. Fences/comments are handled above.
+            boundary=r'^(#{1,6}\s|>|(?:[-+*]|[0-9]+[.)])\s|[-*_]{3,}$)'
+            if stripped and not re.match(boundary,stripped):continue
+            table=False
+        if number<len(lines):
+            header,has_pipe=markdown_table_cells(stripped)
+            delimiter,_=markdown_table_cells(lines[number])
+            if (has_pipe and len(header)==len(delimiter) and delimiter
+                    and all(re.fullmatch(r':?-+:?',cell) for cell in delimiter)):
+                if block:blocks.append(block);block=[]
+                table=True;delimiter_line=number+1;continue
+        if not stripped or re.match(r'^(#{1,6}\s|\||[-*_]{3,}$)',stripped):
+            if block:blocks.append(block);block=[]
+            continue
+        listed=re.match(r'^(?:[-+*]|[0-9]+[.)])\s+',stripped)
+        if listed:
+            if block:blocks.append(block);block=[]
+            stripped=stripped[listed.end():]
+        block.append((number,stripped))
+    if block:blocks.append(block)
+    sentences=[]
+    for block in blocks:
+        joined=''; coordinates=[]
+        for number,line in block:
+            if joined:joined+=' ';coordinates.append(number)
+            joined+=line;coordinates.extend([number]*len(line))
+        for match in re.finditer(r'\S.*?(?:[.!?](?=\s|$)|$)',joined):
+            prose=match.group().strip()
+            normalized=unicodedata.normalize('NFKC',prose).casefold().replace('’',"'")
+            tokens=re.findall(r"\w+(?:'\w+)?",normalized)
+            if len(tokens)<2 or len(' '.join(tokens))<10:continue
+            sentences.append(dict(start_line=coordinates[match.start()],end_line=coordinates[match.end()-1],
+                                  text=prose,tokens=tokens))
+    return sentences
+
+
+def duplicates(manifest):
+    """Read only manifest-attested loaded files; report candidates without edits."""
+    measured=measure(manifest)
+    sources={row['source']:row for row in measured['measured'] if 'lines' in row['size']}
+    files=[]
+    for source,row in sorted(sources.items()):
+        sentences=instruction_sentences(Path(source).read_bytes().decode('utf-8'))
+        for sentence in sentences:
+            sentence.update(path=row['path'],source=source)
+        files.append(sentences)
+    result=dict(duplicates=[],unresolved=measured['unresolved'])
+    polarity={'not','no','never','always','only',"cannot","can't","don't","without"}
+    for index,left in enumerate(files):
+        for right in files[index+1:]:
+            for a in left:
+                for b in right:
+                    at=a['tokens'];bt=b['tokens']
+                    exact=at==bt
+                    if not exact:
+                        if min(len(at),len(bt))<8:continue
+                        if min(len(' '.join(at)),len(' '.join(bt)))<40:continue
+                        if 2*min(len(at),len(bt))/(len(at)+len(bt))<0.90:continue
+                        if [t for t in at if t in polarity]!=[t for t in bt if t in polarity]:continue
+                    score=1.0 if exact else SequenceMatcher(None,at,bt,autojunk=False).ratio()
+                    if score<0.90:continue
+                    spans=[{k:v for k,v in sentence.items() if k!='tokens'} for sentence in (a,b)]
+                    result['duplicates'].append(dict(type='duplicate-rule',match='exact' if exact else 'near',
+                        similarity=round(score,4),spans=spans,
+                        action='run /slim-harness on the file that does not own this rule; confirm ownership with the user'))
+    return result
+
+
 def dirty_repositories(paths):
     repos=set()
     for path in paths:
@@ -200,11 +307,13 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     sub=parser.add_subparsers(dest='operation',required=True)
     p=sub.add_parser('measure');p.add_argument('manifest',type=Path)
+    p=sub.add_parser('duplicates');p.add_argument('manifest',type=Path)
     p=sub.add_parser('edit');p.add_argument('request',type=Path);p.add_argument('journal',type=Path)
     p=sub.add_parser('revert');p.add_argument('journal',type=Path);p.add_argument('number',type=int)
     args=parser.parse_args()
     try:
         if args.operation=='measure':result=measure(json.loads(args.manifest.read_text()))
+        elif args.operation=='duplicates':result=duplicates(json.loads(args.manifest.read_text()))
         elif args.operation=='edit':result=edit(journal=args.journal,**json.loads(args.request.read_text()))
         else:result=revert(args.journal,args.number)
         print(json.dumps(result,indent=2));return 0

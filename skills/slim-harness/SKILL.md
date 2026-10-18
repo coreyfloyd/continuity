@@ -182,3 +182,9 @@ and supply `context_window` if known. The helper reports the listing budget and
 largest loaded descriptions (unknown window: 8,000 characters; otherwise 2% of
 context window), with no automatic trigger. Output has `measured`, `over_limit`,
 `unresolved`, and optional `listing`; the script measures and runs no review.
+
+
+For cross-file detection without a review, `scripts/harness.py duplicates
+<manifest.json>` accepts the same manifest. Read `references/duplicates.md` for
+its matching rules and result schema. It reports candidates and unresolved paths;
+it edits nothing and grants no permission to trim.

@@ -108,6 +108,30 @@ each row as a `lesson` item through the AFK delivery path below. Preserve the fi
 measurement, limit and suggested command; no conversation incident or proposed
 diff is required for this measurement-only row. Do not invoke slim-harness.
 
+## Duplicate rules — independent detection pass
+
+In both Claude Code and Codex, run
+`../slim-harness/scripts/harness.py duplicates <manifest.json>` with the same
+running-session manifest used for measurement. Do not discover extra files or
+compare the other tool's loaded set. Read
+`../slim-harness/references/duplicates.md` for the deterministic threshold,
+exclusions, output schema, and limitations. Report unresolved paths explicitly.
+
+Present `duplicates` as a separate **Duplicate rules** block beside **Over-limit
+files**, outside the grounded lesson table. Each `duplicate-rule` row names both
+files and inclusive line ranges, the matching text, exact/near classification,
+and similarity. Its action is: “rule repeated in A:lines and B:lines; run
+/slim-harness on the file that does not own it.” Ownership requires user judgment;
+near matches are candidates, not proof that either rule can be removed.
+
+Detection edits nothing and invokes no trimming or generators. Like size rows,
+duplicate rows are exempt from conversation grounding: the spans are the evidence.
+In unattended runs, carry every row through the configured proposal destination
+or the AFK `lesson` delivery path below, retaining row type, both spans, match,
+score, and action. No proposed diff is needed; do not invoke slim-harness. With no
+matches, report no duplicate rules found in the supplied loaded set. Repeat
+findings on future runs until resolved; retain no suppression history.
+
 ## The one rule that makes this safe: every edit must be grounded
 
 A proposed edit is legitimate only if you can point at the **specific moment in this conversation** that motivates it. The failure mode is generating plausible-sounding improvements traceable to nothing — that is how rules files bloat and skills drift from how they actually behave.
@@ -230,7 +254,7 @@ One table for all surfaces. Grounding gets a candidate INTO the table; impact de
 | old-path memory | — | memory → delete | Recorded path no longer exists | `ls` failed on it | 1 turn | Misleads every recall until removed | the whole file; `−1 file` | apply |
 ```
 
-**"Nothing grounded" is a normal, good outcome.** Still report the independent size pass, then say so plainly and stop — "skills used this session all ran cleanly; no rule friction; memory reviewed or skipped as reported." Manufacturing edits to fill the table is the failure mode, not the absence of them.
+**"Nothing grounded" is a normal, good outcome.** Still report the independent size and duplicate passes, then say so plainly and stop — "skills used this session all ran cleanly; no rule friction; memory reviewed or skipped as reported." Manufacturing edits to fill the table is the failure mode, not the absence of them.
 
 **Limitation:** self-detecting under-trigger is best-effort. If you never knew a skill existed, you may not realize it at wrap-up either. The retrospective scan catches most of it; the user's mid-task corrections catch the rest.
 
@@ -249,6 +273,8 @@ Routing: <routing file path | default>
 Surfaces scanned: rules · skills+agents (<list>) · memory (<n> recalled or written)
 Memory: <policy; reviewed count | skipped — reason>
 Mode: HITL | AFK
+Over-limit files: <measurement rows | none>
+Duplicate rules: <duplicate-rule rows with both spans, match, score and action | none>
 
 <the table from step 5 with impact, strip/compress, and recommend columns, or "nothing grounded — <one line on what was checked>">
 Net: <per file touched, lines added and removed>
