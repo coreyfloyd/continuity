@@ -113,6 +113,15 @@ require editing the other side: include it as a separately numbered change.
 
 ### Extraction
 
+When a section usage report is supplied, read it before extraction and cite its
+skill path, section, size, sessions loaded, and sessions with evidence in each
+report-supported finding. Read `references/usage.md` for the report schema and
+coverage limits; generate it with `scripts/harness.py usage <manifest.json>` when
+transcripts and snapshots are supplied. Treat prose-only rules as “no evidence of
+use”, never “unused”. Suggest a split from usage evidence only after at least
+3 distinct sessions loaded that skill. The report is evidence for the existing
+review and user decisions, not permission to remove instructions.
+
 Sort remaining instructions into always-on (stays), situational, or tool-specific.
 Situational material moves behind a pointer; tool-specific material goes in a file
 only that tool's entry points to. Follow the running tool's destination rules.
