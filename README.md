@@ -82,8 +82,12 @@ session together, so separate sessions do not overwrite each other's files.
 
 During a wrap you identify a rule that caused a concrete mistake.
 `improve-harness` finds its narrowest owning source and proposes the grounded
-change. Its separate size pass flags an instruction file over the running
-tool's limit. You choose that file for `slim-harness`, which reads the source
+change. Its independent passes flag instruction files over the running tool's
+limit and exact or near-duplicate rules across loaded files. Duplicate rows name
+both files and line ranges; the lexical threshold is documented in
+[the matching reference](skills/slim-harness/references/duplicates.md). Both passes
+only report findings, including in unattended runs. You choose one source for
+`slim-harness`, which reads the source
 and neighboring instructions, asks about conflicts and produced surfaces,
 then applies the agreed edits. It reports numbered changes for rejection and
 leaves them uncommitted. It does not automatically slim every flagged file;
