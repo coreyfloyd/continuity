@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import shlex
 import sys
 
 
@@ -258,6 +259,173 @@ def duplicates(manifest):
     return result
 
 
+def skill_sections(text):
+    """Partition the body at ATX headings outside fences, without overlapping sizes."""
+    _,body=frontmatter(text)
+    sections=[]; title='Preamble'; lines=[]; start=1; fence=None
+    for number,line in enumerate(body.splitlines(keepends=True),1):
+        marker=re.match(r'^ {0,3}(`{3,}|~{3,})',line)
+        if marker:
+            if fence is None:fence=marker.group(1)
+            elif re.fullmatch(re.escape(fence[0])+'{'+str(len(fence))+r',}\s*',line.strip()):fence=None
+        heading=re.match(r'^ {0,3}#{1,6}\s+(.+?)\s*#*\s*$',line) if fence is None else None
+        if heading:
+            if lines and ''.join(lines).strip():sections.append((title,start,''.join(lines)))
+            title=heading.group(1);lines=[];start=number
+        lines.append(line)
+    if lines and ''.join(lines).strip():sections.append((title,start,''.join(lines)))
+    return sections
+
+
+def usage_markers(text):
+    """Conservative lexical evidence: literal flags, paths and backticked commands."""
+    markers=set(re.findall(r'(?<![\w-])--[a-zA-Z][\w-]*',text))
+    markers.update(re.findall(r'(?<![\w./~-])(?:~?/|\.\.?/|[\w.-]+/)[\w./~{}<>-]+',text))
+    for code in re.findall(r'(?<!`)`([^`\n]+)`(?!`)',text):
+        if re.match(r'^[a-zA-Z][\w.-]*(?: +[\w./-]+)+$',code):markers.add(code)
+    for fence in re.finditer(r'(?ms)^ {0,3}(`{3,}|~{3,})(?:bash|sh|shell|zsh|console)?[ \t]*\n(.*?)^ {0,3}\1[ \t]*$',text):
+        for line in fence.group(2).splitlines():
+            command=re.match(r'^\s*(?:\$ )?([a-zA-Z][\w.-]*)(?: +([a-zA-Z][\w-]*))?',line)
+            if command:markers.add(command.group(1)+(' '+command.group(2) if command.group(2) else ''))
+    return sorted(markers)
+
+
+def usage_commands(name,arguments):
+    """Normalize shell commands including Codex exec's literal JS cmd fields.
+
+    Never evaluate JS or shell; dynamic expressions are deliberately unsupported.
+    """
+    if isinstance(arguments,dict):
+        command=arguments.get('command',arguments.get('cmd'))
+        return [command] if isinstance(command,str) else []
+    if not isinstance(arguments,str):return []
+    try:
+        value=json.loads(arguments)
+    except ValueError:value=None
+    if isinstance(value,dict):return usage_commands(name,value)
+    commands=[]
+    for match in re.finditer(r'(?<![\w])(?:"cmd"|cmd|"command"|command)\s*:\s*("(?:[^"\\]|\\.)*")',arguments):
+        commands.append(json.loads(match.group(1)))
+    return commands
+
+
+def usage_reads(name,arguments,commands):
+    """Recognize complete Read calls and literal cat operands; no partial reads."""
+    paths=[]
+    if name.lower() in ('read','read_file') and isinstance(arguments,dict):
+        if not any(k in arguments for k in ('offset','limit','start_line','end_line')):
+            path=arguments.get('file_path',arguments.get('path'))
+            if isinstance(path,str):paths.append(path)
+    for command in commands:
+        try:
+            lexer=shlex.shlex(command,posix=True,punctuation_chars=';&|<>')
+            lexer.whitespace_split=True;tokens=list(lexer)
+        except ValueError:continue
+        if any(token in ('|','|&','>','>>','<','<<') for token in tokens):continue
+        groups=[];group=[]
+        for token in tokens+[';']:
+            if token in (';','&&','||','|','&'):
+                groups.append(group);group=[]
+            else:group.append(token)
+        for group in groups:
+            if not group or group[0]!='cat':continue
+            operands=group[1:]
+            if any(t.startswith('-') and t!='--' or t in ('<','>','>>','<<') for t in operands):continue
+            paths.extend(t for t in operands if t!='--' and not any(c in t for c in '$*?'))
+    return paths
+
+
+def usage_transcript(path,tool):
+    """Return ordered normalized calls and a stable session identity when present."""
+    calls=[];by_id={};identity=None;position=0
+    with path.open(encoding='utf-8') as handle:
+        for number,line in enumerate(handle,1):
+            if not line.strip():continue
+            try:row=json.loads(line)
+            except ValueError as error:raise ValueError(f'{path}:{number}: invalid transcript JSON') from error
+            if not isinstance(row,dict):raise ValueError(f'{path}:{number}: expected a record object')
+            if tool=='claude':
+                identity=identity or row.get('sessionId')
+                blocks=row.get('message',{}).get('content',[])
+                if not isinstance(blocks,list):continue
+            else:
+                payload=row.get('payload',{})
+                if row.get('type')=='session_meta':identity=payload.get('id') or payload.get('session_id') or identity
+                blocks=[payload] if row.get('type')=='response_item' else []
+            for block in blocks:
+                if not isinstance(block,dict):continue
+                kind=block.get('type');position+=1
+                if kind in ('tool_use','function_call','custom_tool_call'):
+                    args=block.get('arguments',block.get('input',{}));name=block.get('name','')
+                    if kind=='function_call' and isinstance(args,str):
+                        try:args=json.loads(args)
+                        except ValueError:pass
+                    call=dict(name=name,arguments=args,commands=usage_commands(name,args),complete=None,position=position,completed_at=None)
+                    calls.append(call);by_id[block.get('call_id',block.get('id'))]=call
+                elif kind in ('tool_result','function_call_output','custom_tool_call_output'):
+                    call=by_id.get(block.get('tool_use_id',block.get('call_id')))
+                    if call is None:continue
+                    # Status is metadata, never text inside a file or command output.
+                    metadata=[block]
+                    if isinstance(block.get('output'),dict):metadata.append(block['output'])
+                    failed=any(record.get('is_error') or record.get('isError') or record.get('truncated')
+                        or record.get('exit_code') not in (None,0)
+                        or record.get('status') in ('failed','error','cancelled','running','in_progress')
+                        for record in metadata)
+                    call['complete']=not failed;call['completed_at']=position
+    return calls,identity or str(path.resolve())
+
+
+def usage(manifest):
+    """Aggregate literal section evidence from explicit transcripts and skill snapshots."""
+    rows={};seen=set();unresolved=[]
+    for session in manifest.get('sessions',[]):
+        tool=session['tool']
+        if tool not in ('claude','codex'):raise ValueError('tool must be claude or codex')
+        transcript=Path(session['transcript']).expanduser()
+        calls,identity=usage_transcript(transcript,tool)
+        # Repeated exports or paths of the same session never inflate the minimum.
+        for skill in session.get('skills',[]):
+            path=Path(skill['path']).expanduser();source=str(path.resolve())
+            recorded=skill.get('recorded_path',str(path))
+            key=(tool,identity,source)
+            if key in seen:continue
+            loaded_at=next((i for i,c in enumerate(calls) if c['complete'] is True
+                and recorded in usage_reads(c['name'],c['arguments'],c['commands'])),None)
+            if loaded_at is None:continue
+            seen.add(key)
+            if not path.is_file():
+                unresolved.append(str(path));continue
+            text=path.read_bytes().decode('utf-8')
+            # Look only at subsequent tool inputs, never outputs, reasoning, or listings.
+            evidence=[]
+            for call in calls[loaded_at+1:]:
+                if call['position']<=calls[loaded_at]['completed_at']:continue
+                # Skill reads themselves do not prove use of instructions in that skill.
+                if recorded in usage_reads(call['name'],call['arguments'],call['commands']):continue
+                args=call['arguments']
+                evidence.append(json.dumps(args,ensure_ascii=False) if isinstance(args,dict) else str(args))
+            for title,start,body in skill_sections(text):
+                rowkey=(source,start)
+                if rowkey not in rows:
+                    rows[rowkey]=dict(path=str(path),section=title,body_start_line=start,size=size(body),
+                        sessions_loaded=0,sessions_with_evidence=0,markers=usage_markers(body),matched_markers=[])
+                row=rows[rowkey];row['sessions_loaded']+=1
+                matched=[marker for marker in row['markers'] if any(re.search(
+                    r'(?<![\w./-])'+re.escape(marker)+r'(?![\w./-])',value) for value in evidence)]
+                if matched:row['sessions_with_evidence']+=1
+                row['matched_markers']=sorted(set(row['matched_markers']+matched))
+    sections=[];candidates=[]
+    for row in rows.values():
+        row['status']='evidence of use' if row['sessions_with_evidence'] else 'no evidence of use'
+        sections.append(row)
+        if row['markers'] and row['sessions_loaded']>=3 and row['sessions_with_evidence']<row['sessions_loaded']:
+            candidates.append(dict(path=row['path'],section=row['section'],body_start_line=row['body_start_line'],
+                sessions_loaded=row['sessions_loaded'],reason='evidence in fewer sessions than loaded (at least 3); review for a possible split'))
+    return dict(sections=sections,split_candidates=candidates,unresolved=sorted(set(unresolved)),
+                minimum_sessions=3)
+
+
 def dirty_repositories(paths):
     repos=set()
     for path in paths:
@@ -308,12 +476,14 @@ def main():
     sub=parser.add_subparsers(dest='operation',required=True)
     p=sub.add_parser('measure');p.add_argument('manifest',type=Path)
     p=sub.add_parser('duplicates');p.add_argument('manifest',type=Path)
+    p=sub.add_parser('usage');p.add_argument('manifest',type=Path)
     p=sub.add_parser('edit');p.add_argument('request',type=Path);p.add_argument('journal',type=Path)
     p=sub.add_parser('revert');p.add_argument('journal',type=Path);p.add_argument('number',type=int)
     args=parser.parse_args()
     try:
         if args.operation=='measure':result=measure(json.loads(args.manifest.read_text()))
         elif args.operation=='duplicates':result=duplicates(json.loads(args.manifest.read_text()))
+        elif args.operation=='usage':result=usage(json.loads(args.manifest.read_text()))
         elif args.operation=='edit':result=edit(journal=args.journal,**json.loads(args.request.read_text()))
         else:result=revert(args.journal,args.number)
         print(json.dumps(result,indent=2));return 0
