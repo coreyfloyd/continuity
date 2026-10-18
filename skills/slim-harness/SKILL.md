@@ -7,7 +7,8 @@ description: Review and slim one rules file, skill, agent definition, or output 
 
 Review one handed or loaded instruction file. This skill adds source edits and
 cross-file conflict checks to Claude Code's `/doctor prompt-audit`, and works in
-both tools. Never scan a catalog or review a file neither loaded nor handed over.
+both tools. Review the target; read the comparison files below for cross-file
+checks. Never scan a catalog or independently review unrelated files.
 No schedule, time trigger, model-switch trigger, unattended mode, or review history.
 
 ## Start and measure
@@ -50,15 +51,37 @@ No schedule, time trigger, model-switch trigger, unattended mode, or review hist
 
 ## Review in this order
 
+Before Redundancy, build the comparison set from the files loaded beside the
+target, the skills and files the target points to, and any files the user names
+as normally co-loaded. When following target references, honor explicit tool
+conditions: exclude references limited to the inactive tool, including this
+skill's alternate-tool reference. Read the applicable sources in full even in a
+fresh session where they were not previously loaded. Resolve relative paths from their owning file's
+documented base and skill names through the running tool's skill catalog; resolve
+symlinks to source. Ask whether the user has additional normally co-loaded files
+to include. Report unresolved or unreadable references and the resulting coverage
+gap; ask for ambiguous paths rather than guessing. Follow the target's direct
+instruction references, not every link or references recursively. Reading a skill
+for comparison does not invoke its workflow or execute commands it names.
+
+Keep comparison context separate from the session's original loading scope:
+these extra reads do not create over-limit trigger rows or authorize independent
+reviews or edits of those files. Use this same preparation in Claude Code and Codex.
+
 For every finding, first try redundancy, unneeded context, and conflicts. Use
 extraction and compression only for what those first three leave.
 
 ### Redundancy
 
-Find repetitions within the file and across canonical homes loaded beside it.
+Find repetitions within the file and across the comparison set, including
+canonical homes loaded beside it. Each cross-file finding names both source files
+and line ranges, shows the repeated rules, and preserves any distinct boundary.
+Ask the user which file should own the rule **before any edit**, with options,
+tradeoffs, and a recommendation, as for conflicts. Wait for the ownership decision;
+never silently choose a home or remove a duplicate.
 When a rule restates a skill's procedure, the skill keeps the procedure and the
-rules file keeps at most a pointer. State the instruction once where it is owned.
-Check both sides before removing a duplicate; preserve any distinct boundary.
+rules file keeps at most a pointer: recommend that ownership in the question.
+After resolution, state the instruction once where the user agreed it is owned.
 
 ### Unneeded context
 
@@ -82,7 +105,7 @@ specifies both tools' halves; this skill writes no hooks and files no tickets.
 
 ### Conflicts
 
-Compare against the files loaded beside the target, not just its own lines.
+Compare against the same comparison set, not just the target's own lines.
 Ask each conflict as a question **before any edit**, showing both source rules,
 the incompatibility, options with tradeoffs, and a recommendation. Wait for the
 user to resolve all conflicts; never silently choose a winner. A resolution may
