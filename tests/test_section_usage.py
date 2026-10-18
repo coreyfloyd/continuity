@@ -4,6 +4,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+import pytest
+
 from test_slim_harness import helper
 
 FIX = Path(__file__).parent / 'fixtures/usage'
@@ -118,8 +120,81 @@ def test_piped_cat_and_truncated_results_are_not_full_loads(tmp_path):
     m = helper()
     assert m.usage_reads('Bash', {}, ['cat /redacted/skills/workflow/SKILL.md | head -10']) == []
     records = [json.loads(line) for line in (FIX / 'claude.jsonl').read_text().splitlines()]
-    records[1]['message']['content'][0]['content'] = 'Warning: truncated output\n[REDACTED]'
+    records[1]['message']['content'][0]['truncated'] = True
     p = tmp_path / 'truncated.jsonl'
     p.write_text('\n'.join(json.dumps(r) for r in records) + '\n')
     request = manifest('claude'); request['sessions'][0]['transcript'] = str(p)
     assert m.usage(request)['sections'] == []
+
+
+@pytest.mark.parametrize('tool', ['claude', 'codex'])
+@pytest.mark.parametrize('body', ['exit_code: 1', '"isError": true', 'Warning: truncated output'])
+def test_successful_reads_keep_failure_examples_as_content(tool, body, tmp_path):
+    records = [json.loads(line) for line in (FIX / (tool + '.jsonl')).read_text().splitlines()]
+    if tool == 'claude':
+        records[1]['message']['content'][0]['content'] = body
+    else:
+        records[1]['payload']['output'][0]['text'] = body
+    transcript = tmp_path / 'examples.jsonl'
+    transcript.write_text(''.join(json.dumps(r) + '\n' for r in records))
+    request = manifest(tool); request['sessions'][0]['transcript'] = str(transcript)
+    report = helper().usage(request)
+    assert report['sections'], 'a returned skill with failure-handling prose is still loaded'
+    assert all(row['sessions_loaded'] == 1 for row in report['sections'])
+    assert any(row['sessions_with_evidence'] == 1 for row in report['sections'])
+
+
+@pytest.mark.parametrize('metadata', [{'is_error': True}, {'isError': True},
+                                     {'truncated': True}, {'exit_code': 1}, {'status': 'failed'}])
+@pytest.mark.parametrize('tool', ['claude', 'codex'])
+def test_structured_failure_metadata_excludes_reads(tool, metadata, tmp_path):
+    records = [json.loads(line) for line in (FIX / (tool + '.jsonl')).read_text().splitlines()]
+    result = records[1]['message']['content'][0] if tool == 'claude' else records[1]['payload']
+    result.update(metadata)
+    transcript = tmp_path / 'status.jsonl'
+    transcript.write_text(''.join(json.dumps(r) + '\n' for r in records))
+    request = manifest(tool); request['sessions'][0]['transcript'] = str(transcript)
+    assert helper().usage(request)['sections'] == []
+
+
+@pytest.mark.parametrize('version', ['1.2.3', 'v1.2.3', '2.0.0'])
+def test_version_prose_is_not_a_path_marker(version):
+    assert helper().usage_markers('Version ' + version + '.') == []
+
+
+@pytest.mark.parametrize('path', ['/redacted/skills/workflow/SKILL.md',
+                                 './skills/workflow/SKILL.md', '../skills/workflow/SKILL.md',
+                                 '~/skills/workflow/SKILL.md', 'skills/workflow/SKILL.md'])
+def test_real_paths_remain_markers(path):
+    assert helper().usage_markers(path) == [path]
+
+
+def test_version_mentions_do_not_create_evidence_or_split_candidates(tmp_path):
+    # Review-supplied version prose, inserted into the captured prose-only section.
+    snapshot = tmp_path / 'SKILL.md'
+    snapshot.write_text((FIX / 'SKILL.md').read_text().replace('Questions are not authorization.', 'Version 1.2.3'))
+    request = manifest('claude', 'claude', 'claude')
+    for index, session in enumerate(request['sessions']):
+        records = [json.loads(line) for line in (FIX / 'claude.jsonl').read_text().splitlines()]
+        for record in records:record['sessionId'] = 'captured-' + str(index)
+        records[2]['message']['content'][0]['input']['command'] += ' 1.2.3'
+        transcript = tmp_path / (str(index) + '.jsonl')
+        transcript.write_text(''.join(json.dumps(r) + '\n' for r in records))
+        session['transcript'] = str(transcript); session['skills'][0]['path'] = str(snapshot)
+    report = helper().usage(request)
+    boundary = next(row for row in report['sections'] if row['section'] == 'Boundary')
+    assert boundary['sessions_loaded'] == 3
+    assert boundary['markers'] == []
+    assert boundary['sessions_with_evidence'] == 0
+    assert boundary['status'] == 'no evidence of use'
+    assert not any(row['section'] == 'Boundary' for row in report['split_candidates'])
+
+
+@pytest.mark.parametrize('exit_code', [0, 1])
+def test_codex_result_metadata_is_separate_from_command_output(exit_code, tmp_path):
+    records = [json.loads(line) for line in (FIX / 'codex.jsonl').read_text().splitlines()]
+    records[1]['payload']['output'] = {'exit_code': exit_code, 'output': 'exit_code: 1\nWarning: truncated output'}
+    transcript = tmp_path / 'command-result.jsonl'
+    transcript.write_text(''.join(json.dumps(r) + '\n' for r in records))
+    request = manifest('codex'); request['sessions'][0]['transcript'] = str(transcript)
+    assert bool(helper().usage(request)['sections']) == (exit_code == 0)

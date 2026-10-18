@@ -280,7 +280,7 @@ def skill_sections(text):
 def usage_markers(text):
     """Conservative lexical evidence: literal flags, paths and backticked commands."""
     markers=set(re.findall(r'(?<![\w-])--[a-zA-Z][\w-]*',text))
-    markers.update(re.findall(r'(?:[~./]|[\w.-]+/)[\w./~{}<>-]+',text))
+    markers.update(re.findall(r'(?<![\w./~-])(?:~?/|\.\.?/|[\w.-]+/)[\w./~{}<>-]+',text))
     for code in re.findall(r'(?<!`)`([^`\n]+)`(?!`)',text):
         if re.match(r'^[a-zA-Z][\w.-]*(?: +[\w./-]+)+$',code):markers.add(code)
     for fence in re.finditer(r'(?ms)^ {0,3}(`{3,}|~{3,})(?:bash|sh|shell|zsh|console)?[ \t]*\n(.*?)^ {0,3}\1[ \t]*$',text):
@@ -365,9 +365,13 @@ def usage_transcript(path,tool):
                 elif kind in ('tool_result','function_call_output','custom_tool_call_output'):
                     call=by_id.get(block.get('tool_use_id',block.get('call_id')))
                     if call is None:continue
-                    output=str(block.get('output',block.get('content','')))
-                    failed=bool(block.get('is_error')) or bool(re.search(r'(?i)warning: truncated output|output (?:was )?truncated|\[truncated\]',output)) or bool(re.search(
-                        r'(?:exited with code|exit_code["\']?\s*:)\s*[1-9][0-9]*|"isError"\s*:\s*true',output))
+                    # Status is metadata, never text inside a file or command output.
+                    metadata=[block]
+                    if isinstance(block.get('output'),dict):metadata.append(block['output'])
+                    failed=any(record.get('is_error') or record.get('isError') or record.get('truncated')
+                        or record.get('exit_code') not in (None,0)
+                        or record.get('status') in ('failed','error','cancelled','running','in_progress')
+                        for record in metadata)
                     call['complete']=not failed;call['completed_at']=position
     return calls,identity or str(path.resolve())
 

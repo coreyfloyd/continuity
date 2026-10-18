@@ -29,8 +29,9 @@ files are appropriate only if their content has not changed since the session.
 The report does not reconstruct historical bodies from transcript outputs.
 
 Claude assistant `tool_use` / user `tool_result` records and Codex `response_item`
-function/custom tool calls and corresponding outputs are supported. Successful
-complete `Read` calls and literal shell `cat` operands establish loading. Codex
+function/custom tool calls and corresponding outputs are supported. Returned
+full `Read` calls and literal shell `cat` operands establish loading unless
+structured result metadata reports failure, truncation, or an unfinished status. Codex
 shell calls may be direct JSON arguments or literal JSON-quoted `cmd` fields in
 an exec JavaScript wrapper. Partial reads, dynamic shell/JavaScript expressions,
 implicit injection, and native Skill invocations are outside this loading detector;
@@ -38,13 +39,21 @@ absence from the report is a coverage limitation, not evidence of no load.
 Keep `recorded_path` exactly as spelled in the tool input, including a literal tilde.
 Malformed JSON fails with the source file and line number rather than silently
 omitting records. A read without a returned result does not establish loading.
+Failure detection reads only result fields: `is_error` / `isError` signal failure,
+`truncated` signals incomplete output, nonzero `exit_code` signals a failed command,
+and `status` can signal failed or unfinished execution. These fields are read on
+the result envelope and an object-valued Codex `output`, never from file content
+or nested command-output text. Text-only wrappers without structured status cannot
+establish failure or truncation; returned reads then count as loaded. Instruction
+examples of failures or truncation remain ordinary content.
 
 The body is partitioned at ATX headings outside fences. Each row identifies its
 skill `path`, `section`, `body_start_line` (relative to the frontmatter-free body),
 `size` in lines/words/UTF-8 bytes, `sessions_loaded`, and
 `sessions_with_evidence`. Header-only sections and preambles retain their size.
-`markers` are literal flags, paths, backticked command strings and commands from
-shell fences; `matched_markers` makes the evidence inspectable. Matching requires
+`markers` are literal flags, paths containing a slash, backticked command strings
+and commands from shell fences; dotted version prose alone is not a path.
+`matched_markers` makes the evidence inspectable. Matching requires
 token boundaries and searches only subsequent tool inputs after the read returns.
 Read commands for that skill are excluded. Tool outputs, narrative, and thinking
 are never evidence. A match proves that text appeared in a tool call, not that a
