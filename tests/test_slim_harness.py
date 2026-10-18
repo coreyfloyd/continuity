@@ -33,6 +33,40 @@ def test_loaded_over_limit_and_listed_only_scope(tool):
     listed = m.measure(dict(tool=tool, files=[entry(FIX/'SKILL.md','skill','listed')]))
     assert listed['over_limit'] == []
 
+
+@pytest.mark.parametrize('tool', ['claude', 'codex'])
+@pytest.mark.parametrize('loaded', ['full', 'auto'])
+def test_long_line_skill_body_exceeds_byte_limit(tool,loaded,tmp_path):
+    m=helper(); fields,body=m.frontmatter((FIX/'SKILL.md').read_text())
+    body=' '.join(body.split())
+    assert len(body.splitlines()) < 500 and len(body.encode('utf-8')) > 20000
+    assert len(body) < len(body.encode('utf-8'))
+    target=tmp_path/'SKILL.md'
+    target.write_text('---\ndescription: '+json.dumps(fields['description'])+'\n---\n'+body,
+                      encoding='utf-8')
+    result=m.measure(dict(tool=tool,files=[entry(target,'skill',loaded)]))
+    assert len(result['over_limit'])==1
+    row=result['over_limit'][0]
+    assert row['limits']==[dict(unit='body bytes',measured=len(body.encode('utf-8')),limit=20000)]
+    assert row['action']=='run /slim-harness on `'+str(target)+'`'
+    assert m.measure(dict(tool=tool,files=[entry(target,'skill','listed')]))['over_limit']==[]
+
+
+@pytest.mark.parametrize('tool', ['claude', 'codex'])
+def test_skill_byte_boundary_excludes_frontmatter_and_counts_utf8(tool,tmp_path):
+    m=helper(); _,body=m.frontmatter((FIX/'SKILL.md').read_text())
+    body=' '.join(body.split())
+    # Slice captured instructions at a UTF-8 boundary, then fill with captured spaces.
+    body=body.encode('utf-8')[:20000].decode('utf-8',errors='ignore')
+    body+=' '*(20000-len(body.encode('utf-8')))
+    target=tmp_path/'SKILL.md'
+    header='---\ndescription: captured\n---\n'
+    target.write_text(header+body,encoding='utf-8')
+    assert m.measure(dict(tool=tool,files=[entry(target,'skill')]))['over_limit']==[]
+    target.write_text(header+body+' ',encoding='utf-8')
+    row=m.measure(dict(tool=tool,files=[entry(target,'skill')]))['over_limit'][0]
+    assert row['limits']==[dict(unit='body bytes',measured=20001,limit=20000)]
+
 @pytest.mark.parametrize('tool,kind,name', [('claude','agent','agents/task.md'),('codex','agent','agents/task.toml'),
     ('claude','role','roles/core.md'),('claude','output-style','output-styles/style.md'),('codex','rules','chain/AGENTS.md')])
 def test_200_line_types_from_captured_files(tool,kind,name,tmp_path):
@@ -190,6 +224,7 @@ def test_listed_and_full_skill_merge_retains_all_sizes_and_limits(tool,loads,tmp
     assert row['size']==dict(lines=len(text.splitlines()),words=len(text.split()),
                              bytes=len(text.encode()),description_characters=len(description))
     assert {item['unit']:item['measured'] for item in row['limits']}=={
-        'description characters':1100, 'body lines':len(body.splitlines())}
+        'description characters':1100, 'body lines':len(body.splitlines()),
+        'body bytes':len(body.encode('utf-8'))}
     assert {item['unit']:item['limit'] for item in row['limits']}=={
-        'description characters':1024, 'body lines':500}
+        'description characters':1024, 'body lines':500, 'body bytes':20000}

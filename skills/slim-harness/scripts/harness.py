@@ -97,7 +97,10 @@ role_paths from the actual definition and chain from root to session start.
             loaded_sizes[str(path.resolve())]=stats
             count=stats['lines'];limit=200;unit='lines'
             if kind=='skill':
-                _,body=frontmatter(text);count=size(body)['lines'];limit=500;unit='body lines'
+                _,body=frontmatter(text);body_stats=size(body)
+                count=body_stats['lines'];limit=500;unit='body lines'
+                if body_stats['bytes']>20000:
+                    limits.append(dict(unit='body bytes',measured=body_stats['bytes'],limit=20000))
             elif kind=='user-rules' and tool=='codex':
                 count=stats['bytes'];limit=32768;unit='bytes'
             if count>limit:
