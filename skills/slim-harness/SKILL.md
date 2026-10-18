@@ -53,8 +53,10 @@ No schedule, time trigger, model-switch trigger, unattended mode, or review hist
 
 Before Redundancy, build the comparison set from the files loaded beside the
 target, the skills and files the target points to, and any files the user names
-as normally co-loaded. Read those sources in full even in a fresh session where
-they were not previously loaded. Resolve relative paths from their owning file's
+as normally co-loaded. When following target references, honor explicit tool
+conditions: exclude references limited to the inactive tool, including this
+skill's alternate-tool reference. Read the applicable sources in full even in a
+fresh session where they were not previously loaded. Resolve relative paths from their owning file's
 documented base and skill names through the running tool's skill catalog; resolve
 symlinks to source. Ask whether the user has additional normally co-loaded files
 to include. Report unresolved or unreadable references and the resulting coverage
