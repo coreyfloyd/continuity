@@ -9,8 +9,8 @@ import pytest
 from test_slim_harness import ROOT, SKILL, entry, helper
 
 SOURCE = SKILL / 'SKILL.md'
-# An actual multiline instruction, retained verbatim from the package.
-RULE = ('Never scan a catalog or review a file neither loaded nor handed over.')
+# An actual instruction, retained verbatim from the package.
+RULE = ('Never scan a catalog or independently review unrelated files.')
 
 
 def span_text(span):
@@ -21,7 +21,7 @@ def span_text(span):
 @pytest.mark.parametrize('tool', ['claude', 'codex'])
 def test_exact_and_near_real_instruction_spans(tool, tmp_path):
     copied = tmp_path / 'rules.md'
-    copied.write_text(RULE + '\n\n' + RULE.replace('catalog', 'directory') + '\n')
+    copied.write_text(RULE + '\n\n' + RULE.replace('catalog', 'loaded catalog') + '\n')
     manifest = dict(tool=tool, files=[entry(SOURCE, 'skill'), entry(copied)])
     before = {p: p.read_bytes() for p in (SOURCE, copied)}
     script = SKILL / 'scripts/harness.py'
@@ -76,7 +76,7 @@ def test_markdown_boundaries_metadata_and_line_ranges(tmp_path):
     copied = tmp_path / 'rules.md'
     copied.write_text('---\ndescription: ' + RULE + '\n---\n# ' + RULE +
                       '\n\n```text\n' + RULE + '\n```\n\n- **' +
-                      RULE.replace('catalog or review', 'catalog\n  or review') + '**\n')
+                      RULE.replace('catalog or independently', 'catalog\n  or independently') + '**\n')
     rows = helper().duplicates(dict(tool='codex', files=[entry(SOURCE, 'skill'), entry(copied)]))['duplicates']
     assert len(rows) == 1
     span = next(s for s in rows[0]['spans'] if s['path'] == str(copied))
@@ -104,3 +104,49 @@ def test_short_exact_instruction_is_not_lost_to_near_match_noise_filter(tmp_path
     assert len(rows) == 1
     assert rows[0]['match'] == 'exact'
     assert all(span['text'] == 'Do not commit.' for span in rows[0]['spans'])
+
+
+@pytest.mark.parametrize('tool', ['claude', 'codex'])
+@pytest.mark.parametrize('header,separator', [
+    ('A lesson is… | It goes to.', '--- | ---'),
+    ('| A lesson is… | It goes to. |', '|---|---|'),
+    ('| A lesson is… | It goes to.', '--- | --- |'),
+    ('A lesson is… | It goes to. |', '| :--- | ---: |'),
+    ('A lesson is… | It goes to.', ':---: | ---:'),
+    (r'A lesson is… \| context | It goes to.', '--- | ---'),
+    (r'A lesson is…\\| It goes to.', '--- | ---'),
+    ('|| It goes to. |', '|---|---|'),
+    ('It goes to. |', '---'),
+])
+def test_table_blocks_excluded_with_optional_outer_pipes(tool, header, separator, tmp_path):
+    # Header/owner labels come from improve-harness's real routing table;
+    # the cell is shipped instruction prose, not a new instruction fixture.
+    copied = tmp_path / 'rules.md'
+    lines = [header, separator, RULE + ' | **That skill** (its steps or gotchas)',
+             'Do not commit.', '', RULE]
+    copied.write_text('\n'.join(lines) + '\n')
+    before = copied.read_bytes()
+    rows = helper().duplicates(dict(tool=tool, files=[entry(SOURCE, 'skill'), entry(copied)]))['duplicates']
+    assert len(rows) == 1, rows
+    span = next(s for s in rows[0]['spans'] if s['path'] == str(copied))
+    assert span['text'] == RULE
+    assert (span['start_line'], span['end_line']) == (6, 6)
+    assert copied.read_bytes() == before
+
+
+@pytest.mark.parametrize('boundary', ['# Review', '- ' + RULE, '> ' + RULE,
+                                      '```\n' + RULE + '\n```', '<!-- table ends -->'])
+def test_table_stops_at_new_markdown_blocks(boundary, tmp_path):
+    copied = tmp_path / 'rules.md'
+    copied.write_text('A lesson is… | It goes to.\n--- | ---\n' + RULE + ' | **That skill**\n' +
+                      boundary + '\n\n' + RULE + '\n')
+    rows = helper().duplicates(dict(tool='codex', files=[entry(SOURCE, 'skill'), entry(copied)]))['duplicates']
+    # A list/quote holds real prose; headings, comments, and code do not.
+    assert len(rows) == (2 if boundary.startswith(('- ', '> ')) else 1), rows
+
+
+def test_pipe_prose_without_a_valid_table_separator_remains_visible(tmp_path):
+    copied = tmp_path / 'rules.md'
+    copied.write_text(RULE + ' | **That skill**\n')
+    rows = helper().duplicates(dict(tool='codex', files=[entry(SOURCE, 'skill'), entry(copied)]))['duplicates']
+    assert len(rows) == 1

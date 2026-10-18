@@ -16,8 +16,12 @@ manifest entries and aliases do not create self-matches. Comparisons are across
 different sources only, with one row per matching sentence pair.
 
 The extractor skips initial YAML frontmatter, Markdown headings, pipe tables,
-HTML-comment lines, and fenced backtick/tilde code. Blank lines and list-item
-starts break prose blocks; soft-wrapped lines stay together. Within each block,
+HTML-comment lines, and fenced backtick/tilde code. Tables are recognized by a
+header and a separator row with matching cell counts; outer pipes are optional.
+Escaped pipes stay in their cells. Table bodies end at blank lines or a new
+Markdown block (heading, list, quote, fence, comment, or thematic break).
+Blank lines and list-item starts break prose blocks; soft-wrapped lines stay
+together. Within each block,
 a period, question mark, or exclamation mark followed by whitespace or end of
 block ends a sentence. A final fragment also counts. Every span retains its text
 and its original inclusive, one-based physical line range, including soft wraps.
@@ -41,7 +45,7 @@ boundaries such as “Do not commit.” remain eligible. Near matching requires
   This screens obvious polarity changes; it is not a semantic equivalence check.
 
 The 0.90 threshold permits small wording changes while requiring most words in
-the same order. Tests use shipped skill prose and a one-word substitution, plus
+the same order. Tests use shipped skill prose and a one-word insertion, plus
 exclusions and an opposite instruction. Similarity is rounded to four decimals
 only for output; classification uses the unrounded ratio.
 

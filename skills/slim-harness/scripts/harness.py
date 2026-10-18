@@ -153,6 +153,19 @@ role_paths from the actual definition and chain from root to session start.
     return result
 
 
+def markdown_table_cells(line):
+    """Split unescaped pipes, allowing one optional outer delimiter per side."""
+    line=line.strip(); cells=[]; start=0; escaped=False; has_pipe=False
+    for index,char in enumerate(line):
+        if char=='|' and not escaped:
+            cells.append(line[start:index].strip());start=index+1;has_pipe=True
+        escaped=char=='\\' and not escaped
+    cells.append(line[start:].strip())
+    if line.startswith('|'):cells.pop(0)
+    if start==len(line) and has_pipe:cells.pop()
+    return cells,has_pipe
+
+
 def instruction_sentences(text):
     """Extract prose with physical line coordinates; see references/duplicates.md."""
     lines=text.splitlines(); start=0
@@ -160,7 +173,7 @@ def instruction_sentences(text):
         end=next((i for i in range(1,len(lines)) if lines[i].strip()=='---'),None)
         if end is None:raise ValueError('unterminated instruction frontmatter')
         start=end+1
-    blocks=[]; block=[]; fence=None; comment=False
+    blocks=[]; block=[]; fence=None; comment=False; table=False; delimiter_line=None
     for number,line in enumerate(lines[start:],start+1):
         stripped=line.strip()
         marker=re.match(r'^(`{3,}|~{3,})',stripped)
@@ -169,11 +182,25 @@ def instruction_sentences(text):
             continue
         if marker:
             if block:blocks.append(block);block=[]
-            fence=marker.group(1);continue
+            fence=marker.group(1);table=False;continue
         if comment or '<!--' in stripped:
-            comment='-->' not in stripped
+            comment='-->' not in stripped;table=False
             if block:blocks.append(block);block=[]
             continue
+        if table:
+            if number==delimiter_line:continue
+            # A table can contain short rows without a pipe; a blank or new
+            # Markdown block ends it. Fences/comments are handled above.
+            boundary=r'^(#{1,6}\s|>|(?:[-+*]|[0-9]+[.)])\s|[-*_]{3,}$)'
+            if stripped and not re.match(boundary,stripped):continue
+            table=False
+        if number<len(lines):
+            header,has_pipe=markdown_table_cells(stripped)
+            delimiter,_=markdown_table_cells(lines[number])
+            if (has_pipe and len(header)==len(delimiter) and delimiter
+                    and all(re.fullmatch(r':?-+:?',cell) for cell in delimiter)):
+                if block:blocks.append(block);block=[]
+                table=True;delimiter_line=number+1;continue
         if not stripped or re.match(r'^(#{1,6}\s|\||[-*_]{3,}$)',stripped):
             if block:blocks.append(block);block=[]
             continue
