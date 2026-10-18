@@ -12,6 +12,7 @@ Codex has no known output-style equivalent as of 2026-10-12.
 | Combined project AGENTS.md chain, root to session start folder | 32 KiB (32,768) | UTF-8 bytes |
 | User-level ~/.codex/AGENTS.md | 32 KiB (32,768) | UTF-8 bytes |
 | SKILL.md body (exclude frontmatter) | 500 | lines |
+| SKILL.md body (exclude frontmatter) | 20,000 | UTF-8 bytes |
 | Skill description | 1,024 | characters |
 | agents/*.toml, whole file, and each required role file | 200 | lines |
 
@@ -35,7 +36,16 @@ When Codex reports shortened skill descriptions, report its skill-listing budget
 loaded. This has no per-file automatic trigger. Do not fabricate a truncation
 notice or measure descriptions absent from the session's listing.
 
-Sources (checked 2026-10-12):
+The skill body triggers a review when either its line or byte limit is exceeded.
+The 20,000-byte threshold approximates Anthropic's “Under 5k tokens” guidance for
+Level 2 instructions using approximately 4 UTF-8 bytes per token. This is a review
+policy shared by both tools, not an exact token count or a vendor truncation cap.
+
+Sources (checked 2026-10-12; skill byte guidance checked 2026-10-17):
+
+- [Agent Skills overview](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview):
+  Level 2 instructions (the SKILL.md body) under 5k tokens; the byte conversion
+  above is an approximation.
 
 - [Codex AGENTS.md](https://developers.openai.com/codex/guides/agents-md): project
   discovery from repository root to start folder and `project_doc_max_bytes`

@@ -9,6 +9,7 @@ every role path the dispatched definition requires and measures those files itse
 |---|---:|---|
 | CLAUDE.md and rules | 200 | lines |
 | SKILL.md body (exclude frontmatter) | 500 | lines |
+| SKILL.md body (exclude frontmatter) | 20,000 | UTF-8 bytes |
 | Skill description | 1,024 | characters |
 | Skill description plus when_to_use | 1,536 | characters |
 | agents/*.md and each required role file | 200 | lines |
@@ -24,7 +25,16 @@ with `paths:` YAML frontmatter matching that area's files. Offer this destinatio
 alongside a pointer; path-scoped rules load when matching files are touched and
 need no pointer. For tool-specific material, use an entry only Claude Code reads.
 
-Sources (checked 2026-10-12):
+The skill body triggers a review when either its line or byte limit is exceeded.
+The 20,000-byte threshold approximates Anthropic's “Under 5k tokens” guidance for
+Level 2 instructions using approximately 4 UTF-8 bytes per token. This is a review
+policy shared by both tools, not an exact token count or a vendor truncation cap.
+
+Sources (checked 2026-10-12; skill byte guidance checked 2026-10-17):
+
+- [Agent Skills overview](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview):
+  Level 2 instructions (the SKILL.md body) under 5k tokens; the byte conversion
+  above is an approximation.
 
 - [Claude Code memory](https://code.claude.com/docs/en/memory): keep CLAUDE.md concise;
   200-line guidance, path-scoped rules and layered instruction behavior.
