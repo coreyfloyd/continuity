@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Merge attended setup choices into the user profile, validating before writing."""
+"""Merge attended setup choices with validated replacement and failure rollback."""
 from __future__ import annotations
 
 import argparse
@@ -11,7 +11,13 @@ import sys
 import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / 'scripts/lib'))
-import checklist
+# Even a refused setup must not leave an import cache in a fresh package.
+previous_bytecode_policy = sys.dont_write_bytecode
+try:
+    sys.dont_write_bytecode = True
+    import checklist
+finally:
+    sys.dont_write_bytecode = previous_bytecode_policy
 
 FENCE = re.compile(r'^```checklist-profile\s*\n(.*?)^```\s*$', re.M | re.S)
 
@@ -57,9 +63,25 @@ def main():
         text = '# User profile\n\n```checklist-profile\n' + encoded + '```\n'
     # Load the rendered candidate too: section references must still resolve.
     # The temporary file has the same extension as the destination.
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # Only successful replacement commits these filesystem changes. Track each
+    # directory separately so partial mkdir failures can also be rolled back.
     temporary = None
+    created_directories = []
+    committed = False
     try:
+        missing = []
+        parent = path.parent
+        while not parent.exists():
+            missing.append(parent)
+            parent = parent.parent
+        for directory in reversed(missing):
+            try:
+                directory.mkdir()
+            except FileExistsError:
+                if not directory.is_dir():
+                    raise
+            else:
+                created_directories.append(directory)
         with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent,
                                          suffix=path.suffix, delete=False) as handle:
             temporary = Path(handle.name)
@@ -68,9 +90,15 @@ def main():
         if path.exists():
             temporary.chmod(path.stat().st_mode & 0o777)
         os.replace(temporary, path)
+        committed = True
     finally:
-        if temporary is not None and temporary.exists():
-            temporary.unlink()
+        try:
+            if temporary is not None and temporary.exists():
+                temporary.unlink()
+        finally:
+            if not committed:
+                for directory in reversed(created_directories):
+                    directory.rmdir()
     print(str(path))
     return 0
 

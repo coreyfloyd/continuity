@@ -109,7 +109,9 @@ Show the proposed choices in plain language, including the read skill's path
 and invocation. Once the user's choices are settled, pass only changed slots
 to the helper. It preserves other bindings and all existing profile content
 outside the JSON block, validates the candidate with the composer, and writes
-atomically. A new profile is created when none exists.
+atomically. Before successful replacement, any failure removes its temporary
+file and newly created directories, preserving the existing filesystem. A new
+profile is created when none exists.
 
 ```bash
 python3 <setup-directory>/scripts/profile.py --user-present \
