@@ -95,7 +95,7 @@ directory (siblings marked), falling back to recent sessions from the tool's own
 | `--handoff PATH` | A briefing for one handoff. |
 | `--session ID` | A specific transcript, from either tool. |
 | `--json` | Accepted for compatibility; JSON is always emitted. |
-| `--no-commitments` | With no record read bound, no collection is performed. |
+| `--no-commitments` | Skip the binding's commitments request and label it skipped; preserve handoff commitments. |
 | `--prune` | Archive handoffs whose transcript is missing or at least the configured prune age. Never deletes. |
 
 Every failure prints the same object shape, `{"version": 2, "error": CODE, "message": TEXT,
@@ -116,7 +116,31 @@ Codex store returns `session_store_unavailable` before archiving.
 
 Other settings: `PICKUP_TRUNK` selects the comparison branch and
 `PICKUP_PRUNE_DAYS` sets the archive age threshold. A selected handoff preserves
-record pointers and carried commitments, and states that no record read is bound.
+record pointers and carried commitments labeled "from handoff". With no user
+binding it states that no record read is bound. With a binding it adds
+`record_read.command` and `record_read.requests` for the agent to run; it never
+executes the skill. Requests use the resumed session identity and full handoff.
+Ticket references come from handoff open-loop `anchor.ticket` pointers, without
+service-specific parsing. Profile resolution matches the checklist user profile;
+an invalid or unreadable profile is a record-read failure.
+
+The agent saves this report and the raw skill responses, then runs:
+
+```sh
+python3 scripts/lib/pickup_record.py --complete --ticket-status ticket-response.json \
+  --commitments commitments-response.json < pickup-report.json
+```
+
+Omit a response argument when its skill failed to run or commitments were
+skipped. `--complete` treats missing requested responses as failures. The helper
+validates each response with the record-read validator, checks exact ticket
+reference coverage, and appends only passing rows to `briefing`, retaining all
+handoff-derived sections. Successful rows also appear in `record_read.results`;
+failed requests have no results entry and say `record read unavailable: <reason>`.
+Only a validated empty response renders as none. Commitments from the binding
+are labeled "from record". This helper reads stdin, profiles and response files;
+it performs no record writes and never starts a checklist or writes a ledger
+marker. It also accepts `--no-commitments` when preparing a report directly.
 
 ## 5. Hooks
 

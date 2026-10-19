@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # pickup.sh — handoff-first cold-start re-entry (JSON).
 # Usage: pickup.sh [--handoff PATH | --session ID | --prune] [--json]
-# --no-commitments is accepted; with no record read bound, nothing is collected.
+# --no-commitments skips the agent-owned commitments request.
 # Without a selection, list handoffs or reconstruct the newest other transcript.
 set -uo pipefail
 
@@ -23,6 +23,7 @@ config_value() {  # config_value <key> <variable>
 config_error=""
 want_session=""
 want_handoff=""
+record_args=(--json)
 prune=""
 directory_option=""
 
@@ -47,7 +48,8 @@ while [ $# -gt 0 ]; do
       [ -z "$directory_option" ] || { json_error "usage" "--handoff conflicts with $directory_option"; exit 2; }
       directory_option="--handoff"
       want_handoff="$2"; shift 2 ;;
-    --json|--no-commitments) shift ;;
+    --json) shift ;;
+    --no-commitments) record_args=(--no-commitments); shift ;;
     --prune)
       [ -z "$directory_option" ] || { json_error "usage" "--prune conflicts with $directory_option"; exit 2; }
       directory_option="--prune"; prune=1; shift ;;
@@ -104,7 +106,7 @@ run_engine_json() {
 
 # ---------------------------------------------------------------- dispatch
 if [ -n "$want_handoff" ]; then
-  run_engine_json --handoff "$want_handoff"
+  run_engine_json --handoff "$want_handoff" "${record_args[@]}"
 else
   # The handoff module owns where handoffs are stored (HANDOFF_STATE_DIR,
   # else the continuity configuration, else its default).

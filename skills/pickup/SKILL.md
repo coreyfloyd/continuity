@@ -34,7 +34,7 @@ Render these groups for the user and let them choose; do not make another candid
 bash <pickup.sh> --handoff <path>
 ```
 
-The selected handoff produces a version-2 briefing from its pointers, open loops, carried commitments, and uncommitted files. Handoff text is inferred; git checks carry their own provenance. Include exactly one line: **No record read is bound.** No record-derived section is added.
+The selected handoff produces a version-2 briefing from its pointers, open loops, carried commitments, and uncommitted files. Handoff text is inferred; git checks carry their own provenance. Follow the record-read procedure below before rendering. An unbound user profile adds exactly one line: **No record read is bound.**
 
 ## Transcript fallback
 
@@ -123,7 +123,7 @@ Use these sections when applicable:
 - **Outstanding** — open loops, carried commitments, uncommitted files, and unresolved branches.
 - **Start here** — the handoff's next action, or an action supported by the transcript.
 
-Include exactly one line stating **No record read is bound.** Do not invent current record status or add a record-derived section. Preserve available pointers so the user can return to the record. Define identifiers by their purpose on first mention. Re-render every open decision in full: context, options with tradeoffs, and recommendation; do not reuse unexplained option codes.
+For a selected handoff, follow the record-read procedure below. Without a binding, include exactly one line stating **No record read is bound.** Preserve available pointers so the user can return to the record. Transcript fallback does not detect ticket references or request record reads; render it from transcript and git evidence alone. Define identifiers by their purpose on first mention. Re-render every open decision in full: context, options with tradeoffs, and recommendation; do not reuse unexplained option codes.
 
 Tag each substantive line `(validated: <method>)` or `(inferred: <basis>)`. Git checks are current evidence; handoff and transcript text remain inferred. Re-check a test or file before acting on an old failure report. If `staleness.tool_calls_after` is nonzero, the last sign-off predates subsequent work. If `session_repo_readable` is false, local branch and file checks could not establish the work's state.
 
@@ -132,6 +132,74 @@ A pre-written dispatch is also stale: re-verify its premises before running it. 
 The branch cross-check uses the resumed session's last recorded `gitBranch`, rather than the current checkout's branch. Comparisons resolve the trunk from `PICKUP_TRUNK`, then `git symbolic-ref refs/remotes/origin/HEAD`, then `main`.
 
 Subagent work may be absent from the parent's transcript. Git checks can recover committed changes, but the briefing must not imply completeness when the session mentions dispatched work.
+
+### Read the record through the user binding
+
+This procedure is shared by Claude Code and Codex. Save the selected handoff's
+JSON report from `<pickup.sh>` as `<pickup-report>`. Pass `--no-commitments` to
+that command when the user requests it; the report omits that request and says
+**Commitments from record: skipped (--no-commitments)**. Commitments carried in
+the handoff still appear, labeled **from handoff**, with their original identities.
+Listing candidates never runs a record read.
+
+The selected report resolves the user profile at `$CHECKLIST_USER_PROFILE`, or
+`checklist/profile.md` under `$XDG_CONFIG_HOME` (default `~/.config`). Only an
+absent default profile means configured-nothing. An unreadable or invalid profile
+is **record read unavailable: <reason>**, not an unbound profile. Repository
+profiles cannot bind this read. This path reads profiles without starting a
+checklist or writing a ledger marker.
+
+When the report has `record_read`, its `command` names the user's skill and
+`requests` holds the JSON inputs to run it with. **You, the agent, run that skill**;
+the script never executes its name as a shell command. Read the bound skill and
+run it once for each prepared request, respecting its read-only contract:
+
+- `ticket_status` asks for the distinct ticket references in handoff open-loop
+  `anchor.ticket` pointers. Keep the reference strings intact. Each requested
+  reference must return one row, including an explicit `not_found` row for an
+  unresolved reference.
+- `commitments` passes the **resumed session's** id, its repository, and its
+  complete handoff, as prepared. Never substitute the successor's session id or
+  current directory. The binding decides which work belongs to that session.
+  When this request is absent because of `--no-commitments`, do not run it.
+
+Keep each raw JSON response in a separate file. `<pickup-record>` is this
+package's `scripts/lib/pickup_record.py` (resolve from this skill's real
+directory: `../../scripts/lib/pickup_record.py`). Finish the report with:
+
+```bash
+python3 <pickup-record> --complete \
+  --ticket-status <ticket-response> --commitments <commitments-response> \
+  < <pickup-report>
+```
+
+Omit `--commitments` when skipped. If a skill cannot run, errors, or returns no
+output, omit that response argument and keep `--complete`: the missing response
+is reported as unavailable. For a known execution error, use the contract's
+`{"kind":"error","reason":"<actual error>"}` response. Never replace a failed
+response with successful empty rows. Keep malformed or schema-invalid output
+intact for validation; do not repair it into plausible results.
+
+The helper passes each raw response through `record_read.py`'s validator with
+its expected kind, then checks ticket reference coverage. It appends rows only
+for passing responses. See [the contract](../../INTERFACE.md#9-record-read-scriptslibrecord_readpy)
+for the exact schema and validator verdicts. Each request is independent: a
+successful read may be shown when the other fails.
+
+Render the completed report's handoff sections and appended record lines:
+for every ticket, show **reference, title, state, link, and latest progress**;
+keep explicit `not_found` rows visible and say when latest progress is empty.
+Label carried commitments **from handoff** and returned commitments **from
+record**; show each returned reference, title, state, and link. A validated empty
+response may say none. For each failed request, show **record read unavailable:
+<reason>** in place of its rows, while preserving every handoff-derived section.
+Pending requests are unfinished reads, never empty results; complete them or
+report why unavailable before delivering the briefing. Validation establishes
+response shape and requested-reference coverage, not independent record accuracy;
+attribute the state to the binding and do not invent additional current state.
+
+This read makes no record writes and instructs no re-claim. List carried items;
+any transfer belongs to the user's own tools.
 
 ### The successor rule
 
