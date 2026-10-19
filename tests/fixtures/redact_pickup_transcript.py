@@ -13,8 +13,8 @@ actually reads is left INTACT:
   fields) — A5a (ticket ops) and A6 (transcript-scraped file paths) read
   the command strings themselves, not the surrounding prose.
 - tool_result content, up to a length cap — A5a's created-ticket-number
-  recovery greps a `gh issue create` result for its issue URL, which is
-  always near the start of a short stdout. Long results (file dumps, `gh
+  recovery greps a `record-cli issue create` result for its issue URL, which is
+  always near the start of a short stdout. Long results (file dumps, `record-cli
   issue view --comments`) are truncated; nothing that recovery logic reads
   is in the truncated tail.
 

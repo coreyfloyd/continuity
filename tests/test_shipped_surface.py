@@ -83,11 +83,6 @@ def test_no_shipped_file_names_a_script_the_package_does_not_ship():
     assert not missing, {name: sorted(paths) for name, paths in missing.items()}
 
 
-def test_the_pickup_skill_names_no_claim_tool():
-    text = read_text(os.path.join(ROOT, "skills", "pickup", "SKILL.md"))
-    assert "claim-comment" not in text and "claim-heartbeat" not in text
-
-
 TERMS = os.environ.get("REFERENCE_CHECK_TERMS")
 
 
@@ -171,3 +166,35 @@ def test_shipped_sources_use_only_the_current_lessons_skill_name():
         if text is not None:
             assert retired not in text, path
             assert retired_variable not in text, path
+
+
+# Assemble the prohibited vocabulary so this guard does not match itself.
+RECORD_CONVENTIONS = re.compile(
+    r'\b' + 'g' + r'h\b|claim[\s-]+comment\b|claim[\s-]+comments\b|'
+    + 'host' + r'/|\b' + 'mile' + r'stones?\b|\b' + 'ep' + r'ics?\b', re.I)
+
+
+def convention_hits(root):
+    hits = []
+    for directory, dirs, files in os.walk(root):
+        dirs[:] = sorted(d for d in dirs if d not in SKIPPED_DIRS)
+        for filename in sorted(files):
+            if filename == ".git":
+                continue
+            path = os.path.join(directory, filename)
+            text = read_text(path)
+            if text is not None and RECORD_CONVENTIONS.search(text):
+                hits.append(os.path.relpath(path, root))
+    return hits
+
+
+def test_shipped_files_contain_no_external_record_conventions():
+    assert not convention_hits(ROOT)
+
+
+@pytest.mark.parametrize('term', ['g' + 'h', 'claim ' + 'comments', 'claim-' + 'comment',
+                                  'host' + '/example', 'mile' + 'stone', 'ep' + 'ic'])
+def test_record_convention_guard_detects_new_shipped_content(tmp_path, term):
+    path = tmp_path / 'new.md'
+    path.write_text(term)
+    assert convention_hits(str(tmp_path)) == ['new.md']

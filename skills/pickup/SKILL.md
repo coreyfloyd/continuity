@@ -1,12 +1,12 @@
 ---
 name: pickup
-description: "Resume work after a cold start: default mode lists durable handoff candidates with transcript fallback; --machine reads GitHub claims. Use for 'where was I?' or 'pick up where I left off'; not within-session status."
+description: "Resume work after a cold start: lists durable handoff candidates with transcript fallback. Use for 'where was I?' or 'pick up where I left off'; not within-session status."
 disable-model-invocation: true
 ---
 
 # Pickup
 
-Answers *"where was I?"* from a cold start — no surviving context, no memory of what the last session held. It is handoff-first, with transcript fallback and the existing machine lens.
+Answers *"where was I?"* from a cold start — no surviving context, no memory of what the last session held. It is handoff-first, with transcript fallback.
 
 `<pickup.sh>` is this package's `scripts/pickup.sh` (resolve the path from this skill's real directory: `../../scripts/pickup.sh`).
 
@@ -34,7 +34,7 @@ Render these groups for the user and let them choose; do not make another candid
 bash <pickup.sh> --handoff <path>
 ```
 
-The selected handoff produces a version-2 briefing: handoff text is inferred, while git and best-effort ticket cross-checks are tagged validated or inferred. Ticket lookup degrades cleanly when `gh` is unavailable.
+The selected handoff produces a version-2 briefing from its pointers, open loops, carried commitments, and uncommitted files. Handoff text is inferred; git checks carry their own provenance. Include exactly one line: **No record read is bound.** No record-derived section is added.
 
 ## Transcript fallback
 
@@ -42,7 +42,7 @@ When no handoff candidate is available, the default path reads the on-disk trans
 
 **Symbolic links.** A configured store root may resolve through a link: `HOME`, `~/.claude`, `~/.claude/projects`, and `CODEX_HOME` are used as given, so a relocated root works. Below that root, a link is rejected wherever the lookup would descend into it or read it as a transcript: Codex `sessions`, `archived_sessions`, any directory in the `sessions` tree, and any rollout file; a Claude project directory the lookup reads (this directory's project on the automatic path, every project under `~/.claude/projects` for `--session`), and any `<id>.jsonl` it reads. That returns `session_store_unavailable` naming the link, with a non-zero exit and no session chosen, on both the automatic path and `--session`. Following the link could read a session outside the store, and skipping it could drop a window of a thread or a second owner of an id. An entry the lookup neither descends into nor reads is not examined, so a linked `memory/` inside a Claude project, a link to a plain file directly under `~/.claude/projects`, or a link to a non-rollout file in the Codex tree, is ignored.
 
-**It always prints a single JSON object — there is no human-rendered mode** (the script emits JSON, the agent renders the briefing, the user never sees raw output). `--json` is accepted for backward compatibility but has no effect on this lens — it's already the only output.
+**It always prints a single JSON object — there is no human-rendered mode** (the script emits JSON, the agent renders the briefing, the user never sees raw output). `--json` is accepted for backward compatibility but has no effect — JSON is already the only output.
 
 ```bash
 bash <pickup.sh> --session <id>
@@ -51,17 +51,16 @@ bash <pickup.sh> --session <id>
 | Flag | Effect |
 |---|---|
 | *(none)* | Handoff candidates; transcript miner only when none are available |
-| `--handoff <path>` | Selected handoff briefing with live git and ticket cross-checks |
+| `--handoff <path>` | Selected handoff briefing with git cross-checks |
 | `--session <id>` | A specific session from either provider, found wherever it ran (no skip) — see [Cross-tool reconstruction](#cross-tool-reconstruction) |
-| `--no-commitments` | `commitments` is `null` instead of collected — skips the ~25 gh round trips it costs |
 
-When neither provider has a session recorded for this cwd, or the only session here is the current one, the output is still a JSON object — `{"version": 2, "error": "no_transcript_directory" | "no_other_session", "message": "..."}` — never a silent fallback to the machine lens's differently-shaped array. Pass `--machine` explicitly for that lens.
+When neither provider has a session recorded for this cwd, or the only session here is the current one, the output is still a JSON object — `{"version": 2, "error": "no_transcript_directory" | "no_other_session", "message": "..."}`.
 
 ### How it picks the session
 
 Newest first across both providers (by file mtime; equal mtimes break by lowest session id, then provider name, never by file listing order), excluding the current session, **skipping any transcript that is malformed or has no substantive assistant turn** — a lone candidate included. A transcript is malformed when any of its files cannot be read, or any non-empty record in any of its files does not decode as a JSON object, the final record included; it is skipped whole, never reconstructed with that record missing. A Codex thread's files are every rollout whose filename carries its id, so a paginated window file that is unreadable, undecodable, or names another thread in its `session_meta` fails the whole thread rather than being left out. When every candidate is skipped, the result is `error: "no_substantive_transcript"` with a non-zero exit and a message naming each skipped file and why. A session that opened and never ran leaves an empty transcript and is not a resume target. If the default lands on the wrong session, pass `--session <id>`.
 
-**A bare `/pickup <arg>` argument is a session id, not a flag.** Map it to `--session <arg>` before running the script — don't fall through to the no-flag default. On 2026-08-16 `/pickup 9d6ae6fd` was run against a pre-update copy of this skill that had no directory lens at all; the argument was silently dropped and the machine lens returned an unrelated ticket. The user had to ask why the session id they gave was ignored.
+**A bare `/pickup <arg>` argument is a session id, not a flag.** Map it to `--session <arg>` before running the script.
 
 Automatic scoping is by directory, so it naturally separates worktrees — each has its own session set. A worktree with no prior session of its own returns the `no_transcript_directory` error above; that is expected, not a bug. If a store directory this path reads exists but cannot be listed, or is a rejected link (see Symbolic links above), it returns `session_store_unavailable` instead, because an absent session cannot be proven.
 
@@ -90,9 +89,9 @@ An explicit id never falls back to a guess. Each failure is a JSON error object 
 
 The JSON is a deterministic worklog that YOU, the agent, turn into the user's actual briefing. **Rendering it is your job, not the script's.** **Every open ask the dead session left is re-rendered in full** — context, options with tradeoffs, recommendation — never as the prior session's `R3`/`O2` codes: the user has no memory of those labels, and a briefing that says "R6: release, manual, or arm" cannot be answered (2026-09-05).
 
-Top-level fields: `session`, `provider`, `transcript_files`, `messages`, `first_ts`, `last_ts`, `first_user` (uncapped), `last_user` (uncapped), `last_assistant` (uncapped, selected by `stop_reason == "end_turn"` — the sign-off, not just the last row with any text), `ticket_refs`, `git` (session-branch cross-check: `branch`, `head`, `exists`, `on_main`, `unmerged`, `ahead_behind`), `branches`, `tickets`, `files_by_repo`, `staleness`, `skipped_candidates`, `session_repo_cwd`, `session_repo_readable`, `commitments` and `commitments_reason` (see [COMMITMENTS](#commitments) below).
+Top-level transcript fields: `session`, `provider`, `transcript_files`, `messages`, `first_ts`, `last_ts`, `first_user`, `last_user`, `last_assistant` (the last sign-off), `git`, `branches`, `files_by_repo`, `staleness`, `skipped_candidates`, `session_repo_cwd`, and `session_repo_readable`.
 
-**Exit code and error shape.** The directory lens is one Python process (`skills/pickup/scripts/pickup.py`); `scripts/pickup.sh` parses arguments, finds the engine, and runs it. Every failure path puts `{"version": 2, "error": ..., "message": ..., "commitments": null, "commitments_reason": "lens_error"}` on stdout — the shape never varies.
+**Exit code and error shape.** The engine is one Python process. Every failure emits `{"version": 2, "error": ..., "message": ...}`.
 
 **Branch on the `error` key, not on the exit code**, because the two do not line up and are not meant to:
 
@@ -112,182 +111,32 @@ Top-level fields: `session`, `provider`, `transcript_files`, `messages`, `first_
 |---|---|
 | `branches[]` | Every branch/worktree the session touched. Each entry: `branch`, `worktree_path`, `worktree_exists`, `dirty`, `ref` (`local`/`remote`/`none`), `on_main`, `merge_evidence` (the `%h %s` line of the merge commit, when one was found by name), `state`, `alarm_rank`, `commits`, `commits_source`. `state` is one of `dirty`, `clean_unmerged`, `gone_unmerged`, `merged`, `landed`, `deleted_no_merge`, or **`unknown`** — `unknown` means git itself could not be read for that worktree (a real error, not "nothing to report"). `alarm_rank` is the machine-readable severity order (**lower = more urgent**: `unknown`/`dirty` = 0, `deleted_no_merge` = 1, `clean_unmerged`/`gone_unmerged` = 2, `merged`/`landed` = 3) — sort `branches[]` by it rather than re-deriving an ordering from this prose. |
 | `branches[].commits_source` | Why `commits` is what it is: `"direct"` (the `main..branch` range, authoritative — an empty list here for an unmerged branch is a TRUE empty), `"merge_evidence"` (the branch is merged/gone and its own merge commit was found by name), `"not_applicable"` (ref is gone with no merge found — this already IS the `deleted_no_merge` alarm), or **`"unresolved"`** (the branch is merged, its ref still exists, but no merge commit could be found by name — its `state` is correctly `"merged"`, but what it CONTAINED is genuinely unknown, not confirmed empty). Never render an `"unresolved"` branch's empty `commits` as "no changes." |
-| `tickets` | Every ticket this session touched, ranked by **write ops** (comment/edit/close/reopen/create) — not view/mention count. Each entry: `repo`, `number`, `ops` (per-verb counts), `write_ops`, `mentions`, `created`. A `gh issue create` never prints its number in the command itself, only in the tool result on success — `created: true` means that recovery succeeded. |
 | `files_by_repo` | Per repo (keyed by repo root, not per-worktree path): `committed`, `uncommitted`, `transcript_scraped` (three separate lists — a path can appear in more than one), and `unresolved_branches` (branch names in this repo whose `commits_source` is `"unresolved"` — their real files are absent from `committed` above, not confirmed empty; cross-reference before treating the file list as complete). Uncommitted alone misses a merged-but-still-open branch's contribution; committed alone misses live uncommitted edits (a real session had 5 uncommitted changes in a notes repository that `git log` reported as zero); transcript-scraped catches bypass-mode edits routed through `Bash` (heredocs, `sed`, `python3 -c`) that never went through `Write`/`Edit` at all. |
 | `staleness` | `last_end_turn_ts` (the last message actually sent to the user) plus `tool_calls_after` — nonzero means the session kept working (or crashed mid-tool-call) past its last sign-off, and `last_assistant` above is stale by exactly that gap. |
 
-**Render the user's briefing from this JSON, not from your own recollection of the session** (subagent tool calls are invisible to the transcript — see Known limit below — so re-derive the session's work from what the JSON actually contains). Enrich that work with live context before rendering; the engine's `tickets` entries identify work, but do not supply titles, milestones, or parents.
+**Render the user's briefing from the selected handoff or transcript JSON.** Use the handoff's record pointers, headline, session summary, next action, and every carried open loop, including commitments. Keep the producing session, time, disposition, and decision ownership attached to carried items. A pointer locates the record; it does not validate the record's current state.
 
-**Read the outcomes live at render time.** For every ticket the session worked (`tickets`, plus worked tickets identified in the selected handoff), read its purpose, state, milestone, and GitHub parent issue (the epic). Use `gh issue view <number> --repo <owner/repo> --json title,body,state,url,milestone,comments` for the ticket and GraphQL for its parent and outcome counts. A body mention or dependency is not a GitHub parent relationship. For example, substitute the ticket's owner, repository, and number in this read-only query:
+Use these sections when applicable:
 
-```bash
-gh api graphql -f query='query {
-  repository(owner: "<owner>", name: "<repo>") {
-    issue(number: <number>) {
-      title body state url
-      milestone {
-        title description
-        issues { totalCount }
-        closedIssues: issues(states: CLOSED) { totalCount }
-      }
-      parent {
-        number title body state url
-        subIssues(first: 100) {
-          totalCount nodes { state }
-          pageInfo { hasNextPage endCursor }
-        }
-      }
-    }
-  }
-}'
-```
+- **Last session** — what the session set out to do and the work the handoff or transcript describes.
+- **Landed** — changes supported by local git evidence.
+- **Outstanding** — open loops, carried commitments, uncommitted files, and unresolved branches.
+- **Start here** — the handoff's next action, or an action supported by the transcript.
 
-Count an epic's closed children only after reading every page of its `subIssues` connection (follow `pageInfo.endCursor` with `after` while `hasNextPage` is true). Read the milestone description and epic body for their exit outcomes, not just their names. State both current completion and the session's contribution: a live count is today's total, not how many the session closed. Say “last blocker” only after checking the remaining children, dependencies, and open acceptance criteria. Do not infer closure from child counts alone. If `gh` is unavailable, denied, or returns partial data/errors, say the affected outcome could not be checked; retain the transcript's account as inferred, without inventing counts or treating a failed lookup as no milestone/epic. An explicit null relationship means omit that relationship.
+Include exactly one line stating **No record read is bound.** Do not invent current record status or add a record-derived section. Preserve available pointers so the user can return to the record. Define identifiers by their purpose on first mention. Re-render every open decision in full: context, options with tradeoffs, and recommendation; do not reuse unexplained option codes.
 
-**Resolve projects through the user's profile binding.** Follow the checklist's profile resolution: read `$CHECKLIST_USER_PROFILE` if set, otherwise `checklist/profile.md` under `$XDG_CONFIG_HOME` (default `~/.config`). Read the `record` binding's `command` and optional `instructions` (or the Markdown `section` resolved into instructions by the checklist loader), then read the named command's skill or documentation and the project-read references it supplies. A binding names a workflow, not a project: the profile schema has no dedicated project-mapping or read-interface field. Use only the ticket-to-project mapping and live goal-read procedure documented by that bound workflow; do not invent a field, command, or mapping. Read milestone and epic outcomes from GitHub first, then the bound project's goal. Do not run the checklist, invoke the record-writing command, or perform record writes while resuming. Never derive a project from the repository name, labels, or a private default unless the bound workflow explicitly defines that mapping. With no user profile or no record binding, leave the project out and say nothing about it. If the binding supplies no project-read procedure, its documentation cannot be resolved, or its lookup fails, report the unavailable project context instead of guessing.
+Tag each substantive line `(validated: <method>)` or `(inferred: <basis>)`. Git checks are current evidence; handoff and transcript text remain inferred. Re-check a test or file before acting on an old failure report. If `staleness.tool_calls_after` is nonzero, the last sign-off predates subsequent work. If `session_repo_readable` is false, local branch and file checks could not establish the work's state.
 
-Keep exactly these four sections, with one plain-language line per item; combine tickets sharing an outcome rather than repeating it. **Open Last session with what the work serves:** for every worked ticket, name its milestone and epic when present, and its bound project when available, with how its result moves each toward closing. For a ticket still open, distinguish intended progress from shipped progress. Keep these outcome lines inside Last session, before the work recap; do not add an outcomes or projects section.
+A pre-written dispatch is also stale: re-verify its premises before running it. Pickup reconstructs context; it does not grant authority for additional work.
 
-> **Last session** — milestone and epic outcomes, then each bound project's goal and how the session's work advances them; what it set out to do (`first_user`) and what it did (`last_assistant`, `tickets`, `branches[].commits`)
-> **Landed** — merged/closed tickets and branches
-> **Outstanding** — unmerged branches, uncommitted files (`files_by_repo`), open claimed tickets *(the section that matters most)*
-> **Start here** — one ticket, one command: the top of `tickets` (already ranked by write-ops) joined with any row in `commitments`; a branch still `dirty`/`clean_unmerged`/`gone_unmerged`/`unknown` in `branches` is a second line, not the headline.
+The branch cross-check uses the resumed session's last recorded `gitBranch`, rather than the current checkout's branch. Comparisons resolve the trunk from `PICKUP_TRUNK`, then `git symbolic-ref refs/remotes/origin/HEAD`, then `main`.
 
-**Define identifiers on first mention.** Give each ticket's purpose in plain words (not its full title) and its project or milestone when it has one, with a clickable `[repo#number](https://github.com/owner/repo/issues/number)` beside the description. This applies to epics, dependencies, follow-ups, and Start here too. Later mentions may use the number alone as the description, but **every reference still includes the repo and link**. Describe a group by the work its tickets cover, linking each member; never substitute a number range for its scope. Define other identifiers the first time they appear: a decision code with the choice it names, a setting with what it controls, a session id with which session it identifies, a score with its scale, what was evaluated, and what the verdict means. Read those definitions from the ticket, transcript, setting definition, or evaluation rubric; omit unnecessary codes, and mark unavailable definitions rather than guessing. Someone ignoring every ticket number must still understand the work and the next action. Use time-neutral prose throughout the briefing; do not assume the resumed session ran overnight.
-
-**Say why the top ticket existed.** Read its body for its origin ("found while gating X", a `blocked_by`, a parent issue) and state in the briefing whether that parent is still open. A session that worked a blocker ticket otherwise reads as the main task (2026-09-27: a ticket filed while gating another, already closed; the user asked twice what the session's real scope was). **Read the parent's body and its open acceptance criteria before proposing any transition on it.** A parent that still has unbuilt criteria is not "done once the blocker lands"; offering to close it from its title and labels is a state claim made without the read (2026-09-28: a resume briefing offered "close it as done" for a parent with three unbuilt criteria; the user asked why).
-
-**Tag every line** `(validated: <method>)` or `(inferred: <basis>)` — not just the uncertain ones. `(validated: git log)` for a landed branch, `(validated: gh issue view)` if you re-checked ticket state live, `(inferred: last assistant message, unverified since)` for anything you are relaying from `last_assistant`/`tickets` without re-confirming it. The JSON's own claims are exactly as stale as the transcript that produced them — a resumed session's "test X fails", "Y is missing", "Z is blocked" may have been fixed by someone else in the interval since the transcript was written. Run the test, grep for the file, read the ticket live before treating any of it as current. (2026-08-30: a resumed session reported one test failing on main; it had been fixed two days earlier by `d139e84d`. Acting on it directly would have meant debugging a passing test.)
-
-**A staged AFK-dispatch brief is as stale as the findings — re-verify its premises before dispatching.** When the resumed session left a pre-written dispatch staged (worktrees created, a brief on disk, scope registered), the brief is not a green light: re-verify its premises against current main first — every target file/line it names still exists, and every "assume X does not exist / use the old path" claim still holds. A brief can contradict code that landed after it was written, **even code that existed at its own staging base**. (2026-09-21: a day-old brief said "assume no replace endpoint, use add-then-remove" while the `consolidate` endpoint was already merged and wired at the brief's own staging base; two of the ticket's three ACs had shipped under sibling tickets. Dispatching it would have wasted an AFK launch or rebuilt done work — live verification re-scoped it to the one AC actually left.)
-
-**The branch cross-check keys on the resumed session's own branch** — its last recorded `gitBranch` — not on the working tree's current branch. In a shared checkout a concurrent session swaps the checked-out branch, so `$PWD` HEAD is unrelated to the session being resumed; reading it reported unmerged work as "already on main (merged)". Fixed 2026-08-16.
-
-### Before/after from a real briefing
-
-Adapted from a real resume briefing about a session that closed settings work and prepared launch-override evaluation. All repository, ticket, and session references below are neutral placeholders; session `example-session` identifies that earlier settings and evaluation session. The before excerpt preserves the unexplained codes; the after demonstrates the same work with descriptions. Counts and provenance tags retain the source example’s dated checks from 2026-10-10; they do not claim live verification of the placeholder URLs. It omits project context because this example supplies no user profile binding. It is a dated example, not current execution advice.
-
-Before (paraphrased fragments; placeholder links added without supplying the missing descriptions):
-
-> “closed [app#12](https://github.com/example/app/issues/12), [app#13](https://github.com/example/app/issues/13) and [app#14](https://github.com/example/app/issues/14)”; “filed [app#20](https://github.com/example/app/issues/20) through [app#28](https://github.com/example/app/issues/28)”; “[app#16](https://github.com/example/app/issues/16) is blocked by [app#17](https://github.com/example/app/issues/17) and [tools#18](https://github.com/example/tools/issues/18)”; “Start here: the D5 decision on [app#16](https://github.com/example/app/issues/16)”.
-
-After:
-
-**Last session**
-
-- Closed work on settings catch-up across machines ([app#12](https://github.com/example/app/issues/12)), project-to-machine assignments ([app#13](https://github.com/example/app/issues/13)), and configurable message delivery ([app#14](https://github.com/example/app/issues/14)); these closes advance the “Settings out of git” milestone (7 of 12 closed) and the epic to move configuration out of git ([app#15](https://github.com/example/app/issues/15), 7 of 16 children closed, still open). (validated: live GitHub ticket, milestone, and parent queries, 2026-10-10)
-- Prepared per-launch choices of AI provider, model, and reasoning effort ([app#16](https://github.com/example/app/issues/16)) so one evaluation can differ without changing defaults for every session. (inferred: preparation from the source briefing; purpose and absent milestone/parent checked in live GitHub, 2026-10-10)
-
-**Landed**
-
-- Closed the three settings tickets above: [app#12](https://github.com/example/app/issues/12), [app#13](https://github.com/example/app/issues/13), [app#14](https://github.com/example/app/issues/14). (validated: live GitHub states, 2026-10-10)
-
-**Outstanding**
-
-- Filed nine follow-ups: mark superseded settings applies ([app#20](https://github.com/example/app/issues/20)), recover machine catch-up after restoring the store ([app#21](https://github.com/example/app/issues/21)), and test catch-up and phone-width status ([app#22](https://github.com/example/app/issues/22)). (inferred: filing from the source briefing; purposes and absent milestone/parent checked in live GitHub, 2026-10-10)
-- The settings follow-ups cover clearer machine capabilities ([app#23](https://github.com/example/app/issues/23)), unavailable open-ticket checks ([app#24](https://github.com/example/app/issues/24)), consistent record editing ([app#25](https://github.com/example/app/issues/25)), and repository edit-button styling ([app#26](https://github.com/example/app/issues/26)). (inferred: filing from the source briefing; purposes and absent milestone/parent checked in live GitHub, 2026-10-10)
-- The communication follow-ups distinguish known Slack channels ([app#27](https://github.com/example/app/issues/27)) and use consistent names for delivery destinations ([app#28](https://github.com/example/app/issues/28)). (inferred: filing from the source briefing; purposes and absent milestone/parent checked in live GitHub, 2026-10-10)
-- Launch overrides depend on allowing single Codex launches ([app#17](https://github.com/example/app/issues/17)) and checking approved subagents on both providers ([tools#18](https://github.com/example/tools/issues/18)); neither has a milestone or GitHub parent. (validated: live bodies and relationships, 2026-10-10)
-
-- The global `evaluator_provider` setting chooses the AI provider that checks implementations; earlier spec-quality reviews of [app#16](https://github.com/example/app/issues/16) scored 7/10 on Claude and 3/10 on Codex (1–10 criterion scale, higher is better), both requiring escalation before approval; the ticket now records addressed findings and approval. (validated: live ticket body/comments, 2026-10-10, and spec evaluation rubric)
-
-**Start here**
-
-- Read the approved launch-override spec ([app#16](https://github.com/example/app/issues/16)) with `gh issue view 16 --repo example/app --comments`: D5, the choice of how overlapping overrides combine, is now answered—each value comes from the narrowest override. (validated: live ticket body, 2026-10-10)
-
-### Known limit: subagent work is invisible here
-
-Zero `isSidechain` rows were found across 15 sampled sessions, in a session that made a dozen `Agent` tool calls. Everything a dispatched subagent did — commits it made, tickets it touched, files it edited — is absent from `tickets`, `branches[].commits`, and `files_by_repo` unless it was already **committed** by the time this runs (`commits_source: "merge_evidence"` and A6's `git log`/`git status` pick up committed work regardless of who wrote it). The transcript itself will never carry it — don't imply completeness in the rendered briefing when the session's own text mentions subagents it dispatched.
-
-### Trunk branch
-
-Every `main`-relative comparison resolves the trunk branch in this order: the `PICKUP_TRUNK` env var, if set; otherwise `git symbolic-ref refs/remotes/origin/HEAD` (deterministic — the one branch the remote itself designates as default, empty when unset, never a wrong guess); otherwise `main`. A repo whose trunk is `master`/`trunk`/`develop` needs neither set as long as its `origin/HEAD` is configured (true for most clones); `PICKUP_TRUNK` remains the override for a repo with no remote HEAD at all, or to force a value.
-
-## COMMITMENTS
-
-A field in the same JSON object, `commitments` — not a separate printed section (fixed in #910: it used to be prose appended after the JSON, which made the default invocation unparseable — `json.load` failed with "Extra data" past the report's closing brace). It answers a different question from everything else in the object: not *what did the last session say*, but **what did it promise**. The scan runs inside `pickup.py` alongside everything else in this lens; it was a bash function whose output was merged into the report through an environment variable until #910 round 4, and every open fail-mode defect sat on that seam.
-
-The transcript recovers narrative. Commitments — "verify the 21:30 nightly", "watch #820 for 7 days", "delete the preview page once the nightly lands" — are not narrative and are usually not in the tail of the transcript at all. `/record-update`'s **commitments sweep** stamps them onto tickets before the session dies; this field is the read side.
-
-**Three distinct values, not two** — collecting nothing and not attempting the collection are different statements, and a silently absent field would read exactly like "you promised nothing" when it might mean "never checked":
-
-| Value | Meaning |
-|---|---|
-| `null` | Not collected. `commitments_reason` says why. |
-| `[]` | Collected, and nothing matched. |
-| `[{...}, ...]` | Collected; one object per ticket carrying this session's claim. |
-
-**`commitments_reason` is the companion field, and `null` on it means the array is complete.** Read it before rendering the Outstanding section — an empty array with a reason is not the same claim as an empty array without one.
-
-| `commitments_reason` | Meaning |
-|---|---|
-| `null` | Collected, complete. The only value that lets you say "nothing outstanding." |
-| `"skipped"` | `--no-commitments` was passed. Nothing was checked. |
-| `"no_session_id"` | The resumed session's id could not be determined, so the join had no key. |
-| `"no_owner"` | No GitHub owner is configured (`PICKUP_COMMITMENT_OWNER`, else `commitment_owner` in the continuity configuration), so there is no owner to scope the search. Nothing was checked. This is the default. |
-| `"gh_not_found"` | `gh` is not on `PATH`. |
-| `"gh_search_failed"` | `gh` ran and failed — stale auth, offline, rate limit. **This is the cold-start case**, and until #910 round 4 it reported `[]`, a false "you promised nothing". |
-| `"partial_claim_fetch"` | The array is real but INCOMPLETE: at least one ticket's claim comment could not be read, so its inheritance is unknown rather than absent. |
-| `"internal_error"` | An unexpected failure inside the commitments path. The rest of the report is still valid. |
-| `"lens_error"` | The lens never got far enough to scan (no transcript directory, engine failure). Accompanied by a top-level `error`. |
-| `"handoff_not_collected"` | A selected handoff has no transcript claim scan; read its live ticket cross-check instead. |
-
-Each object: `repo`, `number`, `title`, `status_labels` (the ticket's `status/*` labels, e.g. `["status/deployed"]`), `handoff_pending` (`true` when the commitments sweep stamped `state: handoff-pending-successor`; `false` means this session simply held the ticket), `branch` (or `null`), `url`.
-
-**Scoped by claim, not by status label.** `status/next` is a repo-wide queue — with several sessions in one repo a successor cannot tell its inheritance from the general pool. The claim comment already binds host · session · branch, so the query is: every **open** issue labeled for this host whose claim comment names the **resumed session's id**. Any status, so a `status/next` or `status/deployed` commitment shows up where the machine lens (`status/active` only) would never see it.
+Subagent work may be absent from the parent's transcript. Git checks can recover committed changes, but the briefing must not imply completeness when the session mentions dispatched work.
 
 ### The successor rule
 
-The [successor](../../docs/glossary.md#language) is the interactive session that resumed another session's handoff through `pickup`. The **resumed session** is the session whose handoff you resumed; it is never used again. Every contract bound to the resumed session's id — claims, pending approvals, pending replies, granted scopes, and any other record keyed by session id — is carried to **your** session id as the successor.
-
-Your adapter or setup owns any transfer operation; the package ships no transfer tool. Ticket claims are the one contract kind for which the package documents a transfer:
-
-Re-claim each row under **your** session id with the claim tool your adapter or setup uses; the package ships none. Succession is the one legal claim-over-claim takeover: the re-claim is what *retires* the handoff marker, since a claim by a different session clears `state:` while a heartbeat deliberately preserves it, so the marker survives until someone actually inherits it.
-
-Without a transfer tool for a contract kind (including a claim tool for ticket claims), state in the briefing which contracts you are taking over and leave their markers alone.
-
-### Bounds and known gaps
-
-- Scans the **25 most recently updated** open host-labeled issues owned by `PICKUP_COMMITMENT_OWNER` (`PICKUP_COMMITMENT_LIMIT` overrides). Claim bodies are fetched by a thread pool whose default size is that same limit, i.e. one wave (`PICKUP_COMMITMENT_JOBS` overrides, capped at 32 — lower it on a rate-limited box). Measured ~14s uncapped serially, which is what `--no-commitments` exists to skip.
-- **The join is a 12-char prefix.** The claim tool is expected to truncate the session id; the transcript id is a full uuid. A session that claimed under `CLAUDE_SESSION_NAME` (a name, not an id prefix) is **not** recoverable by id.
-- **A stale row is possible.** `heartbeat` keeps the recorded session id when the host matches, so a ticket stamped by session A and later heartbeated by session B on the same box still reads A. Verify a row before inheriting it — same rule as the transcript findings above.
-
-## Machine lens (`--machine`)
-
-*"What does this HOST hold?"* — an optional lens, available when a machine-lens command is configured (`PICKUP_MACHINE_LENS`, else `machine_lens` in the continuity configuration; without one, these flags report `machine_lens_unavailable`). The command a claims setup supplies reads the **claim comments** its claim tool writes onto tickets (host · session · branch · started · heartbeat) and renders them stalest-first. Use it to spot work stranded on another machine.
-
-```bash
-bash <pickup.sh> --machine
-```
-
-| Flag | Effect |
-|---|---|
-| `--machine` | This machine only — filters on the matching `host/*` label |
-| `--all-hosts` | Every host (spot work stranded on a Mini) |
-| `--host <name>` | A specific host |
-
-- **Stalest first** — the thing dropped longest ago is the one most likely abandoned rather than paused.
-- **`(!)` past 48h** is the claim TTL. Past it the claim is probably stale; a claim sweeper, where one runs, reports these.
-- **`never heartbeat`** — claimed but no commit/push/test ever bumped it.
-
-**Caveat — the claim plumbing under-fires.** A session that resumes an already-active ticket never emits a claim, and the heartbeat safety net is unreliable (tracked in the claim/heartbeat determinism bug). So the machine lens can show nothing even when work is in flight. The directory lens does not have this gap — it reads the transcript directly. When the directory lens finds no other transcript, it reports that as a JSON error object (see above) rather than silently falling back to this lens — pass `--machine` yourself to check it.
-
-## Then resume properly
-
-The output tells you *which* ticket and *where* the session stopped. The ticket's progress comments are the durable in-flight record (#386 layer 4):
-
-```bash
-gh issue view <n> --repo <repo> --comments
-git status && git log --oneline -5
-```
-
-Check out the branch named in the row, and confirm its state before assuming the summary is still accurate.
+The session running pickup is the **successor**; the session whose handoff it selected is the **resumed session**. Keep carried items' original session identity. Session-bound contracts such as pending approvals, pending replies, granted scopes, and any other record keyed by session id may also need transfer. Pickup makes no record writes; any transfer of session-bound contracts is left to the user's own tools. Listing candidates does not select a session.
 
 ## Distinct from `/wip`
 
-`/wip` is a within-session snapshot seeded by the SessionStart ticket injection and verified against live reality — "what is in flight *for this session*". `pickup` needs no surviving session: the directory lens reads a dead session's transcript, the machine lens reads GitHub. Run `pickup` first in a fresh terminal; run `/wip` once you are back inside a session with context.
-
-## Related
-
-- The `record` slot's binding, through the checklist's commitments sweep, is the write side of the COMMITMENTS section.
-- `/wip` — the within-session counterpart
+`/wip` reports within-session work using surviving context. Pickup reconstructs a previous session from durable handoffs or local transcripts, across Claude Code and Codex.

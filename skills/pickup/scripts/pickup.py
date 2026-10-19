@@ -1,46 +1,9 @@
 #!/usr/bin/env python3
-"""pickup directory-lens engine (#910).
+"""Stdlib-only handoff discovery and cross-provider transcript reconstruction.
 
-Ported out of the inline ``python3 -c`` block that used to live in
-``scripts/pickup.sh`` (#909's branch/worktree scan plus
-the original directory-lens message/git logic), into the published skill
-layout (``skills/pickup/scripts/``) so it is self-contained and
-distributable rather than living as an unreadable heredoc.
-
-STDLIB ONLY. Ops scripts invoke this under a bare ``python3`` with no
-pydantic / python-dotenv on the path (see
-``tests/test_pickup_stdlib_only.py``).
-
-Usage (called by scripts/pickup.sh, not normally run directly):
-
-    pickup.py --repo-nwo <owner/repo> [--sid-out <path>] \
-        <candidate.jsonl> [<candidate.jsonl> ...]
-
-Always prints a single JSON object to stdout ("version: 2") and exits 0 —
-there is no human-rendered mode (the owner's call: the script emits JSON, the
-agent renders the briefing from it; see skills/pickup/SKILL.md). Every
-v1 field is still present (session, messages, first_ts, last_ts, first_user,
-last_user, last_assistant, ticket_refs, git, branches) alongside the #910
-worklog additions: ticket write-ops ranking, commit subjects per branch, a
-per-repo file list (committed/uncommitted/transcript-scraped), and a
-staleness flag. When no substantive transcript is found, the emitted object
-carries an "error" key instead of the report fields — it is still always a
-JSON OBJECT, never a differently-shaped array (see pickup.sh's dir_scan
-for why that distinction matters: a caller parsing this unattended cannot
-tolerate a shape that varies with cwd).
-
-COMMITMENTS (#851) lives HERE too, as of #910 round 4 (the owner's O2, "finish
-the port"). It used to be a bash function whose JSON was handed back to a
-third ``python3 -c`` through an environment variable; every open fail-mode
-finding sat on that seam — a gh failure read as "found none", an engine
-crash lost the documented error shape, the env round-trip was
-size-unbounded, and the merge step was never exercised with a populated
-array. The directory lens is one Python process now: this module resolves
-the session, runs the gh scan itself, and prints ONE object carrying
-"commitments" and "commitments_reason". pickup.sh keeps argument
-parsing and the machine lens (host_scan) only.
+Prints a version-2 JSON object; the agent renders it as a resume briefing.
+Git checks carry their own provenance. Record pointers remain handoff data.
 """
-import concurrent.futures
 import datetime
 import json
 import os
@@ -288,46 +251,10 @@ def _repository_root(cwd):
     return _canonical(os.path.dirname(os.path.normpath(common)))
 
 
-def _ticket_anchor(handoff):
-    loops = handoff.get("resume", {}).get("open_loops", [])
-    if not isinstance(loops, list):
-        loops = []
-    for loop in loops:
-        anchor = loop.get("anchor", {}) if isinstance(loop, dict) else {}
-        ticket = anchor.get("ticket") if isinstance(anchor, dict) else None
-        if isinstance(ticket, str) and "#" in ticket:
-            repo, number = ticket.rsplit("#", 1)
-            if repo and number.isdigit():
-                return repo, int(number)
-    return None, None
-
-
-def _ticket_status(repo, number):
-    """Best-effort live ticket check. `gh` absence/failure is data, not a
-    handoff failure, so cold-start resume remains usable offline."""
-    if not repo or number is None:
-        return {"checked": False, "reason": "no_ticket_anchor"}
-    try:
-        proc = subprocess.run(
-            ["gh", "issue", "view", str(number), "--repo", repo,
-             "--json", "state,title,url"], capture_output=True, text=True)
-    except FileNotFoundError:
-        return {"checked": False, "reason": "gh_not_found", "repo": repo, "number": number}
-    if proc.returncode != 0:
-        return {"checked": False, "reason": "gh_failed", "repo": repo, "number": number}
-    try:
-        record = json.loads(proc.stdout)
-    except ValueError:
-        return {"checked": False, "reason": "gh_bad_output", "repo": repo, "number": number}
-    return {"checked": True, "repo": repo, "number": number, "record": record}
-
-
 def handoff_briefing(path):
     """Build the directory-lens briefing shape from a selected handoff.
 
-    Handoff text is inferred until its ticket is checked; git and ticket
-    cross-checks state their own provenance so a caller never conflates a
-    stale continuation pointer with fresh ground truth.
+    Handoff text remains inferred. Git checks state their own provenance.
     """
     handoff = _load_handoff(path)
     if handoff is None:
@@ -337,9 +264,6 @@ def handoff_briefing(path):
     exists = bool(subject and branch and git_ok(subject, "rev-parse", "--verify", "--quiet",
                                                 str(branch) + "^{commit}"))
     head = git(subject, "rev-parse", "--short", str(branch)) if exists else None
-    repo, number = _ticket_anchor(handoff)
-    ticket = _ticket_status(repo, number)
-    ticket_provenance = "validated: gh issue view" if ticket.get("checked") else "inferred: handoff anchor; live ticket unavailable"
     git_provenance = "validated: git rev-parse" if exists else "inferred: handoff git block; branch unavailable"
     resume = handoff["resume"]
     files = handoff.get("uncommitted_files", [])
@@ -354,20 +278,15 @@ def handoff_briefing(path):
         "git": {"branch": branch, "head": head, "exists": exists,
                 "on_main": None, "unmerged": None, "ahead_behind": None},
         "branches": [],
-        "tickets": [],
         "resume": resume,
         "handoff": handoff,
         "uncommitted_files": files,
-        "ticket": ticket,
-        "commitments": None,
-        "commitments_reason": REASON_HANDOFF_NOT_COLLECTED,
         "provenance": "validated_or_inferred_required",
         "briefing": [
             {"line": resume.get("headline") or "", "provenance": "inferred: handoff resume block"},
             {"line": resume.get("next_action") or "", "provenance": "inferred: handoff resume block"},
             {"line": "branch %s" % (branch or "unknown"), "provenance": git_provenance},
-            {"line": "ticket %s" % ("checked" if ticket.get("checked") else "not checked"),
-             "provenance": ticket_provenance},
+            {"line": "No record read is bound.", "provenance": "validated: pickup has no record-read binding"},
         ] + [
             {"line": "Uncommitted file: %s" % filename, "provenance": "inferred: handoff ledger snapshot"}
             for filename in files
@@ -379,54 +298,10 @@ def handoff_briefing(path):
         ],
     }
 
-# ================================================================== COMMITMENTS (#851, ported #910 r4)
-# "What did the resumed session PROMISE?" — not what it said (transcript) and
-# not what the repo queue holds (status/next is repo-wide, so with several
-# concurrent sessions a successor cannot tell its inheritance from the pool).
-#
-# The binding is the CLAIM, which is already session-scoped: the user's claim tool
-# writes host/session/branch into a marker block, and its handoff step stamps
-# that block onto a commitment ticket at ANY status. This is the read side:
-# every open host-labeled issue whose claim session matches the resumed one.
-#
-# Join note: the claim tool truncates the session to 12 chars while the
-# transcript id is a full uuid, so the match is on the first 12 chars. A
-# session that claimed under CLAUDE_SESSION_NAME (a name, not an id prefix)
-# cannot be recovered by id; that is a known, accepted gap.
-#
-# THE TRI-STATE, and why it is a PAIR of fields. "commitments" is null (not
-# collected), [] (collected, found none), or an array of rows. null and [] are
-# deliberately different values — a silently absent or empty field would read
-# as "you promised nothing" when it may mean "never checked". The old bash
-# implementation could not hold that distinction under failure: `gh`'s stderr
-# went to /dev/null, its exit code was never read, and an empty result was
-# rewritten to `[]`, so a 403 at cold start (stale auth, offline box) reported
-# "collected, found none" — the exact false all-clear the tri-state exists to
-# prevent (#910 eval round 3 F2). "commitments_reason" carries WHY, so null is
-# never ambiguous and a partially-collected array is never mistaken for a
-# complete one.
-COMMITMENT_STATE_DEFAULT = "handoff-pending-successor"
-COMMITMENT_LIMIT_DEFAULT = 25
-
-# commitments_reason vocabulary. null means "collected, complete".
-REASON_SKIPPED = "skipped"                        # --no-commitments
-REASON_NO_SESSION_ID = "no_session_id"            # nothing to key the join on
-REASON_NO_OWNER = "no_owner"                      # PICKUP_COMMITMENT_OWNER unset: nothing to scope the search
-REASON_GH_NOT_FOUND = "gh_not_found"              # gh absent from PATH
-REASON_GH_SEARCH_FAILED = "gh_search_failed"      # gh ran and failed (auth, network, rate limit)
-REASON_PARTIAL = "partial_claim_fetch"            # rows resolved, but >=1 claim fetch failed
-REASON_INTERNAL = "internal_error"                # unexpected exception in this path
-REASON_LENS_ERROR = "lens_error"                  # the lens never got far enough to scan
-REASON_HANDOFF_NOT_COLLECTED = "handoff_not_collected"  # handoff has no transcript claim scan
-
-CLAIM_MARKER = "<!-- CLAIM v1"
-CLAIM_JQ = '[.[].body | select(contains("%s"))] | last // ""' % CLAIM_MARKER
-
 
 def error_report(code, message, **fields):
     """One stable envelope for every directory-lens error object."""
-    report = {"version": REPORT_VERSION, "error": code, "message": message,
-              "commitments": None, "commitments_reason": REASON_LENS_ERROR}
+    report = {"version": REPORT_VERSION, "error": code, "message": message}
     report.update(fields)
     return report
 
@@ -434,9 +309,7 @@ def error_report(code, message, **fields):
 def handoff_candidates_report(candidates, skipped, prune=None):
     return {"version": REPORT_VERSION, "source": "handoff_candidates",
             "candidates": candidates, "skipped": skipped,
-            "prune_candidates": prune or [],
-            "commitments": None,
-            "commitments_reason": REASON_HANDOFF_NOT_COLLECTED}
+            "prune_candidates": prune or []}
 
 
 def report_exit_status(report):
@@ -444,140 +317,6 @@ def report_exit_status(report):
     if not report.get("error"):
         return 0
     return 0 if report["error"] in ("no_transcript_directory", "no_other_session") else 1
-
-
-def gh(args):
-    """Run `gh` and return (returncode, stdout). Raises FileNotFoundError when
-    gh is not on PATH — the caller distinguishes that from a gh that ran and
-    failed, because they are different answers to "did we check?"."""
-    proc = subprocess.run(["gh"] + list(args), capture_output=True, text=True)
-    return proc.returncode, proc.stdout
-
-
-def claim_field(body, name):
-    m = re.search(r"^%s:\s*(.+)$" % re.escape(name), body, re.M)
-    return m.group(1).strip() if m else ""
-
-
-def commitment_search(owner, host, limit):
-    """The bounded candidate set: the N most recently updated OPEN issues
-    labeled for this host. Deliberately NOT filtered by status — a commitment
-    is commonly status/next or status/deployed, which the machine lens
-    (status/active only) never sees.
-
-    argv shape is load-bearing: a file-backed `gh` stub in the tests
-    pattern-matches the subcommand, so keep the subcommand order, flags, and --json field list as
-    they were in the bash implementation."""
-    args = ["search", "issues", "--owner", owner, "--state", "open"]
-    if host and host != "unknown":
-        args += ["--label", "host/%s" % host]
-    args += ["--json", "repository,number,title,labels", "--limit", str(limit)]
-    return gh(args)
-
-
-def fetch_claim(repo, number):
-    """Latest CLAIM block body for one issue -> (ok, body). ok is False when
-    the fetch itself failed; an issue with no claim is (True, "")."""
-    rc, out = gh(["api", "repos/%s/issues/%s/comments" % (repo, number),
-                  "--paginate", "--jq", CLAIM_JQ])
-    if rc != 0:
-        return False, ""
-    return True, out
-
-
-def collect_commitments(session_id, host=None, limit=None, jobs=None, state=None):
-    """-> (commitments, reason). See the tri-state note above.
-
-    Claim bodies are fetched concurrently: one serial `gh api` per issue put
-    ~25 round trips (measured ~14s) on the default path. A thread pool, not a
-    process pool — the work is subprocess I/O, and this module is loaded by
-    spec_from_file_location in tests/test_pickup_stdlib_only.py, where a
-    process pool would re-import __main__."""
-    if not session_id:
-        return None, REASON_NO_SESSION_ID
-
-    state = state or COMMITMENT_STATE_DEFAULT
-    if limit is None:
-        limit = _env_int("PICKUP_COMMITMENT_LIMIT", COMMITMENT_LIMIT_DEFAULT)
-    if jobs is None:
-        jobs = _env_int("PICKUP_COMMITMENT_JOBS", limit)
-    jobs = max(1, min(jobs, 32))
-
-    # The GitHub owner whose issues carry claims is setup-specific, so it is
-    # configured, never assumed; the scan is unscoped without it.
-    owner = os.environ.get("PICKUP_COMMITMENT_OWNER", "").strip()
-    if not owner:
-        return None, REASON_NO_OWNER
-
-    key = session_id[:12]
-
-    try:
-        rc, out = commitment_search(owner, host, limit)
-    except FileNotFoundError:
-        return None, REASON_GH_NOT_FOUND
-    if rc != 0:
-        return None, REASON_GH_SEARCH_FAILED
-
-    try:
-        issues = json.loads(out) if out.strip() else []
-    except Exception:
-        # gh exited 0 but did not produce parseable JSON. That is a failed
-        # collection, not an empty one.
-        return None, REASON_GH_SEARCH_FAILED
-    if not isinstance(issues, list):
-        return None, REASON_GH_SEARCH_FAILED
-    if not issues:
-        return [], None
-
-    metas = []
-    # A malformed search row is dropped, but never silently: the collection is
-    # then partial, the same claim a failed claim fetch makes (#910 eval
-    # round 4, F-B). gh does not emit partial rows today; the direction of the
-    # failure (a false all-clear) is what earns the flag.
-    dropped_rows = False
-    for i in issues:
-        try:
-            metas.append((i["repository"]["nameWithOwner"], int(i["number"]),
-                          str(i.get("title", "")).replace("\t", " "),
-                          [l["name"] for l in (i.get("labels") or [])]))
-        except Exception:
-            dropped_rows = True
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=jobs) as pool:
-        fetched = list(pool.map(lambda m: fetch_claim(m[0], m[1]), metas))
-
-    partial = dropped_rows
-    rows = []
-    for (repo, number, title, labels), (ok, body) in zip(metas, fetched):
-        if not ok:
-            # A dropped claim fetch means this ticket's inheritance is UNKNOWN,
-            # not absent. The bash implementation silently omitted it — F2's
-            # failure class one level down.
-            partial = True
-            continue
-        if not body.strip():
-            continue
-        if claim_field(body, "session") != key:
-            continue
-        rows.append({
-            "repo": repo,
-            "number": number,
-            "title": title,
-            "status_labels": [l for l in labels if l.startswith("status/")],
-            "handoff_pending": claim_field(body, "state") == state,
-            "branch": claim_field(body, "branch") or None,
-            "url": "https://github.com/%s/issues/%s" % (repo, number),
-        })
-
-    return rows, (REASON_PARTIAL if partial else None)
-
-
-def _env_int(name, default):
-    raw = os.environ.get(name, "")
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return default
 
 
 # ================================================================== transcript primitives
@@ -874,78 +613,6 @@ def branch_state(repo_cwd, branch, wt_by_path, path_by_branch, cwd_status, merge
 
 ALARM_RANK = {"unknown": 0, "dirty": 0, "deleted_no_merge": 1, "clean_unmerged": 2,
               "gone_unmerged": 2, "merged": 3, "landed": 3}
-
-
-# ================================================================== A5a — ticket write-ops
-
-_TICKET_CMD_RE = re.compile(
-    r"gh\s+issue\s+(comment|edit|close|reopen|view)\s+(\d+)")
-_CLOSE_SCRIPT_RE = re.compile(
-    r"close-issue\.sh\s+(\S+)\s+(\d+)")
-_REPO_FLAG_RE = re.compile(r"--repo[=\s]+(\S+)")
-_CREATE_RE = re.compile(r"gh\s+issue\s+create\b")
-_ISSUE_URL_RE = re.compile(r"github\.com/([\w.-]+/[\w.-]+)/issues/(\d+)")
-
-_WRITE_VERBS = {"comment", "edit", "close", "reopen", "create"}
-
-
-def extract_ticket_ops(rows, default_repo):
-    """A5a — rank tickets by WRITE ops (comment/edit/close/reopen/create),
-    not by view/mention count. Created numbers are not in the command
-    string — gh issue create only prints the issue URL on success, in the
-    paired tool_result (#899/#900 in the sample transcript surfaced this
-    way)."""
-    result_by_tool_use_id = {}
-    for r in rows:
-        if r.get("type") != "user":
-            continue
-        c = r.get("message", {}).get("content")
-        if not isinstance(c, list):
-            continue
-        for p in c:
-            if isinstance(p, dict) and p.get("type") == "tool_result" and p.get("tool_use_id"):
-                result_by_tool_use_id[p["tool_use_id"]] = tool_result_text(p)
-
-    counts = defaultdict(lambda: defaultdict(int))  # (repo, num) -> verb -> count
-
-    for r in rows:
-        if r.get("type") != "assistant" or not real(r):
-            continue
-        for b in tool_use_blocks(r):
-            if b.get("name") != "Bash":
-                continue
-            cmd = b.get("input", {}).get("command", "") or ""
-            repo_m = _REPO_FLAG_RE.search(cmd)
-            repo = repo_m.group(1) if repo_m else default_repo
-
-            for verb, num in _TICKET_CMD_RE.findall(cmd):
-                counts[(repo, num)][verb] += 1
-            cm = _CLOSE_SCRIPT_RE.search(cmd)
-            if cm:
-                counts[(cm.group(1), cm.group(2))]["close"] += 1
-
-            if _CREATE_RE.search(cmd):
-                # resolve the created number from the paired tool_result
-                result_text = result_by_tool_use_id.get(b.get("id"))
-                if result_text:
-                    m = _ISSUE_URL_RE.search(result_text)
-                    if m:
-                        counts[(m.group(1), m.group(2))]["create"] += 1
-
-    tickets = []
-    for (repo, num), verbs in counts.items():
-        write_ops = sum(n for v, n in verbs.items() if v in _WRITE_VERBS)
-        mentions = sum(verbs.values())
-        tickets.append({
-            "repo": repo,
-            "number": int(num),
-            "ops": dict(verbs),
-            "write_ops": write_ops,
-            "mentions": mentions,
-            "created": verbs.get("create", 0) > 0,
-        })
-    tickets.sort(key=lambda t: (-t["write_ops"], -t["mentions"], t["number"]))
-    return tickets
 
 
 # ================================================================== A5b — commit subjects per branch
@@ -1384,7 +1051,7 @@ def normalize_codex_rows(raw, thread_id):
     Assistant text comes from response_item assistant messages, and the
     final_answer phase is Claude's end_turn. Each CommandExecution becomes a
     Bash tool_use plus its paired tool_result, and each FileChange an Edit
-    tool_use per path, so ticket and file extraction read them unchanged.
+    tool_use per path, so file extraction reads them unchanged.
     cwd comes from this thread's session_meta and each turn_context; the
     branch from session_meta.git (Codex records no per-turn branch)."""
     def event(row, kind):
@@ -1623,7 +1290,7 @@ def pick_candidate(cands):
     return None, None, skipped
 
 
-def build_report(cands, repo_nwo):
+def build_report(cands):
     """Returns a single JSON-serializable dict — always an object, never a
     bare list, whether or not a substantive transcript was found (#910 eval
     F1: the caller must never see a shape that depends on cwd)."""
@@ -1631,10 +1298,10 @@ def build_report(cands, repo_nwo):
     if path is None:
         return error_report("no_substantive_transcript", "no substantive transcript found",
                             candidates=len(cands), skipped=skipped)
-    return report_from_rows(rows, os.path.basename(path)[:-6], repo_nwo, skipped)
+    return report_from_rows(rows, os.path.basename(path)[:-6], skipped)
 
 
-def report_from_rows(rows, sid, repo_nwo, skipped=0):
+def report_from_rows(rows, sid, skipped=0):
     """The version-2 report for one already-loaded session's rows."""
     session_repo_cwd = next((r.get("cwd") for r in reversed(rows) if r.get("cwd")), os.getcwd())
     # #910 eval round 2 F5: every OTHER cwd in cwd_status gets an isdir
@@ -1654,13 +1321,6 @@ def report_from_rows(rows, sid, repo_nwo, skipped=0):
     fu, fu_ts = first_user_message(users)
     lu, lu_ts = last_user_message(users)
     la, la_ts = last_assistant_message(asst)
-
-    tail_text = " ".join(text(r) for r in rows[-40:])
-    refs = []
-    for m in re.findall(r"#(\d{2,6})", tail_text):
-        if m not in refs:
-            refs.append(m)
-    refs = refs[:8]
 
     first_ts = next((r.get("timestamp") for r in rows if r.get("timestamp")), None)
     last_ts = next((r.get("timestamp") for r in reversed(rows) if r.get("timestamp")), None)
@@ -1732,7 +1392,6 @@ def report_from_rows(rows, sid, repo_nwo, skipped=0):
             covered.add(cb)
 
     # ---- #910 additive worklog ----
-    tickets = extract_ticket_ops(rows, repo_nwo or "unknown/unknown")
     for rep in branch_reports:
         commits, source = branch_commits(session_repo_cwd, rep, merge_log_rows, trunk)
         rep["commits"] = commits
@@ -1772,11 +1431,9 @@ def report_from_rows(rows, sid, repo_nwo, skipped=0):
         "first_user": fu,
         "last_user": lu,
         "last_assistant": la,
-        "ticket_refs": refs,
         "git": git_info,
         "branches": branch_reports,
         # additive (#910)
-        "tickets": tickets,
         "files_by_repo": files_by_repo,
         "staleness": stale,
         "skipped_candidates": skipped,
@@ -1820,8 +1477,7 @@ def _pick_directory_session(candidates):
     return None, None, None, None, skipped
 
 
-def directory_resume(state_dir, cwd, home, current_session, repo_nwo=None,
-                     commitments_host=None, no_commitments=False,
+def directory_resume(state_dir, cwd, home, current_session,
                      transcript_session=None, prune=False, codex_home=None):
     """Resolve the whole directory-lens policy behind one engine interface.
 
@@ -1850,15 +1506,14 @@ def directory_resume(state_dir, cwd, home, current_session, repo_nwo=None,
     if prune:
         moved = archive_prune_candidates(state_dir, dead)
         return {"version": REPORT_VERSION, "source": "handoff_prune",
-                "moved": moved, "prune_candidates": dead,
-                "commitments": None, "commitments_reason": REASON_HANDOFF_NOT_COLLECTED}
+                "moved": moved, "prune_candidates": dead}
     # An explicit session is a direct selection and bypasses handoff discovery.
     if transcript_session is not None:
         try:
             provider, rows, files = resolve_session(home, codex_home, transcript_session)
         except SourceError as exc:
             return _directory_error(exc.code, exc.message)
-        report = report_from_rows(rows, transcript_session, repo_nwo)
+        report = report_from_rows(rows, transcript_session)
     else:
         local_candidates = [row for row in candidates
                             if row["group"] in ("this_directory", "sibling_worktrees")]
@@ -1877,8 +1532,7 @@ def directory_resume(state_dir, cwd, home, current_session, repo_nwo=None,
         if claude_names is None and not codex_threads:
             report = _directory_error(
                 "no_transcript_directory",
-                "no transcript directory for %s (looked in %s and Codex rollouts under %s); "
-                "pass --machine explicitly for the machine lens"
+                "no transcript directory for %s (looked in %s and Codex rollouts under %s)"
                 % (cwd, transcript_dir, codex_home))
             report["prune_candidates"] = dead
             return report
@@ -1896,7 +1550,7 @@ def directory_resume(state_dir, cwd, home, current_session, repo_nwo=None,
         if not sessions:
             report = _directory_error(
                 "no_other_session",
-                "no OTHER session transcript in %s (only the current one); pass --machine explicitly for the machine lens"
+                "no OTHER session transcript in %s (only the current one)"
                 % cwd)
             report["prune_candidates"] = dead
             return report
@@ -1904,35 +1558,23 @@ def directory_resume(state_dir, cwd, home, current_session, repo_nwo=None,
         if provider is None:
             report = error_report(
                 "no_substantive_transcript",
-                "no substantive transcript for %s; skipped: %s; pass --session <id> or --machine"
+                "no substantive transcript for %s; skipped: %s; pass --session <id>"
                 % (cwd, "; ".join(skipped_sessions)),
                 candidates=len(sessions), skipped=len(skipped_sessions))
         else:
-            report = report_from_rows(rows, sid, repo_nwo, len(skipped_sessions))
+            report = report_from_rows(rows, sid, len(skipped_sessions))
 
     if not report.get("error"):
         report["provider"] = provider
         report["transcript_files"] = files
         report["source"] = "transcript_fallback"
         report["notice"] = "No handoff was found for this directory; used the transcript miner."
-    if no_commitments:
-        commitments, reason = None, REASON_SKIPPED
-    elif report.get("error"):
-        commitments, reason = None, REASON_LENS_ERROR
-    else:
-        try:
-            commitments, reason = collect_commitments(report.get("session"), host=commitments_host)
-        except Exception:
-            commitments, reason = None, REASON_INTERNAL
-    report["commitments"] = commitments
-    report["commitments_reason"] = reason
     report["skipped"] = skipped
     report["prune_candidates"] = dead
     return report
 
 
 def main(argv):
-    repo_nwo = None
     sid_out = None
     handoff_state_dir = None
     handoff_current_cwd = None
@@ -1942,40 +1584,16 @@ def main(argv):
     current_sessions = []
     codex_home = None
     transcript_fallback = False
-    # --commitments-host, not --host: in pickup.sh "--host" already means
-    # "machine lens, this host", and reusing the string across the two argument
-    # parsers is how a future edit wires the wrong one.
-    commitments_host = None
-    commitment_state = None
-    no_commitments = False
     prune = False
     cands = []
     i = 0
     while i < len(argv):
         a = argv[i]
-        if a == "--repo-nwo":
-            if i + 1 >= len(argv):
-                return _usage_error("--repo-nwo requires a value")
-            repo_nwo = argv[i + 1]
-            i += 2
-        elif a == "--sid-out":
+        if a == "--sid-out":
             if i + 1 >= len(argv):
                 return _usage_error("--sid-out requires a value")
             sid_out = argv[i + 1]
             i += 2
-        elif a == "--commitments-host":
-            if i + 1 >= len(argv):
-                return _usage_error("--commitments-host requires a value")
-            commitments_host = argv[i + 1]
-            i += 2
-        elif a == "--commitment-state":
-            if i + 1 >= len(argv):
-                return _usage_error("--commitment-state requires a value")
-            commitment_state = argv[i + 1]
-            i += 2
-        elif a == "--no-commitments":
-            no_commitments = True
-            i += 1
         elif a == "--prune":
             prune = True
             i += 1
@@ -2015,10 +1633,12 @@ def main(argv):
         elif a == "--transcript-fallback":
             transcript_fallback = True
             i += 1
-        elif a == "--json":
-            # Accepted for backward compatibility with callers that still
-            # pass it — JSON is the only output now, so this is a no-op.
+        elif a in ("--json", "--no-commitments"):
+            # JSON is always emitted. With no record read bound, there is
+            # no commitments request to skip.
             i += 1
+        elif a.startswith("--"):
+            return _usage_error("unrecognized option: %s" % a)
         else:
             cands.append(a)
             i += 1
@@ -2035,9 +1655,7 @@ def main(argv):
         return report_exit_status(report)
 
     if directory_resume_args is not None:
-        report = directory_resume(*directory_resume_args, repo_nwo=repo_nwo,
-                                  commitments_host=commitments_host,
-                                  no_commitments=no_commitments,
+        report = directory_resume(*directory_resume_args,
                                   transcript_session=transcript_session,
                                   current_session=current_sessions,
                                   codex_home=codex_home,
@@ -2045,41 +1663,17 @@ def main(argv):
         print(json.dumps(report, indent=2))
         return report_exit_status(report)
 
-    report = build_report(cands, repo_nwo)
+    report = build_report(cands)
     if transcript_fallback and not report.get("error"):
         report["source"] = "transcript_fallback"
         report["notice"] = "No handoff was found for this directory; used the transcript miner."
 
-    # --sid-out is no longer used by pickup.sh (the commitments scan runs
-    # in this process now, so the session id never has to cross a process
-    # boundary), but the flag is still honored: dropping a documented flag is
-    # not part of this change.
     if sid_out and report.get("session"):
         try:
             with open(sid_out, "w") as f:
                 f.write(report["session"])
         except Exception:
             pass
-
-    if no_commitments:
-        commitments, reason = None, REASON_SKIPPED
-    elif report.get("error"):
-        # No transcript resolved, so there is no session to key the join on and
-        # nothing was checked. Distinct from "checked, you promised nothing".
-        commitments, reason = None, REASON_LENS_ERROR
-    else:
-        try:
-            commitments, reason = collect_commitments(
-                report.get("session"), host=commitments_host,
-                state=commitment_state)
-        except Exception:
-            # An unexpected failure in the commitments path must not take the
-            # whole report down, and must not read as --no-commitments either
-            # (#910 eval round 3 F6: both used to become the same bare null).
-            commitments, reason = None, REASON_INTERNAL
-
-    report["commitments"] = commitments
-    report["commitments_reason"] = reason
 
     print(json.dumps(report, indent=2))
     return report_exit_status(report)

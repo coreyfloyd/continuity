@@ -61,13 +61,6 @@ def sandboxed_codex_home(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path / "codex-home"))
 
 
-@pytest.fixture(autouse=True)
-def configured_commitment_owner(monkeypatch):
-    """The commitments scan is scoped by a configured owner (#1572); the
-    wrapper supplies it in a real run, so every engine-level test does too."""
-    monkeypatch.setenv("PICKUP_COMMITMENT_OWNER", "alexrivera")
-
-
 @pytest.fixture(scope="module")
 def rows():
     return rw.load(FIXTURE)
@@ -205,50 +198,6 @@ def test_a4_excludes_tool_result_carrying_user_rows():
     assert ts == "t2"
 
 
-# ================================================================== A5a — ticket write-ops
-
-def test_a5a_ranks_by_write_ops_not_mentions(rows):
-    calls = []
-    for n in range(13):
-        calls += _bash_call(rows, "c%d" % n, "gh issue comment 884 --body x")
-    for n in range(4):
-        calls += _bash_call(rows, "v%d" % n, "gh issue view 880")
-    for n in range(3):
-        calls += _bash_call(rows, "w%d" % n, "gh issue view 705")
-    for n in range(2):
-        calls += _bash_call(rows, "e%d" % n, "gh issue edit 899 --body x")
-    tickets = rw.extract_ticket_ops(calls, "alexrivera/example-config")
-    by_num = {t["number"]: t for t in tickets}
-
-    assert by_num[884]["ops"]["comment"] == 13
-    assert by_num[880]["ops"]["view"] == 4
-    assert by_num[705]["ops"]["view"] == 3
-    assert by_num[899]["ops"]["edit"] == 2
-
-    # 13 comments dominate any view count, so #884 ranks first.
-    assert tickets[0]["number"] == 884
-    assert tickets[0]["write_ops"] == 13
-    # sorted strictly descending by write_ops
-    assert [t["write_ops"] for t in tickets] == sorted((t["write_ops"] for t in tickets), reverse=True)
-
-
-def test_a5a_recovers_created_number_from_tool_result(rows):
-    """`gh issue create` never prints the number in its own command string —
-    only in the tool_result on success."""
-    calls = []
-    for n, num in enumerate((899, 900)):
-        calls += _bash_call(rows, "n%d" % n, "gh issue create --title t --body b",
-                            "https://github.com/alexrivera/example-config/issues/%d\n" % num)
-    calls += _bash_call(rows, "f", "gh issue create --title t --body b", "error: no network")
-    tickets = rw.extract_ticket_ops(calls, "alexrivera/example-config")
-    created = {t["number"] for t in tickets if t["created"]}
-    assert created == {899, 900}
-
-
-def test_a5a_redacted_fixture_carries_no_ticket_commands(rows):
-    assert rw.extract_ticket_ops(rows, "alexrivera/example-config") == []
-
-
 # ================================================================== A7 — staleness
 
 def test_a7_staleness_zero_when_last_end_turn_is_the_last_thing(rows):
@@ -329,7 +278,7 @@ def test_f5r2_gone_session_repo_cwd_is_marked_not_silently_cascaded(tmp_path):
     fixture_path = tmp_path / "session.jsonl"
     fixture_path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
 
-    report = rw.build_report([str(fixture_path)], "test/repo")
+    report = rw.build_report([str(fixture_path)])
     assert report["session_repo_cwd"] == gone
     assert report["session_repo_readable"] is False
 
@@ -344,7 +293,7 @@ def test_f5r2_readable_session_repo_cwd_is_marked_true(merged_repo, tmp_path):
     fixture_file = tmp_path / "session2.jsonl"
     fixture_file.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
 
-    report = rw.build_report([str(fixture_file)], "test/repo")
+    report = rw.build_report([str(fixture_file)])
     assert report["session_repo_readable"] is True
 
 
@@ -565,7 +514,7 @@ def test_f1r2_committed_files_survive_a_session_ending_in_a_worktree(tmp_path):
     fixture_path = tmp_path / "session.jsonl"
     fixture_path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
 
-    report = rw.build_report([str(fixture_path)], "test/repo")
+    report = rw.build_report([str(fixture_path)])
     fr = report["files_by_repo"][repo]
     assert "feature.txt" in fr["committed"], (
         "committed files silently vanished for a session whose last cwd was a worktree: %r" % fr
@@ -577,7 +526,7 @@ def test_f1r2_committed_files_survive_a_session_ending_in_a_worktree(tmp_path):
 # ================================================================== A8 — JSON v2, additive
 
 V1_KEYS = {"session", "messages", "first_ts", "last_ts", "first_user", "last_user",
-           "last_assistant", "ticket_refs", "git", "branches"}
+           "last_assistant", "git", "branches"}
 V1_GIT_KEYS = {"branch", "head", "exists", "on_main", "unmerged", "ahead_behind"}
 
 
@@ -617,12 +566,12 @@ def test_a8_build_report_returns_a_single_dict_not_a_pair(stub_git):
     """#910 eval F1/Architecture: build_report() used to return (report,
     extra) — two overlapping shapes for one record, existing only to feed
     the now-removed text renderer. It returns one dict."""
-    report = rw.build_report([FIXTURE], "alexrivera/example-config")
+    report = rw.build_report([FIXTURE])
     assert isinstance(report, dict)
 
 
 def test_a8_json_v2_preserves_every_v1_key(stub_git):
-    report = rw.build_report([FIXTURE], "alexrivera/example-config")
+    report = rw.build_report([FIXTURE])
     assert report["version"] == 2
     assert V1_KEYS.issubset(report.keys())
     assert V1_GIT_KEYS.issubset(report["git"].keys())
@@ -634,15 +583,14 @@ def test_a8_json_v2_preserves_every_v1_key(stub_git):
         assert {"branch", "worktree_path", "worktree_exists", "dirty", "ref",
                 "on_main", "merge_evidence", "state"}.issubset(b.keys())
     # #910 additions are present and are new keys, not replacements
-    for key in ("tickets", "files_by_repo", "staleness"):
+    for key in ("files_by_repo", "staleness"):
         assert key in report
-    assert report["tickets"] == []
 
 
 def test_a8_error_shape_is_always_an_object_never_an_array():
     """#910 eval F1 (shape hole): a caller must never see a shape that
     depends on whether a transcript was found."""
-    report = rw.build_report(["/no/such/file.jsonl"], "alexrivera/example-config")
+    report = rw.build_report(["/no/such/file.jsonl"])
     assert isinstance(report, dict)
     assert report["version"] == 2
     assert report["error"] == "no_substantive_transcript"
@@ -651,7 +599,7 @@ def test_a8_error_shape_is_always_an_object_never_an_array():
 def test_a8_json_is_well_formed_via_cli(no_git_env):
     out = subprocess.run(
         [sys.executable, os.path.join(ENGINE_DIR, "pickup.py"),
-         "--repo-nwo", "alexrivera/example-config", FIXTURE],
+         FIXTURE],
         capture_output=True, text=True, env=no_git_env,
     )
     assert out.returncode == 0, out.stderr
@@ -663,7 +611,7 @@ def test_a8_json_is_well_formed_via_cli(no_git_env):
 def test_a8_json_flag_is_accepted_as_a_no_op_for_backward_compatibility(no_git_env):
     out = subprocess.run(
         [sys.executable, os.path.join(ENGINE_DIR, "pickup.py"),
-         "--repo-nwo", "alexrivera/example-config", "--json", FIXTURE],
+         "--json", FIXTURE],
         capture_output=True, text=True, env=no_git_env,
     )
     assert out.returncode == 0, out.stderr
@@ -676,7 +624,7 @@ def test_main_reports_usage_error_on_missing_flag_value_instead_of_crashing():
     argv parser indexed argv[i+1] with no bounds check, so a trailing flag
     raised IndexError rather than a legible usage error."""
     out = subprocess.run(
-        [sys.executable, os.path.join(ENGINE_DIR, "pickup.py"), "--repo-nwo"],
+        [sys.executable, os.path.join(ENGINE_DIR, "pickup.py"), "--sid-out"],
         capture_output=True, text=True,
     )
     assert out.returncode == 2
@@ -850,9 +798,7 @@ def test_handoff_briefing_is_handoff_sourced_and_git_cross_checked(tmp_path, mon
     path = state / "current.json"
     _write_handoff(path, _handoff(str(worktree), str(worktree), "main",
                    "Continue handoff", "Run the focused test", "2026-09-06T00:00:00Z"))
-    monkeypatch.setattr(rw, "_ticket_status", lambda repo, number: {
-        "checked": False, "reason": "gh_not_found", "repo": repo, "number": number,
-    })
+
 
     briefing = rw.handoff_briefing(str(path))
 
@@ -861,37 +807,9 @@ def test_handoff_briefing_is_handoff_sourced_and_git_cross_checked(tmp_path, mon
     assert briefing["resume"]["headline"] == "Continue handoff"
     assert briefing["git"]["branch"] == "main"
     assert briefing["git"]["exists"] is True
-    assert briefing["ticket"]["checked"] is False
     assert briefing["provenance"] == "validated_or_inferred_required"
     assert all(item["provenance"].startswith(("validated:", "inferred:"))
                for item in briefing["briefing"])
-
-
-def test_handoff_briefing_checks_live_ticket_with_fake_gh(tmp_path, monkeypatch):
-    worktree = tmp_path / "repo"
-    worktree.mkdir()
-    subprocess.run(["git", "init", "-q", "-b", "main", str(worktree)], check=True)
-    _git(str(worktree), "config", "user.email", "test@example.com")
-    _git(str(worktree), "config", "user.name", "Test")
-    _git(str(worktree), "commit", "-q", "--allow-empty", "-m", "init")
-    handoff_path = tmp_path / "handoff.json"
-    _write_handoff(handoff_path, _handoff(str(worktree), str(worktree), "main",
-                   "Resume", "Test live ticket", "2026-09-06T00:00:00Z"))
-    fake_gh = tmp_path / "gh"
-    marker = tmp_path / "gh-invoked"
-    fake_gh.write_text("""#!/bin/sh
-printf invoked > "$GH_STUB_MARKER"
-printf '%s\\n' '{"state":"OPEN","title":"Live","url":"https://example.test/1024"}'
-""")
-    fake_gh.chmod(0o755)
-    assert fake_gh.read_text().splitlines()[0] == "#!/bin/sh"
-    assert os.access(fake_gh, os.X_OK)
-    monkeypatch.setenv("PATH", str(tmp_path))
-    monkeypatch.setenv("GH_STUB_MARKER", str(marker))
-    briefing = rw.handoff_briefing(str(handoff_path))
-    assert briefing["ticket"]["checked"] is True
-    assert briefing["ticket"]["record"]["state"] == "OPEN"
-    assert marker.read_text() == "invoked"
 
 
 @pytest.mark.parametrize("args,expected_error", [
@@ -910,7 +828,7 @@ def test_pickup_wrapper_handoff_errors_are_one_json_object_and_nonzero(args, exp
 @pytest.mark.parametrize("args,option", [
     (["--bogus"], "--bogus"),
     (["--session"], "--session"),
-    (["--machine", "--session", "requested"], "--session"),
+    (["--machine", "--session", "requested"], "--machine"),
     (["--handoff", "/tmp/example.json", "--prune"], "--prune"),
 ])
 def test_pickup_wrapper_rejects_unknown_and_conflicting_lens_options(args, option):
@@ -956,7 +874,7 @@ def test_pickup_wrapper_explicit_session_bypasses_handoff_listing(tmp_path):
     env["HANDOFF_STATE_DIR"] = str(state)
     result = subprocess.run(
         ["bash", os.path.join(ROOT, "scripts", "pickup.sh"), "--session", "requested",
-         "--no-commitments"],
+         ],
         cwd=current, capture_output=True, text=True, env=env)
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)
@@ -981,14 +899,13 @@ def test_pickup_wrapper_empty_explicit_session_fails_closed(tmp_path):
     env["HANDOFF_STATE_DIR"] = str(tmp_path / "state")
     result = subprocess.run(
         ["bash", os.path.join(ROOT, "scripts", "pickup.sh"), "--session", "",
-         "--no-commitments"],
+         ],
         cwd=current, capture_output=True, text=True, env=env)
 
     assert result.returncode != 0
     report = json.loads(result.stdout)
     assert report["error"] == "usage"
     assert "session id" in report["message"]
-    assert report["commitments"] is None
     assert "session" not in report
 
 
@@ -999,7 +916,7 @@ def test_pickup_engine_empty_transcript_session_rejects_usage(tmp_path):
     result = subprocess.run(
         [sys.executable, os.path.join(ENGINE_DIR, "pickup.py"),
          "--directory-resume", str(tmp_path / "state"), str(current), str(tmp_path / "home"),
-         "--transcript-session", "", "--no-commitments"],
+         "--transcript-session", ""],
         capture_output=True, text=True)
 
     assert result.returncode != 0
@@ -1030,7 +947,7 @@ def test_handoff_candidate_cli_and_transcript_fallback_contract(tmp_path, no_git
     assert parsed_candidates["candidates"][0]["group"] == "this_directory"
 
     fallback = subprocess.run(
-        [sys.executable, engine, "--no-commitments", "--transcript-fallback", FIXTURE],
+        [sys.executable, engine, "--transcript-fallback", FIXTURE],
         capture_output=True, text=True, env=no_git_env,
     )
     assert fallback.returncode == 0, fallback.stderr
@@ -1078,18 +995,6 @@ def test_handoff_candidate_listing_reports_skipped_corrupt_and_stale_files(tmp_p
     assert all("path" in item for item in skipped)
 
 
-def test_handoff_outputs_keep_commitments_shape_when_invalid_or_listing(tmp_path, capsys):
-    invalid = rw.handoff_briefing(str(tmp_path / "missing.json"))
-    assert invalid["commitments"] is None
-    assert invalid["commitments_reason"] == rw.REASON_LENS_ERROR
-
-    rc = rw.main(["--handoff-candidates", str(tmp_path / "missing-state"), str(tmp_path)])
-    assert rc == 0
-    listing = json.loads(capsys.readouterr().out)
-    assert listing["commitments"] is None
-    assert listing["commitments_reason"] == rw.REASON_HANDOFF_NOT_COLLECTED
-
-
 def test_handoff_loader_rejects_empty_subject_and_null_open_loops(tmp_path, monkeypatch):
     invalid = _handoff(str(tmp_path), str(tmp_path), "main", "Invalid", "Stop",
                        "2026-09-06T00:00:00Z")
@@ -1103,12 +1008,7 @@ def test_handoff_loader_rejects_empty_subject_and_null_open_loops(tmp_path, monk
     valid["resume"]["open_loops"] = None
     valid_path = tmp_path / "null-loops.json"
     valid_path.write_text(json.dumps(valid))
-    def no_ticket(repo, number):
-        assert repo is None
-        assert number is None
-        return {"checked": False, "reason": "no_ticket_anchor"}
-    monkeypatch.setattr(rw, "_ticket_status", no_ticket)
-    assert rw.handoff_briefing(str(valid_path))["ticket"]["reason"] == "no_ticket_anchor"
+    assert rw.handoff_briefing(str(valid_path))["resume"]["open_loops"] is None
 
 
 def test_unrelated_handoff_does_not_suppress_current_directory_transcript_fallback(tmp_path):
@@ -1132,249 +1032,7 @@ def test_unrelated_handoff_does_not_suppress_current_directory_transcript_fallba
     assert report["error"] == "no_transcript_directory"
 
 
-# ================================================================== COMMITMENTS (#851, ported #910 r4)
-# Replaces tests/test-pickup-commitments-json.sh, which sed-extracted the
-# real commitments_scan() out of scripts/pickup.sh between the function
-# name and the first column-0 "}" and sourced that text. Reformatting the
-# function silently changed what ran, and the extraction cannot survive the
-# port at all. These drive the real function against a stub `gh` on PATH.
-
-COMMITMENTS_STUB_SEARCH = """[{"repository":{"nameWithOwner":"alexrivera/example-config"},
-  "number":851,"title":"Session commitments survive /clear",
-  "labels":[{"name":"status/deployed"},{"name":"host/macbook"}]}]"""
-
-# claim-comment.sh truncates the session id to 12 chars, so the join is on that
-# prefix: "test-sid-1-extra-chars-ignored"[:12] == "test-sid-1-e".
-COMMITMENTS_STUB_CLAIM = """<!-- CLAIM v1
-host: macbook
-session: test-sid-1-e
-branch: feature-commitments
-state: handoff-pending-successor
--->"""
-
-
-def _gh_stub(tmp_path, search_body=None, search_rc=0, claim_body=None, claim_rc=0):
-    """Write a `gh` stub and return a PATH-patching env dict.
-
-    The real `gh api ... --jq '[.[].body | select(contains("<!-- CLAIM v1"))]
-    | last // ""'` reduces the comments array to ONE claim body string, so the
-    stub emits that reduced string directly rather than re-deriving gh's own
-    jq pipeline."""
-    d = tmp_path / "bin"
-    d.mkdir(exist_ok=True)
-    stub = d / "gh"
-    stub.write_text(
-        "#!/bin/bash\n"
-        "case \"$1 $2\" in\n"
-        "  \"search issues\")\n"
-        "    cat <<'JSON'\n%s\nJSON\n    exit %d ;;\n"
-        "  \"api \"*)\n"
-        "    cat <<'BODY'\n%s\nBODY\n    exit %d ;;\n"
-        "  *) exit 0 ;;\n"
-        "esac\n" % (
-            COMMITMENTS_STUB_SEARCH if search_body is None else search_body,
-            search_rc,
-            COMMITMENTS_STUB_CLAIM if claim_body is None else claim_body,
-            claim_rc,
-        )
-    )
-    stub.chmod(0o755)
-    env = dict(os.environ)
-    env["PATH"] = "%s:%s" % (str(d), env.get("PATH", ""))
-    return env
-
-
-@pytest.fixture
-def stub_path(monkeypatch):
-    def apply(env):
-        monkeypatch.setenv("PATH", env["PATH"])
-    return apply
-
-
-def test_commitments_no_session_id_is_not_collected():
-    """The tri-state's first arm: nothing to key the join on. null, and the
-    reason says which null it is."""
-    rows, reason = rw.collect_commitments("")
-    assert rows is None
-    assert reason == rw.REASON_NO_SESSION_ID
-
-
-def test_commitments_found_row_has_the_documented_shape(tmp_path, stub_path):
-    stub_path(_gh_stub(tmp_path))
-    rows, reason = rw.collect_commitments("test-sid-1-extra-chars-ignored",
-                                          host="macbook")
-    assert reason is None
-    assert len(rows) == 1
-    assert rows[0] == {
-        "repo": "alexrivera/example-config",
-        "number": 851,
-        "title": "Session commitments survive /clear",
-        "status_labels": ["status/deployed"],
-        "handoff_pending": True,
-        "branch": "feature-commitments",
-        "url": "https://github.com/alexrivera/example-config/issues/851",
-    }
-
-
-def test_commitments_non_matching_session_is_collected_and_empty(tmp_path, stub_path):
-    """[] means "collected, found none" — a real answer, distinct from null."""
-    stub_path(_gh_stub(tmp_path))
-    rows, reason = rw.collect_commitments("no-matching-session-id-xyz",
-                                          host="macbook")
-    assert rows == []
-    assert reason is None
-
-
-def test_commitments_empty_search_is_collected_and_empty(tmp_path, stub_path):
-    stub_path(_gh_stub(tmp_path, search_body="[]"))
-    rows, reason = rw.collect_commitments("test-sid-1-extra-chars-ignored")
-    assert rows == []
-    assert reason is None
-
-
-def test_failed_gh_search_is_not_collected_not_empty(tmp_path, stub_path):
-    """#910 eval round 3, F2 — the decisive fail-mode. The bash implementation
-    sent gh's stderr to /dev/null, never read its exit code, and rewrote the
-    empty result to []. A 403 at cold start therefore reported "collected,
-    found none": a false all-clear on the field a resuming agent uses to find
-    what it promised."""
-    stub_path(_gh_stub(tmp_path, search_body="", search_rc=1))
-    rows, reason = rw.collect_commitments("test-sid-1-extra-chars-ignored")
-    assert rows is None
-    assert reason == rw.REASON_GH_SEARCH_FAILED
-
-
-def test_gh_search_exiting_zero_with_unparseable_output_is_not_collected(tmp_path, stub_path):
-    """rc 0 is not proof of a collection. Garbage on stdout is a failed scan,
-    not an empty one."""
-    stub_path(_gh_stub(tmp_path, search_body="not json at all"))
-    rows, reason = rw.collect_commitments("test-sid-1-extra-chars-ignored")
-    assert rows is None
-    assert reason == rw.REASON_GH_SEARCH_FAILED
-
-
-def test_failed_claim_fetch_marks_the_array_partial(tmp_path, stub_path):
-    """F2's failure class one level down: the bash loop dropped an issue whose
-    claim fetch failed, so an unreadable claim was indistinguishable from an
-    absent one. The array is still returned — the reason says it is
-    incomplete."""
-    stub_path(_gh_stub(tmp_path, claim_body="", claim_rc=1))
-    rows, reason = rw.collect_commitments("test-sid-1-extra-chars-ignored")
-    assert rows == []
-    assert reason == rw.REASON_PARTIAL
-
-
-def test_malformed_search_row_marks_the_array_partial(tmp_path, stub_path):
-    """#910 eval round 4, F-B: a search row missing its repository key used to
-    be dropped with `continue` and the result still claimed a complete
-    collection. The same false all-clear the claim-fetch path was fixed for."""
-    stub_path(_gh_stub(tmp_path, search_body='[{"number": 7, "title": "no repo key", "labels": []}]'))
-    rows, reason = rw.collect_commitments("test-sid-1-extra-chars-ignored")
-    assert rows == []
-    assert reason == rw.REASON_PARTIAL
-
-
-def test_missing_gh_binary_is_distinguishable_from_a_failed_gh(tmp_path, monkeypatch):
-    empty = tmp_path / "emptybin"
-    empty.mkdir()
-    monkeypatch.setenv("PATH", str(empty))
-    rows, reason = rw.collect_commitments("test-sid-1-extra-chars-ignored")
-    assert rows is None
-    assert reason == rw.REASON_GH_NOT_FOUND
-
-
-def test_commitment_limit_and_jobs_env_knobs_survive_the_port(monkeypatch):
-    """PICKUP_COMMITMENT_LIMIT / _JOBS were bash locals before the port.
-    A knob that silently stops being read is worse than one that was never
-    offered, so the search argv is asserted directly."""
-    monkeypatch.setenv("PICKUP_COMMITMENT_LIMIT", "7")
-    captured = {}
-
-    def fake_gh(args):
-        captured["args"] = list(args)
-        return 0, "[]"
-
-    monkeypatch.setattr(rw, "gh", fake_gh)
-    rows, reason = rw.collect_commitments("test-sid-1-e", host="node1")
-    assert rows == []
-    assert captured["args"] == [
-        "search", "issues", "--owner", "alexrivera", "--state", "open",
-        "--label", "host/node1",
-        "--json", "repository,number,title,labels", "--limit", "7",
-    ]
-
-
-def test_unconfigured_owner_is_not_collected_and_never_searches(monkeypatch):
-    """Without a configured owner the search would be unscoped, so the scan is
-    not run and the reason says why."""
-    monkeypatch.delenv("PICKUP_COMMITMENT_OWNER")
-    calls = []
-    monkeypatch.setattr(rw, "gh", lambda args: calls.append(args) or (0, "[]"))
-    rows, reason = rw.collect_commitments("test-sid-1-e", host="node1")
-    assert rows is None
-    assert reason == rw.REASON_NO_OWNER
-    assert calls == []
-
-
-def test_unknown_host_is_not_sent_as_a_label(monkeypatch):
-    """`host` is "unknown" when ~/.claude/.machine is absent; the bash version
-    dropped the --label filter entirely rather than searching for
-    `host/unknown`, which matches nothing."""
-    captured = {}
-
-    def fake_gh(args):
-        captured["args"] = list(args)
-        return 0, "[]"
-
-    monkeypatch.setattr(rw, "gh", fake_gh)
-    rw.collect_commitments("test-sid-1-e", host="unknown")
-    assert "--label" not in captured["args"]
-
-
-def test_no_commitments_flag_yields_skipped_not_a_bare_null(tmp_path):
-    """#910 eval round 3, F6: --no-commitments and an internal crash both used
-    to produce the same bare null. The reason field separates them."""
-    out = subprocess.run(
-        [sys.executable, os.path.join(ENGINE_DIR, "pickup.py"),
-         "--repo-nwo", "alexrivera/example-config", "--no-commitments", FIXTURE],
-        capture_output=True, text=True,
-    )
-    assert out.returncode == 0, out.stderr
-    parsed = json.loads(out.stdout)
-    assert parsed["commitments"] is None
-    assert parsed["commitments_reason"] == "skipped"
-
-
-def test_engine_emits_a_populated_commitments_array_end_to_end(tmp_path):
-    """The seam with DATA in it (#910 eval round 3, F7). Every automated path
-    before this fed the merge step the literal `null`, which is why two
-    fail-mode defects on that seam survived three eval rounds."""
-    env = _gh_stub(tmp_path)
-    # The fixture transcript's own session id is what the join keys on, so the
-    # stub's claim body must carry ITS 12-char prefix, not a made-up one.
-    report = json.loads(subprocess.run(
-        [sys.executable, os.path.join(ENGINE_DIR, "pickup.py"),
-         "--repo-nwo", "alexrivera/example-config", "--no-commitments", FIXTURE],
-        capture_output=True, text=True, env=env,
-    ).stdout)
-    sid = report["session"]
-    env = _gh_stub(tmp_path, claim_body=COMMITMENTS_STUB_CLAIM.replace(
-        "session: test-sid-1-e", "session: %s" % sid[:12]))
-    out = subprocess.run(
-        [sys.executable, os.path.join(ENGINE_DIR, "pickup.py"),
-         "--repo-nwo", "alexrivera/example-config",
-         "--commitments-host", "macbook", FIXTURE],
-        capture_output=True, text=True, env=env,
-    )
-    assert out.returncode == 0, out.stderr
-    parsed = json.loads(out.stdout)
-    assert parsed["commitments_reason"] is None
-    assert len(parsed["commitments"]) == 1
-    assert parsed["commitments"][0]["number"] == 851
-
-
 def test_handoff_briefing_shows_owned_files_and_carried_items(tmp_path, monkeypatch):
-    monkeypatch.setattr(rw, "_ticket_status", lambda *args: {"checked": False})
     data = {"schema_version": 2, "subject": {"working_directory": str(tmp_path), "session_id": "prior"},
             "git": {"repository_root": "", "branch": ""},
             "uncommitted_files": [str(tmp_path / "mine")],
@@ -1405,7 +1063,7 @@ def test_pickup_wrapper_lists_handoffs_from_the_configured_location(tmp_path):
     env = {key: value for key, value in os.environ.items() if key != "HANDOFF_STATE_DIR"}
     env.update({"HOME": str(tmp_path / "home"), "CONTINUITY_CONFIG": str(config)})
     result = subprocess.run(
-        ["bash", os.path.join(ROOT, "scripts", "pickup.sh"), "--no-commitments"],
+        ["bash", os.path.join(ROOT, "scripts", "pickup.sh")],
         cwd=current, capture_output=True, text=True, env=env)
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)
@@ -1413,7 +1071,7 @@ def test_pickup_wrapper_lists_handoffs_from_the_configured_location(tmp_path):
 
     config.write_text("{broken")
     result = subprocess.run(
-        ["bash", os.path.join(ROOT, "scripts", "pickup.sh"), "--no-commitments"],
+        ["bash", os.path.join(ROOT, "scripts", "pickup.sh")],
         cwd=current, capture_output=True, text=True, env=env)
     assert result.returncode != 0
     assert json.loads(result.stdout)["error"] == "handoff_config_error"
