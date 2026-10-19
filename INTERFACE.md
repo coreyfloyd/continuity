@@ -101,9 +101,20 @@ directory (siblings marked), falling back to recent sessions from the tool's own
 Every failure prints the same object shape, `{"version": 2, "error": CODE, "message": TEXT,
 ...}`. Normal absence (`no_transcript_directory` or `no_other_session`) exits zero;
 other errors exit non-zero. Codes include `usage`, `handoff_config_error` (the configuration
-is unreadable or mistyped), `engine_not_found`, `engine_failed`, and `engine_bad_output`. `PICKUP_ENGINE` names the
-engine (`skills/pickup/scripts/pickup.py`) when an adapter installs it away from
-the scripts.
+is unreadable or mistyped), `engine_not_found`, `engine_failed`, `engine_bad_output`,
+and `record_helper_failed` (the record-read helper could not run or produce a JSON
+object). Helper failures exit non-zero, retain handoff-derived sections, and name
+the helper path and actual failure in `message`; they are not record outages.
+`PICKUP_ENGINE` names the engine (`skills/pickup/scripts/pickup.py`) when an
+adapter installs it away from the scripts. The wrapper resolves its own real
+location, including when invoked through a symlink, and supplies its package's
+`scripts/lib/pickup_record.py` independently of the engine location.
+`PICKUP_RECORD_HELPER` overrides that helper path for an adapter that installs
+helpers elsewhere. Both paths may be absolute or relative to the invoking
+working directory. A direct engine invocation uses `PICKUP_RECORD_HELPER` when
+set; otherwise it resolves the helper from the engine's real package location.
+A standalone engine outside the package therefore needs the helper override.
+The helper's accompanying library modules must remain available alongside it.
 
 Prune discovery checks Claude's `~/.claude/projects/<cwd-slug>/<session-id>.jsonl`
 (`/` and `.` in the stored working directory become `-`) and Codex rollouts in

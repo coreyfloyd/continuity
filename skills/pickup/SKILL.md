@@ -142,6 +142,14 @@ that command when the user requests it; the report omits that request and says
 the handoff still appear, labeled **from handoff**, with their original identities.
 Listing candidates never runs a record read.
 
+If the selected report has `error: "record_helper_failed"`, the package helper
+could not run or return a JSON object. Render its `message` (helper path and
+actual cause) and every preserved handoff-derived section. Do not call the
+binding or describe this installation failure as an unavailable record. The
+wrapper finds the helper independently of `PICKUP_ENGINE`, which selects the
+engine path; adapters may set `PICKUP_RECORD_HELPER` to select the helper path.
+A standalone engine copied outside the package needs that helper override.
+
 The selected report resolves the user profile at `$CHECKLIST_USER_PROFILE`, or
 `checklist/profile.md` under `$XDG_CONFIG_HOME` (default `~/.config`). Only an
 absent default profile means configured-nothing. An unreadable or invalid profile

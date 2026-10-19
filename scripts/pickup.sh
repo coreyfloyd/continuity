@@ -6,8 +6,11 @@
 set -uo pipefail
 
 # ---------------------------------------------------------------- args
+# Resolve the wrapper itself, including a symlinked entry point. A relocated
+# engine still uses this package's helpers unless the caller overrides them.
+wrapper_dir="$(python3 -c 'import os,sys; print(os.path.dirname(os.path.realpath(sys.argv[1])))' "${BASH_SOURCE[0]:-$0}")"
 # The module that owns where handoffs are stored and reads the configuration.
-handoff_py="${HANDOFF_PY:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib/handoff.py}"
+handoff_py="${HANDOFF_PY:-$wrapper_dir/lib/handoff.py}"
 # Read one continuity configuration value into the variable named by $2. A
 # malformed configuration makes it return 1 with the reason in $config_error,
 # for the caller to report as `handoff_config_error`; an absent key is empty.
@@ -62,14 +65,12 @@ while [ $# -gt 0 ]; do
 done
 
 engine_path() {
-  local self_dir
   if [ -n "${PICKUP_ENGINE:-}" ]; then
     [ -f "$PICKUP_ENGINE" ] && printf '%s' "$PICKUP_ENGINE"
     return 0
   fi
-  self_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-  if [ -f "$self_dir/../skills/pickup/scripts/pickup.py" ]; then
-    printf '%s' "$self_dir/../skills/pickup/scripts/pickup.py"
+  if [ -f "$wrapper_dir/../skills/pickup/scripts/pickup.py" ]; then
+    printf '%s' "$wrapper_dir/../skills/pickup/scripts/pickup.py"
   fi
 }
 
@@ -87,7 +88,8 @@ run_engine_json() {
     rm -f "$out_file" "$err_file"
     return 1
   fi
-  python3 "$engine" "$@" >"$out_file" 2>"$err_file"
+  PICKUP_RECORD_HELPER="${PICKUP_RECORD_HELPER:-$wrapper_dir/lib/pickup_record.py}" \
+    python3 "$engine" "$@" >"$out_file" 2>"$err_file"
   engine_rc=$?
   if ! python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' "$out_file" 2>/dev/null; then
     json_error "engine_bad_output" "pickup.py exited $engine_rc: $(tr '\n' ' ' < "$err_file" | tail -c 400)"

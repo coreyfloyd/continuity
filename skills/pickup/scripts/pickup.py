@@ -298,8 +298,8 @@ def handoff_briefing(path, no_commitments=False):
         ],
     }
 
-    reader = os.path.join(os.path.dirname(os.path.realpath(__file__)),
-                          "../../../scripts/lib/pickup_record.py")
+    reader = os.environ.get("PICKUP_RECORD_HELPER") or os.path.join(
+        os.path.dirname(os.path.realpath(__file__)), "../../../scripts/lib/pickup_record.py")
     args = [sys.executable, reader]
     if no_commitments:
         args.append("--no-commitments")
@@ -307,13 +307,22 @@ def handoff_briefing(path, no_commitments=False):
         result = subprocess.run(args, input=json.dumps(report), text=True,
                                 capture_output=True, timeout=30)
         if result.returncode != 0:
-            raise ValueError("record-read preparation failed")
-        return json.loads(result.stdout)
+            reason = " ".join(result.stderr.split()) or "no diagnostic on stderr"
+            raise ValueError("exited %s: %s" % (result.returncode, reason))
+        try:
+            prepared = json.loads(result.stdout)
+        except ValueError as error:
+            raise ValueError("invalid JSON output: " + str(error)) from None
+        if not isinstance(prepared, dict):
+            raise ValueError("expected a JSON object from helper")
+        return prepared
     except (OSError, ValueError, subprocess.TimeoutExpired) as error:
         report["briefing"] = [row for row in report["briefing"]
                               if row["line"] != "No record read is bound."]
-        report["briefing"].append({"line": "record read unavailable: " + str(error),
-                                   "provenance": "validated: record-read preparation failed"})
+        message = "record-read helper %s: %s" % (reader, error)
+        report.update(error="record_helper_failed", message=message)
+        report["briefing"].append({"line": message,
+                                   "provenance": "validated: record-read helper failed"})
         return report
 
 

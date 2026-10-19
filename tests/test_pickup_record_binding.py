@@ -160,3 +160,74 @@ def test_explicit_missing_profile_is_unavailable(selected):
     report = pickup(selected)
     assert 'record read unavailable: user profile:' in lines(report)
     assert 'No record read is bound.' not in lines(report)
+
+
+@pytest.mark.parametrize('entry', [
+    'default', 'external_absolute', 'external_relative', 'engine_symlink',
+    'wrapper_symlink', 'direct', 'direct_symlink', 'external_direct_helper_override',
+])
+def test_engine_locations_reach_record_helper(selected, tmp_path, entry):
+    import shutil
+
+    wrapper = ROOT / 'scripts/pickup.sh'
+    engine = ROOT / 'skills/pickup/scripts/pickup.py'
+    external = tmp_path / 'external engine'
+    external.mkdir()
+    copied = external / 'pickup.py'
+    shutil.copy2(engine, copied)
+    env = dict(selected[2])
+    if entry in ('external_absolute', 'external_relative', 'engine_symlink'):
+        located = copied
+        if entry == 'engine_symlink':
+            located = tmp_path / 'engine link'
+            located.symlink_to(copied)
+        env['PICKUP_ENGINE'] = (os.path.relpath(located, tmp_path)
+                                if entry == 'external_relative' else str(located))
+    if entry == 'wrapper_symlink':
+        wrapper = tmp_path / 'wrapper link'
+        wrapper.symlink_to(ROOT / 'scripts/pickup.sh')
+    if entry == 'direct_symlink':
+        engine = tmp_path / 'direct link'
+        engine.symlink_to(ROOT / 'skills/pickup/scripts/pickup.py')
+    if entry == 'external_direct_helper_override':
+        engine = copied
+        env['PICKUP_RECORD_HELPER'] = str(READER)
+    command = ([sys.executable, str(engine)] if entry in (
+        'direct', 'direct_symlink', 'external_direct_helper_override') else ['bash', str(wrapper)])
+    result = subprocess.run([*command, '--handoff', str(selected[0]), '--no-commitments'],
+                            env=env, cwd=tmp_path, text=True, capture_output=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    report = json.loads(result.stdout)
+    assert report['record_read']['command'] == '/read-work'
+    assert report['record_read']['requests'] == {
+        'ticket_status': {'kind': 'ticket_status', 'references': ['work:17']}}
+    assert 'from record: skipped (--no-commitments)' in lines(report)
+    assert report['handoff'] == selected[1]
+
+
+@pytest.mark.parametrize('failure,reason', [
+    ('missing', 'No such file'),
+    ('crash', 'helper startup broke'),
+    ('malformed', 'invalid JSON'),
+    ('array', 'JSON object'),
+])
+def test_helper_failure_reports_installation_reason_not_record_outage(selected, tmp_path, failure, reason):
+    helper = tmp_path / 'record helper.py'
+    if failure != 'missing':
+        helper.write_text({'crash': "raise RuntimeError('helper startup broke')\n",
+                           'malformed': "print('not-json')\n",
+                           'array': "print('[]')\n"}[failure])
+    env = dict(selected[2], PICKUP_RECORD_HELPER=str(helper))
+    result = subprocess.run(['bash', str(ROOT / 'scripts/pickup.sh'),
+                             '--handoff', str(selected[0])],
+                            env=env, text=True, capture_output=True)
+    report = json.loads(result.stdout)
+    assert result.returncode != 0
+    assert report['error'] == 'record_helper_failed'
+    assert str(helper) in report['message']
+    assert reason in report['message']
+    assert 'record read unavailable:' not in lines(report)
+    assert 'No record read is bound.' not in lines(report)
+    assert report['handoff'] == selected[1]
+    assert selected[1]['resume']['headline'] in lines(report)
+    assert 'Commitments from handoff:' in lines(report)
