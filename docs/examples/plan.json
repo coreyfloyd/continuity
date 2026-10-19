@@ -97,5 +97,6 @@
       "id": "handoff",
       "title": "Write and validate the handoff"
     }
-  ]
+  ],
+  "record_read": null
 }
