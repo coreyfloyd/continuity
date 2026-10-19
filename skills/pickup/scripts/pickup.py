@@ -251,7 +251,7 @@ def _repository_root(cwd):
     return _canonical(os.path.dirname(os.path.normpath(common)))
 
 
-def handoff_briefing(path):
+def handoff_briefing(path, no_commitments=False):
     """Build the directory-lens briefing shape from a selected handoff.
 
     Handoff text remains inferred. Git checks state their own provenance.
@@ -270,7 +270,7 @@ def handoff_briefing(path):
     files = files if isinstance(files, list) else []
     loops = resume.get("open_loops", [])
     loops = loops if isinstance(loops, list) else []
-    return {
+    report = {
         "version": REPORT_VERSION,
         "source": "handoff",
         "notice": "Selected handoff; transcript miner was not used.",
@@ -293,10 +293,37 @@ def handoff_briefing(path):
         ] + [
             {"line": "Session summary: %s" % resume.get("session_summary", ""), "provenance": "inferred: handoff resume block"}
         ] * bool(resume.get("session_summary")) + [
-            {"line": json.dumps(loop, ensure_ascii=False), "provenance": "inferred: handoff open loop"}
+            {"line": ("Commitments from handoff: " if isinstance(loop, dict) and loop.get("type") == "commitment" else "") + json.dumps(loop, ensure_ascii=False), "provenance": "inferred: handoff open loop"}
             for loop in loops
         ],
     }
+
+    reader = os.environ.get("PICKUP_RECORD_HELPER") or os.path.join(
+        os.path.dirname(os.path.realpath(__file__)), "../../../scripts/lib/pickup_record.py")
+    args = [sys.executable, reader]
+    if no_commitments:
+        args.append("--no-commitments")
+    try:
+        result = subprocess.run(args, input=json.dumps(report), text=True,
+                                capture_output=True, timeout=30)
+        if result.returncode != 0:
+            reason = " ".join(result.stderr.split()) or "no diagnostic on stderr"
+            raise ValueError("exited %s: %s" % (result.returncode, reason))
+        try:
+            prepared = json.loads(result.stdout)
+        except ValueError as error:
+            raise ValueError("invalid JSON output: " + str(error)) from None
+        if not isinstance(prepared, dict):
+            raise ValueError("expected a JSON object from helper")
+        return prepared
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        report["briefing"] = [row for row in report["briefing"]
+                              if row["line"] != "No record read is bound."]
+        message = "record-read helper %s: %s" % (reader, error)
+        report.update(error="record_helper_failed", message=message)
+        report["briefing"].append({"line": message,
+                                   "provenance": "validated: record-read helper failed"})
+        return report
 
 
 def error_report(code, message, **fields):
@@ -1579,6 +1606,7 @@ def main(argv):
     handoff_state_dir = None
     handoff_current_cwd = None
     handoff_path = None
+    no_commitments = False
     directory_resume_args = None
     transcript_session = None
     current_sessions = []
@@ -1633,9 +1661,10 @@ def main(argv):
         elif a == "--transcript-fallback":
             transcript_fallback = True
             i += 1
-        elif a in ("--json", "--no-commitments"):
-            # JSON is always emitted. With no record read bound, there is
-            # no commitments request to skip.
+        elif a == "--no-commitments":
+            no_commitments = True
+            i += 1
+        elif a == "--json":
             i += 1
         elif a.startswith("--"):
             return _usage_error("unrecognized option: %s" % a)
@@ -1650,7 +1679,7 @@ def main(argv):
         return 0
 
     if handoff_path is not None:
-        report = handoff_briefing(handoff_path)
+        report = handoff_briefing(handoff_path, no_commitments=no_commitments)
         print(json.dumps(report, indent=2))
         return report_exit_status(report)
 

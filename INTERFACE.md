@@ -95,15 +95,26 @@ directory (siblings marked), falling back to recent sessions from the tool's own
 | `--handoff PATH` | A briefing for one handoff. |
 | `--session ID` | A specific transcript, from either tool. |
 | `--json` | Accepted for compatibility; JSON is always emitted. |
-| `--no-commitments` | With no record read bound, no collection is performed. |
+| `--no-commitments` | Skip the binding's commitments request and label it skipped; preserve handoff commitments. |
 | `--prune` | Archive handoffs whose transcript is missing or at least the configured prune age. Never deletes. |
 
 Every failure prints the same object shape, `{"version": 2, "error": CODE, "message": TEXT,
 ...}`. Normal absence (`no_transcript_directory` or `no_other_session`) exits zero;
 other errors exit non-zero. Codes include `usage`, `handoff_config_error` (the configuration
-is unreadable or mistyped), `engine_not_found`, `engine_failed`, and `engine_bad_output`. `PICKUP_ENGINE` names the
-engine (`skills/pickup/scripts/pickup.py`) when an adapter installs it away from
-the scripts.
+is unreadable or mistyped), `engine_not_found`, `engine_failed`, `engine_bad_output`,
+and `record_helper_failed` (the record-read helper could not run or produce a JSON
+object). Helper failures exit non-zero, retain handoff-derived sections, and name
+the helper path and actual failure in `message`; they are not record outages.
+`PICKUP_ENGINE` names the engine (`skills/pickup/scripts/pickup.py`) when an
+adapter installs it away from the scripts. The wrapper resolves its own real
+location, including when invoked through a symlink, and supplies its package's
+`scripts/lib/pickup_record.py` independently of the engine location.
+`PICKUP_RECORD_HELPER` overrides that helper path for an adapter that installs
+helpers elsewhere. Both paths may be absolute or relative to the invoking
+working directory. A direct engine invocation uses `PICKUP_RECORD_HELPER` when
+set; otherwise it resolves the helper from the engine's real package location.
+A standalone engine outside the package therefore needs the helper override.
+The helper's accompanying library modules must remain available alongside it.
 
 Prune discovery checks Claude's `~/.claude/projects/<cwd-slug>/<session-id>.jsonl`
 (`/` and `.` in the stored working directory become `-`) and Codex rollouts in
@@ -116,7 +127,31 @@ Codex store returns `session_store_unavailable` before archiving.
 
 Other settings: `PICKUP_TRUNK` selects the comparison branch and
 `PICKUP_PRUNE_DAYS` sets the archive age threshold. A selected handoff preserves
-record pointers and carried commitments, and states that no record read is bound.
+record pointers and carried commitments labeled "from handoff". With no user
+binding it states that no record read is bound. With a binding it adds
+`record_read.command` and `record_read.requests` for the agent to run; it never
+executes the skill. Requests use the resumed session identity and full handoff.
+Ticket references come from handoff open-loop `anchor.ticket` pointers, without
+service-specific parsing. Profile resolution matches the checklist user profile;
+an invalid or unreadable profile is a record-read failure.
+
+The agent saves this report and the raw skill responses, then runs:
+
+```sh
+python3 scripts/lib/pickup_record.py --complete --ticket-status ticket-response.json \
+  --commitments commitments-response.json < pickup-report.json
+```
+
+Omit a response argument when its skill failed to run or commitments were
+skipped. `--complete` treats missing requested responses as failures. The helper
+validates each response with the record-read validator, checks exact ticket
+reference coverage, and appends only passing rows to `briefing`, retaining all
+handoff-derived sections. Successful rows also appear in `record_read.results`;
+failed requests have no results entry and say `record read unavailable: <reason>`.
+Only a validated empty response renders as none. Commitments from the binding
+are labeled "from record". This helper reads stdin, profiles and response files;
+it performs no record writes and never starts a checklist or writes a ledger
+marker. It also accepts `--no-commitments` when preparing a report directly.
 
 ## 5. Hooks
 

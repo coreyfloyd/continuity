@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # pickup.sh — handoff-first cold-start re-entry (JSON).
 # Usage: pickup.sh [--handoff PATH | --session ID | --prune] [--json]
-# --no-commitments is accepted; with no record read bound, nothing is collected.
+# --no-commitments skips the agent-owned commitments request.
 # Without a selection, list handoffs or reconstruct the newest other transcript.
 set -uo pipefail
 
 # ---------------------------------------------------------------- args
+# Resolve the wrapper itself, including a symlinked entry point. A relocated
+# engine still uses this package's helpers unless the caller overrides them.
+wrapper_dir="$(python3 -c 'import os,sys; print(os.path.dirname(os.path.realpath(sys.argv[1])))' "${BASH_SOURCE[0]:-$0}")"
 # The module that owns where handoffs are stored and reads the configuration.
-handoff_py="${HANDOFF_PY:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib/handoff.py}"
+handoff_py="${HANDOFF_PY:-$wrapper_dir/lib/handoff.py}"
 # Read one continuity configuration value into the variable named by $2. A
 # malformed configuration makes it return 1 with the reason in $config_error,
 # for the caller to report as `handoff_config_error`; an absent key is empty.
@@ -23,6 +26,7 @@ config_value() {  # config_value <key> <variable>
 config_error=""
 want_session=""
 want_handoff=""
+record_args=(--json)
 prune=""
 directory_option=""
 
@@ -47,7 +51,8 @@ while [ $# -gt 0 ]; do
       [ -z "$directory_option" ] || { json_error "usage" "--handoff conflicts with $directory_option"; exit 2; }
       directory_option="--handoff"
       want_handoff="$2"; shift 2 ;;
-    --json|--no-commitments) shift ;;
+    --json) shift ;;
+    --no-commitments) record_args=(--no-commitments); shift ;;
     --prune)
       [ -z "$directory_option" ] || { json_error "usage" "--prune conflicts with $directory_option"; exit 2; }
       directory_option="--prune"; prune=1; shift ;;
@@ -60,14 +65,12 @@ while [ $# -gt 0 ]; do
 done
 
 engine_path() {
-  local self_dir
   if [ -n "${PICKUP_ENGINE:-}" ]; then
     [ -f "$PICKUP_ENGINE" ] && printf '%s' "$PICKUP_ENGINE"
     return 0
   fi
-  self_dir="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)"
-  if [ -f "$self_dir/../skills/pickup/scripts/pickup.py" ]; then
-    printf '%s' "$self_dir/../skills/pickup/scripts/pickup.py"
+  if [ -f "$wrapper_dir/../skills/pickup/scripts/pickup.py" ]; then
+    printf '%s' "$wrapper_dir/../skills/pickup/scripts/pickup.py"
   fi
 }
 
@@ -85,7 +88,8 @@ run_engine_json() {
     rm -f "$out_file" "$err_file"
     return 1
   fi
-  python3 "$engine" "$@" >"$out_file" 2>"$err_file"
+  PICKUP_RECORD_HELPER="${PICKUP_RECORD_HELPER:-$wrapper_dir/lib/pickup_record.py}" \
+    python3 "$engine" "$@" >"$out_file" 2>"$err_file"
   engine_rc=$?
   if ! python3 -c 'import json,sys; sys.exit(0 if isinstance(json.load(open(sys.argv[1])), dict) else 1)' "$out_file" 2>/dev/null; then
     json_error "engine_bad_output" "pickup.py exited $engine_rc: $(tr '\n' ' ' < "$err_file" | tail -c 400)"
@@ -104,7 +108,7 @@ run_engine_json() {
 
 # ---------------------------------------------------------------- dispatch
 if [ -n "$want_handoff" ]; then
-  run_engine_json --handoff "$want_handoff"
+  run_engine_json --handoff "$want_handoff" "${record_args[@]}"
 else
   # The handoff module owns where handoffs are stored (HANDOFF_STATE_DIR,
   # else the continuity configuration, else its default).
