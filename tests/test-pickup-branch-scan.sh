@@ -27,12 +27,6 @@ SCRIPT="$REPO_DIR/scripts/pickup.sh"
 GEN="$REPO_DIR/tests/fixtures/gen_branch_scan_transcript.py"
 TEMPLATE="$REPO_DIR/tests/fixtures/pickup-session.jsonl"
 
-# pickup.sh hard-requires `gh` at its own top (`command -v gh || exit
-# 1`) and the tested path calls `gh repo view` for repo_nwo -- gh really is
-# invoked here, so this SKIP is a genuine inapplicability on a gh-less box,
-# not a defensive guard hiding a live-state dependency (unlike the template
-# scan above, which this rework removed).
-command -v gh >/dev/null 2>&1 || { echo "test-pickup-branch-scan: SKIP (gh not installed)"; exit 0; }
 [ -f "$TEMPLATE" ] || { echo "test-pickup-branch-scan: FAIL — missing fixture $TEMPLATE"; exit 1; }
 
 # Resolve to the REAL path: mktemp -d on macOS returns /var/folders/... but
@@ -94,7 +88,7 @@ mkdir -p "$PDIR"
 python3 "$GEN" "$TEMPLATE" "$PDIR/$SESSION_ID.jsonl" "$TEST_REPO"
 
 # ---------------------------------------------------------------- run + assert
-OUT="$(cd "$TEST_REPO" && HOME="$TEST_HOME" CODEX_HOME="$TEST_HOME/.codex" bash "$SCRIPT" --json --session "$SESSION_ID" --no-commitments 2>&1)"
+OUT="$(cd "$TEST_REPO" && HOME="$TEST_HOME" CODEX_HOME="$TEST_HOME/.codex" bash "$SCRIPT" --json --session "$SESSION_ID" 2>&1)"
 
 fail() { echo "test-pickup-branch-scan: FAIL — $1"; echo "----- output -----"; echo "$OUT"; exit 1; }
 
@@ -109,16 +103,6 @@ except Exception as e:
 
 if not isinstance(d, dict) or d.get("version") != 2:
     print("BAD_SHAPE: expected a version-2 object, got %r" % (d,))
-    sys.exit(1)
-
-# #910: commitments is a field of THIS object now, not a second printed
-# structure -- --no-commitments (passed above) must leave it explicitly
-# null (not collected), never silently absent.
-if "commitments" not in d:
-    print("MISSING_KEY: commitments key absent from the JSON object")
-    sys.exit(1)
-if d["commitments"] is not None:
-    print("BAD_COMMITMENTS: --no-commitments must yield null, got %r" % (d["commitments"],))
     sys.exit(1)
 
 branches = {b["branch"]: b for b in d.get("branches", [])}

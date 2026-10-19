@@ -13,7 +13,7 @@ Fixtures are redacted real records (tests/fixtures/pickup-session.jsonl
 for Claude, tests/fixtures/pickup-codex-*.jsonl for Codex, provenance in
 tests/fixtures/pickup-codex-PROVENANCE.md). Each test copies them into a
 sandboxed HOME and CODEX_HOME; nothing reads or writes the live stores. The
-PATH carries stub `git` and `gh` binaries that always fail, so no report
+PATH carries a stub `git` binary that always fail, so no report
 reaches a live checkout or the network.
 
 Run with: uv run --with pytest pytest tests/test_pickup_cross_tool.py -q
@@ -70,7 +70,7 @@ class Sandbox(object):
         self.bin = tmp_path / "bin"
         for d in (self.home, self.cwd, self.bin):
             d.mkdir(parents=True, exist_ok=True)
-        for name in ("git", "gh"):
+        for name in ("git",):
             stub = self.bin / name
             stub.write_text("#!/bin/sh\nexit 1\n")
             stub.chmod(0o755)
@@ -125,7 +125,7 @@ class Sandbox(object):
     def run(self, flavor, *args, cwd=None, env_extra=None):
         env = self.env(flavor)
         env.update(env_extra or {})
-        result = subprocess.run(["bash", WRAPPER] + list(args) + ["--no-commitments"],
+        result = subprocess.run(["bash", WRAPPER] + list(args),
                                 cwd=str(cwd or self.cwd), capture_output=True,
                                 text=True, env=env)
         self.last_stderr = result.stderr
@@ -273,7 +273,6 @@ def test_claude_source_invoked_under_codex_like_env_from_the_matching_cwd_is_unc
     assert report["session"] == CLAUDE_GUID
     assert report["messages"] == 699
     assert report["first_user"] == "[REDACTED TEXT #1]"
-    assert report["tickets"] == []
 
 
 def test_archived_codex_source_invoked_under_claude_like_env_restores_context(sb):
@@ -518,7 +517,7 @@ def test_codex_source_with_a_read_error_after_its_first_record_fails_closed(sb, 
     monkeypatch.setenv("PATH", str(sb.bin) + os.pathsep + "/usr/bin:/bin")
     try:
         report = rw.directory_resume(str(sb.state), str(sb.cwd), str(sb.home), None,
-                                     no_commitments=True, transcript_session=CODEX_GUID,
+                                     transcript_session=CODEX_GUID,
                                      codex_home=str(sb.codex_home))
     except OSError as exc:
         pytest.fail("directory_resume raised %s instead of returning an error report"

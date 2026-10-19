@@ -29,7 +29,7 @@ def test_module_imports_without_third_party_dependencies():
 
 
 # Poisoning two names only checks the imports that exist TODAY. #910 round 4
-# moved the COMMITMENTS gh scan into this module, adding subprocess use and
+# moved the process execution into this module, adding subprocess use and
 # concurrent.futures; the NEXT addition is what this guards against. Assert the
 # property directly — every top-level import root is stdlib — rather than
 # enumerating the packages we happen to know are absent.

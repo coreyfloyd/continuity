@@ -120,8 +120,8 @@ not fail: keep its `carries` items as open loops for the final handoff. When
 bound, note the UTC time the record write finishes; the wrap check needs it.
 
 A bound record also composes the **session summary** after its ticket step,
-once the session's closes are final: milestone and epic outcomes read live from
-GitHub first, then each project's goal, what shipped, follow-up tickets, and
+once the session's record writes are final: the bound record's outcomes,
+each project's goal, what shipped, follow-up tickets, and
 decisions. It writes each project's part into that project's session-log entry.
 Keep the summary file it names, or the reason it gives for not composing one;
 the report starts with it.

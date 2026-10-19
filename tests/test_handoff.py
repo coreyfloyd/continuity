@@ -140,20 +140,20 @@ def test_cycle_request_handoff_path_is_empty_with_no_cycle_sessions_configured(t
 
 def test_config_get_prints_a_string_a_list_and_nothing_for_an_absent_key(tmp_path, monkeypatch):
     config = tmp_path / "continuity-config.json"
-    config.write_text(json.dumps({"commitment_owner": "someone", "checklist_surfaces": ["~/a", "~/b"]}))
+    config.write_text(json.dumps({"example_string": "someone", "checklist_surfaces": ["~/a", "~/b"]}))
     env = dict(os.environ, CONTINUITY_CONFIG=str(config))
 
     def get(key):
         return subprocess.run([sys.executable, MODULE, "config-get", key], text=True,
                               capture_output=True, env=env)
 
-    assert get("commitment_owner").stdout == "someone\n"
+    assert get("example_string").stdout == "someone\n"
     assert get("checklist_surfaces").stdout == "~/a\n~/b\n"
-    absent = get("machine_lens")
+    absent = get("missing_key")
     assert absent.returncode == 0 and absent.stdout == ""
-    config.write_text(json.dumps({"commitment_owner": ""}))
-    bad = get("commitment_owner")
-    assert bad.returncode == 2 and "commitment_owner" in bad.stderr
+    config.write_text(json.dumps({"example_string": ""}))
+    bad = get("example_string")
+    assert bad.returncode == 2 and "example_string" in bad.stderr
 
 
 def test_automated_cycle_handoff_requires_one_fresh_session_for_the_subject(tmp_path, monkeypatch):

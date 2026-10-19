@@ -43,10 +43,7 @@ an empty configuration.
 | `checklist_state_dir` | string | Where the checklist keeps its marker. |
 | `checklist_surfaces` | list of strings | Standing surfaces the surface detector reports in addition to the session's own repository. |
 | `checklist_suite_baselines_dir` | string | Directory of per-repository suite baseline files the surface detector reports. |
-| `commitment_owner` | string | The GitHub owner whose issues carry claim comments. Without it `pickup` reports commitments as `no_owner`. |
-| `machine_lens` | string | A command `pickup --machine` runs, given `PICKUP_WANT_HOST` and `PICKUP_AS_JSON` in its environment. Without it the flag reports `machine_lens_unavailable`. |
 | `prune_days` | positive integer | Age in days at which a handoff becomes a `stale_transcript` prune candidate. Shared by Claude and Codex; `PICKUP_PRUNE_DAYS` overrides it. Default: 7. |
-| `host` | string | The host name the commitments scan filters on, unless `PICKUP_HOST` is set. |
 | `cycle_sessions` | object | Maps a session name to a directory under the home directory, for a consumer that cycles sessions (section 8). |
 | `unattended` | object | Optional unattended mode, section 6. |
 
@@ -97,14 +94,14 @@ directory (siblings marked), falling back to recent sessions from the tool's own
 |---|---|
 | `--handoff PATH` | A briefing for one handoff. |
 | `--session ID` | A specific transcript, from either tool. |
+| `--json` | Accepted for compatibility; JSON is always emitted. |
+| `--no-commitments` | With no record read bound, no collection is performed. |
 | `--prune` | Archive handoffs whose transcript is missing or at least the configured prune age. Never deletes. |
-| `--no-commitments` | Skip the claim scan, which costs one `gh` call per ticket. |
-| `--machine`, `--all-hosts`, `--host NAME`, `--json` | The optional machine lens, supplied by configuration. |
 
 Every failure prints the same object shape, `{"version": 2, "error": CODE, "message": TEXT,
-...}`, and exits non-zero. Codes include `usage`, `handoff_config_error` (the configuration
-is unreadable or mistyped), `machine_lens_unavailable` (no lens configured),
-`engine_not_found`, `engine_failed`, and `engine_bad_output`. `PICKUP_ENGINE` names the
+...}`. Normal absence (`no_transcript_directory` or `no_other_session`) exits zero;
+other errors exit non-zero. Codes include `usage`, `handoff_config_error` (the configuration
+is unreadable or mistyped), `engine_not_found`, `engine_failed`, and `engine_bad_output`. `PICKUP_ENGINE` names the
 engine (`skills/pickup/scripts/pickup.py`) when an adapter installs it away from
 the scripts.
 
@@ -117,10 +114,9 @@ a transcript at least `prune_days` old is a `stale_transcript` candidate. Listin
 reports candidates without moving them; only `--prune` archives them. An unavailable
 Codex store returns `session_store_unavailable` before archiving.
 
-Other settings: `PICKUP_HOST`, `PICKUP_COMMITMENT_OWNER`,
-`PICKUP_COMMITMENT_LIMIT`, `PICKUP_COMMITMENT_JOBS`, `PICKUP_TRUNK`,
-`PICKUP_PRUNE_DAYS`, `PICKUP_MACHINE_LENS`. The package ships no claim tool.
-Claims, if any, come from the user's own setup.
+Other settings: `PICKUP_TRUNK` selects the comparison branch and
+`PICKUP_PRUNE_DAYS` sets the archive age threshold. A selected handoff preserves
+record pointers and carried commitments, and states that no record read is bound.
 
 ## 5. Hooks
 

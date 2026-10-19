@@ -15,7 +15,7 @@ def test_glossary_defines_successor_and_links_pickup_rule():
 
 
 @pytest.mark.parametrize("contract", [
-    "claims", "pending approvals", "pending replies", "granted scopes",
+    "pending approvals", "pending replies", "granted scopes",
     "any other record keyed by session id",
 ])
 def test_pickup_successor_section_names_each_contract(contract):
@@ -23,3 +23,10 @@ def test_pickup_successor_section_names_each_contract(contract):
     match = re.search(r"^### The successor rule\n(.*?)(?=\n###? |\Z)", pickup, re.M | re.S)
     assert match, "pickup needs a general successor section"
     assert re.search(re.escape(contract), match.group(1)), contract
+
+
+def test_pickup_leaves_contract_transfer_to_user_tools():
+    pickup = (ROOT / "skills/pickup/SKILL.md").read_text(encoding="utf-8")
+    section = pickup.split("### The successor rule", 1)[1].split("\n## ", 1)[0]
+    assert "Pickup makes no record writes" in section
+    assert "left to the user's own tools" in section
