@@ -288,3 +288,30 @@ python3 scripts/lib/reference_check.py --terms /path/to/terms.txt .
 Terms are case-insensitive, one per line. Between letters or digits, a separator
 (`-`, `_`, `.`, or space) matches any run of separators or none. Lines starting
 with `#` are comments; use `\#` for a literal leading `#`. Exit zero is clean.
+
+
+## Guided setup with the user present
+
+After installation, invoke `/continuity:setup` in Claude Code or `Use setup` in
+Codex. Setup is the eighth skill, in addition to the seven listed in the
+original installation layout above; it is discovered by the Claude Code plugin
+and linked by the Codex installer. Both tools use the same setup procedure and
+user profile.
+
+Setup asks about each checklist slot: record, knowledge, lessons and persist.
+It creates a user profile or extends your existing one, preserving notes,
+sections, added steps and unchanged bindings. You can decline any slot;
+explicitly declining lessons leaves it unbound rather than selecting its
+default. Unbound slots carry unsaved items into the handoff.
+
+Setup also asks which tool you track work in. The agent writes your own
+read-only record-read skill outside the installed package, using tools you
+already have. It runs that skill with a real request and shows the package
+validator's verdict before binding it, then checks the written profile with
+the profile composer. No particular work-tracking tool is required or supplied.
+Missing access or invalid output leaves setup incomplete with an explanation.
+
+Run setup while present to answer its questions. Unattended setup stops without
+writes. Setup changes neither shared configuration nor repository profiles.
+The user profile and user-owned read skill remain yours when continuity is
+updated or uninstalled.

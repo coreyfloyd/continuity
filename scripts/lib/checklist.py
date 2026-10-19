@@ -70,6 +70,8 @@ def load_profile(path: Path) -> dict[str, Any]:
         raise ValueError(f"{path}: profile must be an object")
     # A section reference keeps instructions and machine-readable ordering together.
     for entry in [*profile.get("bindings", {}).values(), *profile.get("steps", [])]:
+        if entry is None:
+            continue
         if not isinstance(entry, dict):
             raise ValueError(f"{path}: binding/step must be an object")
         section = entry.pop("section", None)
@@ -121,8 +123,10 @@ def compose(profiles: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         for slot, binding in declared.items():
             if slot not in SLOTS or slot in bound:
                 raise ValueError(f"{name}: cannot replace step/binding {slot}")
-            if not binding:
-                raise ValueError(f"{name}: cannot remove or skip spine step {slot}")
+            if binding is None:
+                bindings[slot] = None
+                bound.add(slot)
+                continue
             if not isinstance(binding, Mapping) or set(binding) - {"command", "consumes", "instructions"}:
                 raise ValueError(f"{name}: invalid binding for {slot}")
             command = binding.get("command")

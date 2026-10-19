@@ -199,7 +199,6 @@ class ChecklistTests(unittest.TestCase):
             ({"skip": ["record"]}, "cannot remove or skip spine step record$"),
             ({"remove": "knowledge"}, "cannot remove or skip spine step knowledge$"),
             ({"spine": ["record", "knowledge", "persist", "handoff"]}, "cannot remove or skip spine step lessons$"),
-            ({"bindings": {"persist": None}}, "cannot remove or skip spine step persist$"),
             ({"bindings": {"record": {"command": "", "consumes": []}}}, "cannot remove or skip spine step record;"),
             ({"steps": [{"id": "late", "after": "handoff", "instructions": "late"}]}, "cannot add step late after handoff; only own-worktree may follow it"),
         ]
