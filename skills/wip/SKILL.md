@@ -8,14 +8,14 @@ disable-model-invocation: true
 
 A state snapshot with enough context to act on without digging. Three sections, no more.
 
-When asked whether a session can continue beyond its assigned subset, assess the remaining epic separately from current authorization; identify ready work, unresolved decisions, and actual dependencies.
+When asked whether a session can continue beyond its assigned subset, assess the remaining scope separately from current authorization; identify ready work, unresolved decisions, and actual dependencies.
 
 ## 0. Read the durable state layers FIRST (mandatory)
 
 Before writing anything else, ALWAYS pull the durable in-flight record. There is no session snapshot file; read the sources relevant to this session:
 
 - **Handoff (current subject)** — resolve it with this package's handoff module, `scripts/lib/handoff.py` (resolve the path from this skill's real directory: `../../scripts/lib/handoff.py`): `python3 <module> resolve "$PWD"` prints this session's handoff path, and the handoff a resumed session started from is the one its `/continuity:pickup` briefing named. If one exists, read it for the previous interactive session's pointer to the record, its open loops (dispatched-but-unreported agents, blocked items, open decisions, unrecorded commitments), and its uncommitted files. It is a thin pointer, not the record: verify it against the record.
-- **The record** — wherever the handoff points: tickets, project status, documents. When the record is an issue tracker, read each ticket referenced as active/blocked/awaiting-action with its latest progress comments (for GitHub, `gh issue view <n> --repo <owner/repo> --comments`); progress comments are the durable in-flight record a prior session left. If a session-start hook injected this session's tickets, that block is your starting list.
+- **The record** — wherever the handoff points: tickets, project status, documents. When the record is an issue tracker, read each ticket referenced as active/blocked/awaiting-action with its latest progress comments through the user-bound record workflow; progress comments are the durable in-flight record a prior session left. If a session-start hook injected this session's tickets, that block is your starting list.
 - **Session charter** — a persistent session's working-directory instructions file (`CLAUDE.md` or `AGENTS.md`), auto-loaded at boot, when the session has one. It holds identity, queues, monitor re-arm specs, and boot doctrine — not per-task state, but it tells you what standing loops this session owns.
 
 If a source doesn't apply to the current session (no charter or no prior handoff), note that and proceed from the ones that do. Do not rely on in-context awareness alone; context is incomplete after a restart or compaction.
@@ -34,7 +34,7 @@ Two kinds of things need checking, and neither is a fixed checklist — reason f
 Typical examples of each (illustrative, not exhaustive — the point is the two categories above, not this list):
 - Subagents dispatched this session — `TaskList`/`TaskGet`/`TaskOutput` for their real status; `BashOutput` for background Bash.
 - Repos this session edited — `git status` (and `git worktree list` if multiple worktrees) for actual uncommitted/unpushed/unmerged state.
-- Tickets referenced as open/blocked/awaiting-action — `gh issue view <n>`, since another session or a human could have closed, relabeled, or commented on it.
+- Tickets referenced as open/blocked/awaiting-action — read the current record, since another session or a human could have closed, relabeled, or commented on it.
 - Ops jobs / launchd jobs / long-running processes referenced — their actual current state (`launchctl list`, job status/log output), since scheduled runs happen independently of this session.
 - **Chat surfaces (e.g. Slack)** — when this machine is connected to one, check relevant channels/threads for updates on anything this report touches that the channel also has visibility into (operations status, per-project channels) — other sessions or the user may have posted state changes there that this session wouldn't otherwise see. When no chat surface is connected, skip these checks entirely; don't guess at channel state from an unconnected surface.
 

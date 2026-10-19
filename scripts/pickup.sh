@@ -1,68 +1,13 @@
 #!/usr/bin/env bash
-# pickup.sh — cold-start re-entry, two lenses.
-#
-# Directory/session lens, plus a machine lens supplied by configuration.
-#
-# DEFAULT (handoff-first): lists handoff candidates for this directory and
-#   its sibling worktrees. An unrelated machine-wide handoff never suppresses
-#   this directory's fallback. When neither current nor sibling candidates
-#   exist, reads the newest other local transcript and cross-checks git.
-#   Every directory result is a JSON object including commitments fields;
-#   --json remains a no-op for this path and controls the machine lens below.
-#
-# --machine / --all-hosts / --host (machine lens): "what does this MACHINE
-#   hold?" Runs the machine-lens command named by PICKUP_MACHINE_LENS or
-#   the `machine_lens` configuration value, handing it the host filter and
-#   output form in PICKUP_WANT_HOST and PICKUP_AS_JSON. With none
-#   configured these flags report `machine_lens_unavailable`.
-#
-# The directory lens is primary because it does not depend on any claim
-# plumbing, which under-fires: a session resuming an already-active ticket
-# never emits a claim.
-#
-# Usage:
-#   pickup.sh                 # handoff candidates, or local transcript fallback (JSON)
-#   pickup.sh --handoff <p>   # selected handoff briefing (JSON)
-#   pickup.sh --session <id>  # directory lens: a specific transcript (JSON)
-#   pickup.sh --machine       # machine lens: this host's GitHub claims
-#   pickup.sh --all-hosts     # machine lens: every host
-#   pickup.sh --host <name>   # machine lens: a specific host
-#   pickup.sh --json          # raw records (machine lens only)
-#   pickup.sh --no-commitments  # skip the ~25 gh round trips COMMITMENTS costs
-#   pickup.sh --prune           # archive dead-session handoffs (never delete)
-#
-# COMMITMENTS (#851, JSON since #910): the resumed session's COMMITMENTS —
-# tickets carrying ITS claim, at any status — as the directory lens's own
-# "commitments" field: null if not collected (--no-commitments, no
-# resolvable session id, or a failed gh scan), [] if collected and none
-# found, an array of {repo, number, title, status_labels, handoff_pending,
-# branch, url} objects otherwise. A companion "commitments_reason" field
-# says WHY whenever the value is not a complete collection — skipped,
-# no_session_id, gh_not_found, gh_search_failed, partial_claim_fetch,
-# internal_error, lens_error — and is null when the array is complete.
-# The record binding's commitments sweep stamps those claims with a
-# handoff-pending state, so a promise that was never ticket-shaped ("verify
-# the nightly", "watch #820 for 7 days") is inherited rather than
-# re-remembered. The package ships no claim tool: claims come from the
-# user's own setup. Scoped by claim, not by status label: status/next is a
-# repo-wide queue, a claim is session-scoped.
-#
-# The scan itself lives in skills/pickup/scripts/pickup.py: the
-# directory lens is ONE python process. This
-# script keeps argument parsing and the machine lens only. It used to run
-# the scan in bash and merge two JSON structures through an environment
-# variable, and every open fail-mode finding sat on that seam.
+# pickup.sh — handoff-first cold-start re-entry (JSON).
+# Usage: pickup.sh [--handoff PATH | --session ID | --prune] [--json]
+# --no-commitments is accepted; with no record read bound, nothing is collected.
+# Without a selection, list handoffs or reconstruct the newest other transcript.
 set -uo pipefail
 
 # ---------------------------------------------------------------- args
-# The host name the commitments scan filters on: PICKUP_HOST, else the
-# `host` configuration value, else "unknown" (resolved after the configuration
-# helpers below).
-host="${PICKUP_HOST:-}"
 # The module that owns where handoffs are stored and reads the configuration.
 handoff_py="${HANDOFF_PY:-$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" && pwd)/lib/handoff.py}"
-# Expand a leading ~ in a configured path.
-expand_home() { case "$1" in "~"|"~/"*) printf '%s' "$HOME${1#\~}" ;; *) printf '%s' "$1" ;; esac; }
 # Read one continuity configuration value into the variable named by $2. A
 # malformed configuration makes it return 1 with the reason in $config_error,
 # for the caller to report as `handoff_config_error`; an absent key is empty.
@@ -76,26 +21,16 @@ config_value() {  # config_value <key> <variable>
   printf -v "$2" '%s' "$value"
 }
 config_error=""
-want_host=""
-want_host_set=""
-lens="dir"            # dir | machine
 want_session=""
 want_handoff=""
-as_json=""
-no_commitments=""
 prune=""
 directory_option=""
-machine_option=""
-# The handoff-marker state string and the PICKUP_COMMITMENT_LIMIT /
-# PICKUP_COMMITMENT_JOBS knobs live in pickup.py --
-# one definition, read by the process that actually does the scan.
 
 # Every failure path emits the same JSON object, including argument parsing.
 json_error() {  # json_error <error-code> <message>
   python3 -c '
 import json, sys
-print(json.dumps({"version": 2, "error": sys.argv[1], "message": sys.argv[2],
-                  "commitments": None, "commitments_reason": "lens_error"}, indent=2))
+print(json.dumps({"version": 2, "error": sys.argv[1], "message": sys.argv[2]}, indent=2))
 ' "$1" "$2"
 }
 
@@ -104,30 +39,16 @@ while [ $# -gt 0 ]; do
     --session)
       [ $# -ge 2 ] || { json_error "usage" "--session requires a session id"; exit 2; }
       [ -n "$2" ] || { json_error "usage" "--session requires a non-empty session id"; exit 2; }
-      [ -z "$machine_option" ] || { json_error "usage" "--session conflicts with $machine_option"; exit 2; }
       [ -z "$directory_option" ] || { json_error "usage" "--session conflicts with $directory_option"; exit 2; }
       directory_option="--session"
       want_session="$2"; shift 2 ;;
     --handoff)
       [ $# -ge 2 ] || { json_error "usage" "--handoff requires a file path"; exit 2; }
-      [ -z "$machine_option" ] || { json_error "usage" "--handoff conflicts with $machine_option"; exit 2; }
       [ -z "$directory_option" ] || { json_error "usage" "--handoff conflicts with $directory_option"; exit 2; }
       directory_option="--handoff"
       want_handoff="$2"; shift 2 ;;
-    --machine)
-      [ -z "$directory_option" ] || { json_error "usage" "--machine conflicts with $directory_option"; exit 2; }
-      machine_option="--machine"; lens="machine"; shift ;;
-    --host)
-      [ $# -ge 2 ] || { json_error "usage" "--host requires a host name"; exit 2; }
-      [ -z "$directory_option" ] || { json_error "usage" "--host conflicts with $directory_option"; exit 2; }
-      machine_option="--host"; lens="machine"; want_host="$2"; want_host_set=1; shift 2 ;;
-    --all-hosts)
-      [ -z "$directory_option" ] || { json_error "usage" "--all-hosts conflicts with $directory_option"; exit 2; }
-      machine_option="--all-hosts"; lens="machine"; want_host=""; want_host_set=1; shift ;;
-    --json)      as_json=1; shift ;;
-    --no-commitments) no_commitments=1; shift ;;
+    --json|--no-commitments) shift ;;
     --prune)
-      [ -z "$machine_option" ] || { json_error "usage" "--prune conflicts with $machine_option"; exit 2; }
       [ -z "$directory_option" ] || { json_error "usage" "--prune conflicts with $directory_option"; exit 2; }
       directory_option="--prune"; prune=1; shift ;;
     # print the header comment block, whatever its length: stop at the first
@@ -138,25 +59,6 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ -z "$host" ]; then
-  config_value host host \
-    || { json_error "handoff_config_error" "pickup: $config_error"; exit 1; }
-  host="${host:-unknown}"
-fi
-[ -n "$want_host_set" ] || want_host="$host"
-
-# GitHub owner whose issues carry claim comments; the engine reads it for the
-# commitments scan and a machine lens scopes its search with it. From the
-# environment, else the `commitment_owner` configuration value; with neither,
-# commitments report `no_owner`. An unreadable configuration is reported as
-# `handoff_config_error`, never folded into `no_owner`.
-if [ -z "${PICKUP_COMMITMENT_OWNER:-}" ]; then
-  config_value commitment_owner PICKUP_COMMITMENT_OWNER \
-    || { json_error "handoff_config_error" "pickup: $config_error"; exit 1; }
-fi
-export PICKUP_COMMITMENT_OWNER="${PICKUP_COMMITMENT_OWNER:-}"
-
-# ================================================================== DIRECTORY LENS
 engine_path() {
   local self_dir
   if [ -n "${PICKUP_ENGINE:-}" ]; then
@@ -201,46 +103,30 @@ run_engine_json() {
 }
 
 # ---------------------------------------------------------------- dispatch
-if [ "$lens" = "machine" ]; then
-  machine_lens="${PICKUP_MACHINE_LENS:-}"
-  if [ -z "$machine_lens" ]; then
-    config_value machine_lens machine_lens \
-      || { json_error "handoff_config_error" "pickup: $config_error"; exit 1; }
-  fi
-  machine_lens="$(expand_home "$machine_lens")"
-  if [ ! -f "$machine_lens" ]; then
-    json_error "machine_lens_unavailable" "pickup: no machine lens is configured (PICKUP_MACHINE_LENS or machine_lens in the continuity configuration)"
+if [ -n "$want_handoff" ]; then
+  run_engine_json --handoff "$want_handoff"
+else
+  # The handoff module owns where handoffs are stored (HANDOFF_STATE_DIR,
+  # else the continuity configuration, else its default).
+  if ! state_dir="$(python3 "$handoff_py" state-dir 2>&1)"; then
+    json_error "handoff_config_error" "pickup: $state_dir"
     exit 1
   fi
-  PICKUP_WANT_HOST="$want_host" PICKUP_AS_JSON="$as_json" exec bash "$machine_lens"
-else
-  if [ -n "$want_handoff" ]; then
-    run_engine_json --handoff "$want_handoff"
-  else
-    # The handoff module owns where handoffs are stored (HANDOFF_STATE_DIR,
-    # else the continuity configuration, else its default).
-    if ! state_dir="$(python3 "$handoff_py" state-dir 2>&1)"; then
-      json_error "handoff_config_error" "pickup: $state_dir"
-      exit 1
-    fi
-    # Both transcript providers use this one threshold. Leave an explicit
-    # environment override intact; the engine supplies 7 when neither is set.
-    if [ -z "${PICKUP_PRUNE_DAYS:-}" ]; then
-      config_value prune_days prune_days \
-        || { json_error "handoff_config_error" "pickup: $config_error"; exit 1; }
-      [ -z "$prune_days" ] || export PICKUP_PRUNE_DAYS="$prune_days"
-    fi
-    current_session="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
-    # The invoking Codex thread is excluded too (#1453): the automatic lens
-    # lists both providers' sessions, and under Codex the newest rollout for
-    # this directory is the caller itself. Exclusion only; the store that
-    # owns a session is decided by the engine from the stores, not this env.
-    engine_args=(--directory-resume "$state_dir" "$PWD" "$HOME" --codex-home "${CODEX_HOME:-$HOME/.codex}"
-                 --current-session "$current_session" --current-session "${CODEX_THREAD_ID:-}"
-                 --commitments-host "$host")
-    [ -n "$want_session" ] && engine_args+=(--transcript-session "$want_session")
-    [ -n "$no_commitments" ] && engine_args+=(--no-commitments)
-    [ -n "$prune" ] && engine_args+=(--prune)
-    run_engine_json "${engine_args[@]}"
+  # Both transcript providers use this one threshold. Leave an explicit
+  # environment override intact; the engine supplies 7 when neither is set.
+  if [ -z "${PICKUP_PRUNE_DAYS:-}" ]; then
+    config_value prune_days prune_days \
+      || { json_error "handoff_config_error" "pickup: $config_error"; exit 1; }
+    [ -z "$prune_days" ] || export PICKUP_PRUNE_DAYS="$prune_days"
   fi
+  current_session="${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}"
+  # The invoking Codex thread is excluded too (#1453): the automatic lens
+  # lists both providers' sessions, and under Codex the newest rollout for
+  # this directory is the caller itself. Exclusion only; the store that
+  # owns a session is decided by the engine from the stores, not this env.
+  engine_args=(--directory-resume "$state_dir" "$PWD" "$HOME" --codex-home "${CODEX_HOME:-$HOME/.codex}"
+               --current-session "$current_session" --current-session "${CODEX_THREAD_ID:-}")
+  [ -n "$want_session" ] && engine_args+=(--transcript-session "$want_session")
+  [ -n "$prune" ] && engine_args+=(--prune)
+  run_engine_json "${engine_args[@]}"
 fi

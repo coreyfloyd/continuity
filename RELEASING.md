@@ -43,13 +43,13 @@ gate working.
 ## When to cut a release
 
 Cut a tag only after every ticket planned for the release is closed. For the
-first release, that is every other ticket on the package's extraction epic.
+first release, that is every other ticket on the package's extraction plan.
 
 ## Prerequisites
 
 - A trusted machine with the release secret key in GnuPG and an interactive
   pinentry.
-- `gh` authenticated as the account that owns the repository.
+- Browser access to the repository with release publishing permission.
 - Bash, GnuPG, Git, Python 3, and `shasum`.
 - Every intended change committed. `scripts/build-release.sh` refuses a tree with
   modified, staged, or deleted tracked files, and packages only the tree at
@@ -73,7 +73,6 @@ if git rev-parse --verify --quiet "refs/tags/$TAG"; then
 fi
 test -z "$(git ls-remote --tags origin "refs/tags/$TAG" "refs/tags/$TAG^{}")"
 gpg --list-secret-keys "$FINGERPRINT"
-gh auth status
 printf 'VERSION=%s\nTAG=%s\nCOMMIT=%s\n' "$VERSION_VALUE" "$TAG" "$(git rev-parse HEAD)"
 ```
 
@@ -141,20 +140,18 @@ Write reviewed release notes to a file outside the repository, then:
 ```bash
 cp keys/continuity-release.asc dist/
 cp scripts/verify-release.sh dist/
-gh release create "$TAG" \
-  "dist/continuity-$VERSION_VALUE.tar.gz" \
-  "dist/continuity-$VERSION_VALUE.tar.gz.sha256" \
-  "dist/continuity-$VERSION_VALUE.tar.gz.asc" \
-  dist/continuity-release.asc \
-  dist/verify-release.sh \
-  --title "$TAG" --notes-file /path/to/release-notes.md
 ```
+
+Open the repository's Releases page in a browser, create a release for `$TAG`,
+and attach the archive, checksum, signature, public key, and verification script
+from `dist/`. Use the reviewed notes and `$TAG` as the title.
 
 ## Verify the published release
 
 ```bash
 VERIFY_DIR="$(mktemp -d)"
-gh release download "$TAG" --dir "$VERIFY_DIR"
+printf 'Download all five release assets from the Releases page into %s\n' "$VERIFY_DIR"
+# Continue after the browser downloads have finished.
 test "$(find "$VERIFY_DIR" -maxdepth 1 -type f | wc -l | tr -d ' ')" = 5
 cmp "$VERIFY_DIR/continuity-release.asc" keys/continuity-release.asc
 cmp "$VERIFY_DIR/verify-release.sh" scripts/verify-release.sh
