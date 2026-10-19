@@ -18,11 +18,12 @@ own data area, and survive adapter removal.
 
 ## Skills
 
-Both installers register **seven skills**. Claude Code uses plugin-namespaced
+Both installers register **eight skills**. Claude Code uses plugin-namespaced
 commands; in Codex, invoke the skill by its name, for example `Use checkpoint`.
 
 | Skill name in Codex | Claude Code command | Role |
 |---|---|---|
+| `setup` | `/continuity:setup` | Create or extend the user profile and write and validate a user-owned record-read skill, with the user present. |
 | `checkpoint` | `/continuity:checkpoint` | Write and lint the current interactive session's handoff without finishing its work. |
 | `pickup` | `/continuity:pickup` | List handoffs after a cold start, select one, and check it against the record. |
 | `checklist` | `/continuity:checklist` | Wrap the session through the spine and profile steps, ending with a validated handoff. |

@@ -230,7 +230,10 @@ as open loops. `handoff` is not a slot and is the last spine step; only a profil
 }
 ```
 
-A binding names a `command` and the item types it `consumes`. A step has a unique `id`, an
+A binding names a `command` and the item types it `consumes`. A user slot may
+explicitly bind to JSON `null` to leave it unbound, including `lessons`, which
+otherwise defaults to `/improve-harness`. This keeps the spine step and carries
+its unsaved items; it does not remove or skip the step. A step has a unique `id`, an
 `after` anchor (`before-spine`, `record`, `knowledge`, `lessons`, or `persist`; `handoff`
 only for the step `own-worktree`, which must use it), and
 `instructions`, or a `section` naming a level-two heading in the same Markdown file. A user
@@ -263,12 +266,13 @@ completion command succeeds it answers `unattended-checklist` until a passing
 
 ## 7. Skills
 
-Seven skills, each a directory with a `SKILL.md`. An adapter installs them where its tool
+Eight skills, each a directory with a `SKILL.md`. An adapter installs them where its tool
 looks for skills. Each resolves its scripts from its own real directory, never from a
 tool-specific home directory.
 
 | Skill | Role |
 |---|---|
+| `setup` | Create or extend the user profile and write and validate the user-owned record-read skill, with the user present. |
 | `checkpoint` | Checkpoint the current session. `scripts/checkpoint.sh` is the entry point the checklist also calls. |
 | `pickup` | Resume after a cold start. Its engine is `scripts/pickup.py`. |
 | `checklist` | Wrap through the spine plus profile steps. |
@@ -295,7 +299,7 @@ repository. `tests/test_shipped_surface.py` runs the check over the whole tree w
 ## 10. Codex installation and normalization
 
 `python3 scripts/install-codex.py [--codex-home PATH] [--codex PATH]` installs a
-runtime copy, the seven skill links, six continuity hooks and the optional actor
+runtime copy, the eight skill links, six continuity hooks and the optional actor
 guard. The installer owns only the registrations and links recorded in
 `continuity-install.json`; other hooks and configuration survive. Its seven
 handlers must match `hooks/list` with `trustStatus: trusted`, or it restores the
