@@ -112,8 +112,16 @@ def test_unreadable_profile_is_failure_not_unbound(selected):
     assert 'record read unavailable:' in lines(pickup(selected))
 
 
-def test_default_profile_path_and_no_record_writes(selected, tmp_path):
-    configured = tmp_path / '.config/checklist/profile.md'
+@pytest.mark.parametrize('use_xdg', [False, True])
+def test_default_profile_path_and_no_record_writes(selected, tmp_path, use_xdg):
+    env = selected[2]
+    if use_xdg:
+        config_home = tmp_path / 'xdg-config'
+        env['XDG_CONFIG_HOME'] = str(config_home)
+    else:
+        env.pop('XDG_CONFIG_HOME', None)
+        config_home = tmp_path / '.config'
+    configured = config_home / 'checklist/profile.md'
     configured.parent.mkdir(parents=True)
     Path(selected[2].pop('CHECKLIST_USER_PROFILE')).rename(configured)
     before = {str(p): p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
