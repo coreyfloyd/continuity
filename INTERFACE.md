@@ -43,10 +43,7 @@ an empty configuration.
 | `checklist_state_dir` | string | Where the checklist keeps its marker. |
 | `checklist_surfaces` | list of strings | Standing surfaces the surface detector reports in addition to the session's own repository. |
 | `checklist_suite_baselines_dir` | string | Directory of per-repository suite baseline files the surface detector reports. |
-| `commitment_owner` | string | The GitHub owner whose issues carry claim comments. Without it `pickup` reports commitments as `no_owner`. |
-| `machine_lens` | string | A command `pickup --machine` runs, given `PICKUP_WANT_HOST` and `PICKUP_AS_JSON` in its environment. Without it the flag reports `machine_lens_unavailable`. |
 | `prune_days` | positive integer | Age in days at which a handoff becomes a `stale_transcript` prune candidate. Shared by Claude and Codex; `PICKUP_PRUNE_DAYS` overrides it. Default: 7. |
-| `host` | string | The host name the commitments scan filters on, unless `PICKUP_HOST` is set. |
 | `cycle_sessions` | object | Maps a session name to a directory under the home directory, for a consumer that cycles sessions (section 8). |
 | `unattended` | object | Optional unattended mode, section 6. |
 
@@ -97,16 +94,27 @@ directory (siblings marked), falling back to recent sessions from the tool's own
 |---|---|
 | `--handoff PATH` | A briefing for one handoff. |
 | `--session ID` | A specific transcript, from either tool. |
+| `--json` | Accepted for compatibility; JSON is always emitted. |
+| `--no-commitments` | Skip the binding's commitments request and label it skipped; preserve handoff commitments. |
 | `--prune` | Archive handoffs whose transcript is missing or at least the configured prune age. Never deletes. |
-| `--no-commitments` | Skip the claim scan, which costs one `gh` call per ticket. |
-| `--machine`, `--all-hosts`, `--host NAME`, `--json` | The optional machine lens, supplied by configuration. |
 
 Every failure prints the same object shape, `{"version": 2, "error": CODE, "message": TEXT,
-...}`, and exits non-zero. Codes include `usage`, `handoff_config_error` (the configuration
-is unreadable or mistyped), `machine_lens_unavailable` (no lens configured),
-`engine_not_found`, `engine_failed`, and `engine_bad_output`. `PICKUP_ENGINE` names the
-engine (`skills/pickup/scripts/pickup.py`) when an adapter installs it away from
-the scripts.
+...}`. Normal absence (`no_transcript_directory` or `no_other_session`) exits zero;
+other errors exit non-zero. Codes include `usage`, `handoff_config_error` (the configuration
+is unreadable or mistyped), `engine_not_found`, `engine_failed`, `engine_bad_output`,
+and `record_helper_failed` (the record-read helper could not run or produce a JSON
+object). Helper failures exit non-zero, retain handoff-derived sections, and name
+the helper path and actual failure in `message`; they are not record outages.
+`PICKUP_ENGINE` names the engine (`skills/pickup/scripts/pickup.py`) when an
+adapter installs it away from the scripts. The wrapper resolves its own real
+location, including when invoked through a symlink, and supplies its package's
+`scripts/lib/pickup_record.py` independently of the engine location.
+`PICKUP_RECORD_HELPER` overrides that helper path for an adapter that installs
+helpers elsewhere. Both paths may be absolute or relative to the invoking
+working directory. A direct engine invocation uses `PICKUP_RECORD_HELPER` when
+set; otherwise it resolves the helper from the engine's real package location.
+A standalone engine outside the package therefore needs the helper override.
+The helper's accompanying library modules must remain available alongside it.
 
 Prune discovery checks Claude's `~/.claude/projects/<cwd-slug>/<session-id>.jsonl`
 (`/` and `.` in the stored working directory become `-`) and Codex rollouts in
@@ -117,10 +125,33 @@ a transcript at least `prune_days` old is a `stale_transcript` candidate. Listin
 reports candidates without moving them; only `--prune` archives them. An unavailable
 Codex store returns `session_store_unavailable` before archiving.
 
-Other settings: `PICKUP_HOST`, `PICKUP_COMMITMENT_OWNER`,
-`PICKUP_COMMITMENT_LIMIT`, `PICKUP_COMMITMENT_JOBS`, `PICKUP_TRUNK`,
-`PICKUP_PRUNE_DAYS`, `PICKUP_MACHINE_LENS`. The package ships no claim tool.
-Claims, if any, come from the user's own setup.
+Other settings: `PICKUP_TRUNK` selects the comparison branch and
+`PICKUP_PRUNE_DAYS` sets the archive age threshold. A selected handoff preserves
+record pointers and carried commitments labeled "from handoff". With no user
+binding it states that no record read is bound. With a binding it adds
+`record_read.command` and `record_read.requests` for the agent to run; it never
+executes the skill. Requests use the resumed session identity and full handoff.
+Ticket references come from handoff open-loop `anchor.ticket` pointers, without
+service-specific parsing. Profile resolution matches the checklist user profile;
+an invalid or unreadable profile is a record-read failure.
+
+The agent saves this report and the raw skill responses, then runs:
+
+```sh
+python3 scripts/lib/pickup_record.py --complete --ticket-status ticket-response.json \
+  --commitments commitments-response.json < pickup-report.json
+```
+
+Omit a response argument when its skill failed to run or commitments were
+skipped. `--complete` treats missing requested responses as failures. The helper
+validates each response with the record-read validator, checks exact ticket
+reference coverage, and appends only passing rows to `briefing`, retaining all
+handoff-derived sections. Successful rows also appear in `record_read.results`;
+failed requests have no results entry and say `record read unavailable: <reason>`.
+Only a validated empty response renders as none. Commitments from the binding
+are labeled "from record". This helper reads stdin, profiles and response files;
+it performs no record writes and never starts a checklist or writes a ledger
+marker. It also accepts `--no-commitments` when preparing a report directly.
 
 ## 5. Hooks
 
@@ -193,12 +224,16 @@ as open loops. `handoff` is not a slot and is the last spine step; only a profil
 ```json
 {
   "name": "example",
+  "record_read": {"command": "/read-work"},
   "bindings": {"record": {"command": "/record-step", "consumes": ["progress", "decision"]}},
   "steps": [{"id": "tidy", "after": "persist", "instructions": "..."}]
 }
 ```
 
-A binding names a `command` and the item types it `consumes`. A step has a unique `id`, an
+A binding names a `command` and the item types it `consumes`. A user slot may
+explicitly bind to JSON `null` to leave it unbound, including `lessons`, which
+otherwise defaults to `/improve-harness`. This keeps the spine step and carries
+its unsaved items; it does not remove or skip the step. A step has a unique `id`, an
 `after` anchor (`before-spine`, `record`, `knowledge`, `lessons`, or `persist`; `handoff`
 only for the step `own-worktree`, which must use it), and
 `instructions`, or a `section` naming a level-two heading in the same Markdown file. A user
@@ -206,6 +241,15 @@ profile applies to every session; a repository profile only adds steps. A profil
 removes, skips, or replaces a spine step, or adds any step but `own-worktree` after `handoff`, is rejected with a
 message naming the step. User profile: `$CHECKLIST_USER_PROFILE`, else
 `${XDG_CONFIG_HOME:-~/.config}/checklist/profile.md`.
+
+**Record-read binding.** A user profile may also declare
+`"record_read": {"command": "/read-work"}`. This object has exactly one field,
+`command`, a non-empty string naming the user's skill. Omit `record_read` to leave
+it unbound; `null` is not a binding. A repository profile cannot declare
+`record_read`, even if no user profile binds it. The composer rejects it with an
+error naming `record_read`. The `plan` result includes `record_read` as that object,
+or `null` when unbound; it adds no spine step. The composer never executes it.
+The binding and validator contract below is identical for Claude Code and Codex.
 
 **Unattended mode** is optional and absent by default. A user who launches sessions and
 leaves them to execute approved work describes that mode in the `unattended` section:
@@ -222,12 +266,13 @@ completion command succeeds it answers `unattended-checklist` until a passing
 
 ## 7. Skills
 
-Seven skills, each a directory with a `SKILL.md`. An adapter installs them where its tool
+Eight skills, each a directory with a `SKILL.md`. An adapter installs them where its tool
 looks for skills. Each resolves its scripts from its own real directory, never from a
 tool-specific home directory.
 
 | Skill | Role |
 |---|---|
+| `setup` | Create or extend the user profile and write and validate the user-owned record-read skill, with the user present. |
 | `checkpoint` | Checkpoint the current session. `scripts/checkpoint.sh` is the entry point the checklist also calls. |
 | `pickup` | Resume after a cold start. Its engine is `scripts/pickup.py`. |
 | `checklist` | Wrap through the spine plus profile steps. |
@@ -254,7 +299,7 @@ repository. `tests/test_shipped_surface.py` runs the check over the whole tree w
 ## 10. Codex installation and normalization
 
 `python3 scripts/install-codex.py [--codex-home PATH] [--codex PATH]` installs a
-runtime copy, the seven skill links, six continuity hooks and the optional actor
+runtime copy, the eight skill links, six continuity hooks and the optional actor
 guard. The installer owns only the registrations and links recorded in
 `continuity-install.json`; other hooks and configuration survive. Its seven
 handlers must match `hooks/list` with `trustStatus: trusted`, or it restores the
@@ -269,3 +314,106 @@ from `CODEX_HOME/sessions`. Source `exec`, subagents, unknown sources, mismatche
 identity, and unreadable metadata are refused; interactive CLI, desktop and
 app-server sources ignore a parent's `CLAUDE_CODE_ENTRYPOINT`. No caller-provided
 model or tool name establishes interactive authority.
+
+## 9. Record read: `scripts/lib/record_read.py`
+
+A record read is defined in [the glossary](docs/glossary.md#language). The agent
+runs the skill named by the user profile's `record_read.command`, gives it one
+request below, then validates its JSON response before rendering it. The pickup
+script does not execute this binding; the agent owns this read. The skill is read-only;
+writes remain with the `record` slot. The package supplies no record service.
+
+Requests and responses have fixed fields. No additional, free-form, or
+tracker-specific fields are permitted. Skill authors put additional context in
+`title` or `latest_progress` text. Reference and link strings belong to the user's
+record; the package imposes no service-specific reference or URL format.
+
+### Ticket status
+
+Input: `{"kind": "ticket_status", "references": ["work:17", "work:missing"]}`.
+`references` is the list of ticket references the handoff points to. Output has
+exactly `kind` and `rows`, with exactly one row per distinct input reference;
+unresolvable references must appear, never be omitted:
+
+```json
+{
+  "kind": "ticket_status",
+  "rows": [
+    {
+      "reference": "work:17",
+      "title": "Carry the work",
+      "state": "active",
+      "link": "https://example.org/work/17",
+      "latest_progress": "Contract approved"
+    },
+    {
+      "reference": "work:missing",
+      "title": "",
+      "state": "not_found",
+      "link": "",
+      "latest_progress": ""
+    }
+  ]
+}
+```
+
+Every row has exactly the five fields shown, all strings. `reference` and `state`
+are non-empty. `title` and `link` are non-empty except for a `not_found` row.
+`latest_progress` may be empty when no progress is recorded. `not_found` is the
+reserved state for an unresolvable reference; other non-empty state strings come
+from the record. References cannot repeat within a response.
+
+### Commitments
+
+Input: `{"kind": "commitments", "session_id": "resumed-session-id",
+"repository": "/path/to/repository", "handoff": {}}`. `session_id` is the resumed
+session's id, `repository` is its repository path, and `handoff` is its full handoff
+JSON object (the empty object here only abbreviates that value).
+Output has exactly `kind` and `rows`; one row represents one piece of work the
+record holds as carried by that session:
+
+```json
+{
+  "kind": "commitments",
+  "rows": [
+    {
+      "reference": "work:17",
+      "title": "Carry the work",
+      "state": "active",
+      "link": "https://example.org/work/17"
+    }
+  ]
+}
+```
+
+Each row has exactly these four fields, all non-empty strings. References cannot
+repeat within a response. The state is text from the record, with no
+service-specific enumeration. The handoff is input context, not a response field.
+
+### Empty results, errors, and validation
+
+Successful responses with no work use `{"kind": "ticket_status", "rows": []}` or
+`{"kind": "commitments", "rows": []}`. For ticket status, an empty list is appropriate
+only when no references were requested. Either request may instead return exactly
+`{"kind": "error", "reason": "record unavailable"}` with a non-empty reason. An
+error is never interpreted as an empty list or reported as `valid`.
+
+Pass a response on stdin to either command:
+
+```sh
+python3 scripts/lib/record_read.py --expect ticket_status < response.json
+python3 scripts/lib/record_read.py --expect commitments < response.json
+```
+
+| Stdout (one line) | Exit status | Meaning |
+|---|---|---|
+| `valid` | 0 | A structurally valid success response. |
+| `invalid: <reason>` | 1 | Malformed JSON, missing or extra fields, wrong types, duplicate fields or references, unknown shape, or unexpected response kind. |
+| `error: <reason>` | 2 | An explicit failure reported by the binding. Whitespace in its reason is collapsed to keep the verdict on one line. |
+
+Without `--expect`, either success kind is accepted. An error is accepted as a
+failure for either expected kind. Validation uses only the Python standard library,
+reads stdin, prints a deterministic verdict, and never executes a skill or contacts
+the record. It validates response structure; the calling agent must also check
+that the response covers the requested references and reflects the requested
+session. A structural verdict cannot establish record accuracy or completeness.

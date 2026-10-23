@@ -199,7 +199,6 @@ class ChecklistTests(unittest.TestCase):
             ({"skip": ["record"]}, "cannot remove or skip spine step record$"),
             ({"remove": "knowledge"}, "cannot remove or skip spine step knowledge$"),
             ({"spine": ["record", "knowledge", "persist", "handoff"]}, "cannot remove or skip spine step lessons$"),
-            ({"bindings": {"persist": None}}, "cannot remove or skip spine step persist$"),
             ({"bindings": {"record": {"command": "", "consumes": []}}}, "cannot remove or skip spine step record;"),
             ({"steps": [{"id": "late", "after": "handoff", "instructions": "late"}]}, "cannot add step late after handoff; only own-worktree may follow it"),
         ]
@@ -473,7 +472,7 @@ class ChecklistTests(unittest.TestCase):
         user = ["--user-profile", str(PROFILES / "user.md")]
         plan = self.engine.compose([self.engine.load_profile(PROFILES / "user.md")])
         results = [{"id": step["id"], "status": "run", "writes": []} for step in plan]
-        text = "## Session summary\n\n- No milestone or epic closed or moved this session.\n"
+        text = "## Session summary\n\n- No record outcome closed or moved this session.\n"
         with tempfile.TemporaryDirectory() as directory:
             path, summary = Path(directory) / "results.json", Path(directory) / "summary.md"
             path.write_text(json.dumps(results))

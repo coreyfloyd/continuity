@@ -20,3 +20,7 @@ Headers are organizational test labels. It is not the complete historical skill.
 Tests also derive partial/error/reordered variants from these captured records
 to exercise detection boundaries. The three-session test changes one captured
 session identity to exercise aggregation; it is not a third measured session.
+
+The external record command name in the captured command and skill excerpt is
+additionally neutralized to `record-cli`, preserving command structure and the
+live-read boundary.

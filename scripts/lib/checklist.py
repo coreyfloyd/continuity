@@ -70,6 +70,8 @@ def load_profile(path: Path) -> dict[str, Any]:
         raise ValueError(f"{path}: profile must be an object")
     # A section reference keeps instructions and machine-readable ordering together.
     for entry in [*profile.get("bindings", {}).values(), *profile.get("steps", [])]:
+        if entry is None:
+            continue
         if not isinstance(entry, dict):
             raise ValueError(f"{path}: binding/step must be an object")
         section = entry.pop("section", None)
@@ -79,6 +81,17 @@ def load_profile(path: Path) -> dict[str, Any]:
                 raise ValueError(f"{path}: missing instructions section {section}")
             entry["instructions"] = match[1].strip()
     return profile
+
+
+def record_read_binding(profile: Mapping[str, Any]) -> dict[str, str] | None:
+    """The optional user-bound read skill, separate from the writing slots."""
+    if "record_read" not in profile:
+        return None
+    binding = profile["record_read"]
+    if (not isinstance(binding, Mapping) or set(binding) != {"command"}
+            or not isinstance(binding["command"], str) or not binding["command"].strip()):
+        raise ValueError(f"{profile.get('name', 'profile')}: record_read requires only a non-empty command")
+    return dict(binding)
 
 
 def compose(profiles: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -97,20 +110,23 @@ def compose(profiles: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         name = profile.get("name")
         if not isinstance(name, str) or not name.strip():
             raise ValueError("profile requires a name")
-        unknown = sorted(set(profile) - {"name", "bindings", "steps"})
+        unknown = sorted(set(profile) - {"name", "bindings", "steps", "record_read"})
         if unknown:
             steps = _removed_spine_steps(profile, unknown)
             if steps:
                 raise ValueError(f"{name}: cannot remove or skip spine step {', '.join(steps)}")
             raise ValueError(f"{name}: unknown profile field {', '.join(unknown)}")
+        record_read_binding(profile)
         declared = profile.get("bindings", {})
         if not isinstance(declared, Mapping):
             raise ValueError(f"{name}: bindings must be an object")
         for slot, binding in declared.items():
             if slot not in SLOTS or slot in bound:
                 raise ValueError(f"{name}: cannot replace step/binding {slot}")
-            if not binding:
-                raise ValueError(f"{name}: cannot remove or skip spine step {slot}")
+            if binding is None:
+                bindings[slot] = None
+                bound.add(slot)
+                continue
             if not isinstance(binding, Mapping) or set(binding) - {"command", "consumes", "instructions"}:
                 raise ValueError(f"{name}: invalid binding for {slot}")
             command = binding.get("command")
@@ -501,6 +517,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         paths = ([args.user_profile] if args.user_profile else []) + args.repository_profile
         profiles = [load_profile(path) for path in paths]
         for path, profile in zip(args.repository_profile, profiles[1:] if args.user_profile else profiles):
+            if "record_read" in profile:
+                raise ValueError(f"{path}: repository profiles cannot bind record_read")
             if profile.get("bindings"):
                 raise ValueError(f"{path}: repository profiles only add steps; cannot bind {', '.join(profile['bindings'])}")
         plan = compose(profiles)
@@ -516,7 +534,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             for step in plan:
                 if "slot" in step:
                     step["carried_items"] = slot_inputs(plan, step["slot"], handoff)
-            output = {"profiles": [str(path) for path in paths], "unattended": args.unattended, "steps": plan}
+            output = {"profiles": [str(path) for path in paths], "unattended": args.unattended, "steps": plan,
+                      "record_read": record_read_binding(profiles[0]) if args.user_profile else None}
             if args.unattended:
                 output["when_answer_needed"] = UNATTENDED_RULE
         elif args.operation == "wrap-check":

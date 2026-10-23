@@ -141,3 +141,12 @@ Checkpoint stores unrecorded input `session_items` as `resume.open_loops`, adds
 distinguishes input from stored output. The tool hook's repository observations
 have no `kind` field; they are documented separately from the three explicit
 command-generated entry kinds in the example.
+
+## Plan refresh, 2026-10-18
+
+Re-ran the plan command against the committed `profile.md` and `handoff.json`,
+using `docs/examples/profile.md` as the profile argument and a temporary ledger
+directory, with the inherited session variables listed above removed. Saved
+stdout unchanged as `plan.json` (SHA-256 `8eecf3c4a43b6104651a5da25f9b9d6549fe11ff122bdf9aa2deca0e12a6f66b`).
+The refreshed plan adds `record_read: null`, reflecting the profile's unbound
+read skill. The original handoff and ledger captures above remain unchanged.

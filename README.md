@@ -18,11 +18,12 @@ own data area, and survive adapter removal.
 
 ## Skills
 
-Both installers register **seven skills**. Claude Code uses plugin-namespaced
+Both installers register **eight skills**. Claude Code uses plugin-namespaced
 commands; in Codex, invoke the skill by its name, for example `Use checkpoint`.
 
 | Skill name in Codex | Claude Code command | Role |
 |---|---|---|
+| `setup` | `/continuity:setup` | Create or extend the user profile and write and validate a user-owned record-read skill, with the user present. |
 | `checkpoint` | `/continuity:checkpoint` | Write and lint the current interactive session's handoff without finishing its work. |
 | `pickup` | `/continuity:pickup` | List handoffs after a cold start, select one, and check it against the record. |
 | `checklist` | `/continuity:checklist` | Wrap the session through the spine and profile steps, ending with a validated handoff. |
@@ -325,7 +326,6 @@ no example because the bound record writes it, not the package.
 
 ```text
 bound record's summary text           # binding-defined format, not a package JSON schema
-├── milestone and epic outcomes       # live ticket outcomes once closes are final
 └── each project's goal, shipped work, follow-up tickets, and decisions
 
 report command output                 # JSON on stdout, checked by the reporting session
@@ -353,10 +353,7 @@ configuration JSON object             # shared settings, not a profile
 ├── checklist_state_dir: string       # unattended-wrap marker directory
 ├── checklist_surfaces: string[]      # standing surface-detector candidates
 ├── checklist_suite_baselines_dir: string # per-repository suite baseline directory
-├── commitment_owner: string          # issue owner for pickup's commitments scan
-├── machine_lens: string              # command for pickup's optional machine view
 ├── prune_days: positive integer      # stale-transcript prune age, default 7; PICKUP_PRUNE_DAYS overrides
-├── host: string                      # commitments host filter; PICKUP_HOST overrides
 ├── cycle_sessions: object            # consumer session-name to home-relative directory mapping
 └── unattended: object                # optional unattended-mode integration
     ├── state_module                  # Python file providing state_path and read_state

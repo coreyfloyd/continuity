@@ -24,10 +24,6 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 REAL="$ROOT/scripts/pickup.sh"
 
-# Missing gh is a hard FAIL, not a silent SKIP-as-PASS: a "no local X" skip
-# must never look like a passing run (#910 eval round 1 F8, round 4 F-C).
-command -v gh >/dev/null 2>&1 || { echo "FAIL: test-pickup-wrapper: gh is not installed (required by the wrapper under test)"; exit 1; }
-
 FAILURES=0
 fail() { echo "FAIL: $*"; FAILURES=$((FAILURES + 1)); }
 pass() { echo "ok:   $*"; }
@@ -50,14 +46,6 @@ cat > "$PDIR/$SESSION_ID.jsonl" <<'JSONL'
 {"type":"assistant","timestamp":"2026-09-01T10:00:05Z","gitBranch":"main","message":{"role":"assistant","content":[{"type":"text","text":"done"}],"stop_reason":"end_turn"}}
 JSONL
 
-# gh stub: the wrapper hard-requires gh and calls `gh repo view` for repo_nwo.
-STUB_DIR="$SANDBOX/bin"; mkdir -p "$STUB_DIR"
-cat > "$STUB_DIR/gh" <<'STUB'
-#!/bin/bash
-case "${1:-}" in repo) echo "alexrivera/example-config" ;; *) echo "[]" ;; esac
-STUB
-chmod +x "$STUB_DIR/gh"
-
 # build_engine <python-body> — a temp tree whose layout matches the $0-relative
 # lookup: <tree>/scripts/pickup.sh and <tree>/skills/pickup/scripts/.
 build_engine() {
@@ -70,14 +58,14 @@ build_engine() {
 }
 
 run_wrapper() {  # -> stdout on fd1, rc in $RC
-    OUT=$( cd "$WORKDIR" && HOME="$FAKE_HOME" CODEX_HOME="$FAKE_HOME/.codex" PATH="$STUB_DIR:$PATH" \
+    OUT=$( cd "$WORKDIR" && HOME="$FAKE_HOME" CODEX_HOME="$FAKE_HOME/.codex" \
         TMPDIR="$SANDBOX/tmp" bash "$TREE/scripts/pickup.sh" \
         --session "$SESSION_ID" 2>/dev/null )
     RC=$?
 }
 
 run_handoff_wrapper() {  # -> stdout on fd1, rc in $RC
-    OUT=$( cd "$WORKDIR" && HOME="$FAKE_HOME" CODEX_HOME="$FAKE_HOME/.codex" PATH="$STUB_DIR:$PATH" \
+    OUT=$( cd "$WORKDIR" && HOME="$FAKE_HOME" CODEX_HOME="$FAKE_HOME/.codex" \
         TMPDIR="$SANDBOX/tmp" bash "$TREE/scripts/pickup.sh" \
         --handoff "$SANDBOX/selected.json" 2>/dev/null )
     RC=$?
@@ -90,7 +78,6 @@ d = json.load(sys.stdin)
 assert isinstance(d, dict), d
 assert d.get("version") == 2, d
 assert d.get("error"), d
-assert "commitments" in d, d
 ' >/dev/null 2>&1
 }
 
@@ -107,7 +94,7 @@ else fail "W1: exit 0 for a crashed engine"; fi
 # Engine prints VALID JSON and exits non-zero. The exit code is the only
 # signal; discarding it produced a clean-looking report from a failed run.
 build_engine 'import json, sys
-print(json.dumps({"version": 2, "session": "x", "commitments": None}))
+print(json.dumps({"version": 2, "session": "x"}))
 sys.exit(3)'
 run_wrapper
 if [ "$RC" -ne 0 ]; then pass "W2: a non-zero engine exit propagates ($RC)"
@@ -139,11 +126,11 @@ else fail "W3b: exit 0 for non-object engine output — F-A"; fi
 # The control: a well-behaved engine passes through byte-for-byte, so W1-W3 are
 # not passing because the wrapper errors on everything.
 build_engine 'import json
-print(json.dumps({"version": 2, "session": "wrapper-fixture", "commitments": [], "commitments_reason": None}))'
+print(json.dumps({"version": 2, "session": "wrapper-fixture"}))'
 run_wrapper
 if [ "$RC" -eq 0 ]; then pass "W4: a healthy engine exits 0"
 else fail "W4: healthy engine gave rc=$RC — [$OUT]"; fi
-if printf '%s' "$OUT" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["commitments"]==[] and "error" not in d' 2>/dev/null; then
+if printf '%s' "$OUT" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["session"]=="wrapper-fixture" and "error" not in d' 2>/dev/null; then
     pass "W4: the engine's own object reaches the caller unaltered"
 else fail "W4: report was rewritten: [$OUT]"; fi
 
@@ -158,67 +145,15 @@ else fail "W5: selected-handoff stdout was not an error object: [$OUT]"; fi
 if [ "$RC" -ne 0 ]; then pass "W5: a crashing selected-handoff engine yields a non-zero exit ($RC)";
 else fail "W5: selected-handoff crash returned 0"; fi
 
-# ---------------------------------------------------------------- W6-W9 (#1709)
-# The entry point carries no GitHub owner and no machine lens of its own: both
-# come from the environment or the continuity configuration. The engine is a
-# stub that reports the owner it was handed.
-OWNER_ENGINE='import json, os
-print(json.dumps({"version": 2, "owner": os.environ.get("PICKUP_COMMITMENT_OWNER")}))'
+# Configuration parsing must still report malformed files.
 CFG="$SANDBOX/continuity.json"
-
-run_configured() {  # run_configured <config-file-or-empty> <args...> -> $OUT, $RC
-    _cfg="$1"; shift
-    OUT=$( cd "$WORKDIR" && HOME="$FAKE_HOME" CODEX_HOME="$FAKE_HOME/.codex" PATH="$STUB_DIR:$PATH" \
-        TMPDIR="$SANDBOX/tmp" CONTINUITY_CONFIG="$_cfg" HANDOFF_STATE_DIR="$SANDBOX/handoffs" \
-        bash "$TREE/scripts/pickup.sh" "$@" 2>/dev/null )
-    RC=$?
-}
-
-build_engine "$OWNER_ENGINE"
-run_configured "$SANDBOX/absent.json" --session "$SESSION_ID"
-if [ "$OUT" != "" ] && printf '%s' "$OUT" | python3 -c 'import json,sys; assert json.load(sys.stdin)["owner"] in ("", None)' 2>/dev/null; then
-    pass "W6: with no owner configured, the engine is handed none (commitments report no_owner)"
-else fail "W6: an owner leaked into an unconfigured run: [$OUT]"; fi
-
-printf '{"commitment_owner": "configured-owner"}' > "$CFG"
-run_configured "$CFG" --session "$SESSION_ID"
-if printf '%s' "$OUT" | python3 -c 'import json,sys; assert json.load(sys.stdin)["owner"] == "configured-owner"' 2>/dev/null; then
-    pass "W7: the configured owner reaches the engine"
-else fail "W7: configured owner not passed: [$OUT]"; fi
-
-run_configured "$SANDBOX/absent.json" --machine
-if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | python3 -c 'import json,sys; assert json.load(sys.stdin)["error"] == "machine_lens_unavailable"' 2>/dev/null; then
-    pass "W8: --machine with no lens configured reports machine_lens_unavailable"
-else fail "W8: expected machine_lens_unavailable, rc=$RC: [$OUT]"; fi
-
-LENS="$SANDBOX/lens.sh"
-printf '#!/bin/bash\nprintf "host=%%s json=%%s owner=%%s\\n" "$PICKUP_WANT_HOST" "$PICKUP_AS_JSON" "$PICKUP_COMMITMENT_OWNER"\n' > "$LENS"
-printf '{"commitment_owner": "configured-owner", "machine_lens": "%s"}' "$LENS" > "$CFG"
-run_configured "$CFG" --host box1 --json
-if [ "$RC" -eq 0 ] && [ "$OUT" = "host=box1 json=1 owner=configured-owner" ]; then
-    pass "W9: a configured machine lens runs with the host filter, output form, and owner"
-else fail "W9: lens not run as configured, rc=$RC: [$OUT]"; fi
-
-# ---------------------------------------------------------------- W10-W12 (#1679)
-# A malformed continuity configuration is a configuration error. It used to be
-# folded into `no_owner` (directory lens) or `machine_lens_unavailable`
-# (machine lens) because the lookup discarded stderr and fell back to empty.
 printf '{not json' > "$CFG"
-run_configured "$CFG" --session "$SESSION_ID"
-if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | python3 -c 'import json,sys; d = json.load(sys.stdin); assert d["error"] == "handoff_config_error" and "unreadable" in d["message"]' 2>/dev/null; then
-    pass "W10: a malformed configuration on the directory lens reports handoff_config_error"
-else fail "W10: expected handoff_config_error, rc=$RC: [$OUT]"; fi
-
-run_configured "$CFG" --machine
-if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | python3 -c 'import json,sys; assert json.load(sys.stdin)["error"] == "handoff_config_error"' 2>/dev/null; then
-    pass "W11: a malformed configuration on the machine lens reports handoff_config_error"
-else fail "W11: expected handoff_config_error, rc=$RC: [$OUT]"; fi
-
-printf '{"commitment_owner": 7}' > "$CFG"
-run_configured "$CFG" --session "$SESSION_ID"
-if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | python3 -c 'import json,sys; d = json.load(sys.stdin); assert d["error"] == "handoff_config_error" and "commitment_owner" in d["message"]' 2>/dev/null; then
-    pass "W12: a wrongly typed value is a configuration error naming the key"
-else fail "W12: expected handoff_config_error naming commitment_owner, rc=$RC: [$OUT]"; fi
+build_engine 'print("{}")'
+OUT=$(cd "$WORKDIR" && HOME="$FAKE_HOME" CONTINUITY_CONFIG="$CFG" bash "$TREE/scripts/pickup.sh" --session "$SESSION_ID")
+RC=$?
+if [ "$RC" -ne 0 ] && printf '%s' "$OUT" | python3 -c 'import json,sys; assert json.load(sys.stdin)["error"] == "handoff_config_error"'; then
+    pass "W6: malformed configuration reports handoff_config_error"
+else fail "W6: malformed configuration was accepted"; fi
 
 echo
 if [ "$FAILURES" -eq 0 ]; then echo "test-pickup-wrapper: PASS"; exit 0; fi

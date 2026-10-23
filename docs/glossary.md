@@ -1,6 +1,6 @@
 # Session Continuity Glossary
 
-Defines the thirteen terms the session-continuity package uses. Other glossaries that mention these terms point here instead of defining them. "Artifact" is a session-item type (see **Open loop**), not a term of its own.
+Defines the fourteen terms the session-continuity package uses. Other glossaries that mention these terms point here instead of defining them. "Artifact" is a session-item type (see **Open loop**), not a term of its own.
 
 ## Language
 
@@ -11,6 +11,10 @@ _Avoid_: chat, one-shot session
 **Record**:
 The durable place a session's work is kept: tickets, project status, documents, and their history. It is the primary persistence, and a handoff only points to it. The package names the record but does not provide one; a profile binds the `record` slot to whatever keeps it.
 _Avoid_: handoff, session memory
+
+**Record read**:
+A read of the existing record through a user-bound skill. It is read-only: it reports ticket status and work carried by a resumed session without writing to the record. The user profile binds the skill; a repository profile cannot. Writing to the record remains the `record` slot's responsibility.
+_Avoid_: tracker, record write
 
 **Handoff**:
 The thin pointer one interactive session writes for one subject, so the next session can find its way back to the record. A handoff is identified by its subject and its session together, so two sessions on the same subject never overwrite each other. It holds where to find the record, the session's open loops, and the uncommitted files the session changed. It holds nothing the record holds. Checkpoint and wrap both end by writing it.

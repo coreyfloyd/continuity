@@ -12,8 +12,7 @@ newer, and `git`. The Claude Code checklist reminder also requires `jq`.
 Install your chosen agent CLI separately: Claude Code with plugin support, or
 Codex CLI 0.160.0 or newer with command hooks and `app-server` hook discovery.
 The Codex contract uses captured 0.160.0 payloads; installation verifies trusted
-hooks against your installed binary. `gh` is optional, for pickup's commitments
-scan when `commitment_owner` is configured.
+hooks against your installed binary.
 
 Cloning a checkout uses `git`. Downloaded signed releases additionally need
 `gpg`, `gpgconf`, `shasum`, and `tar`. The commands below install runtime and
@@ -24,7 +23,6 @@ macOS includes Bash, `tar`, and `shasum`. With Homebrew:
 ```bash
 brew install git python jq                # checkout route, either tool
 brew install git python jq gnupg          # signed-release route, either tool
-brew install gh                          # optional commitments scan
 ```
 
 Debian or Ubuntu:
@@ -33,7 +31,6 @@ Debian or Ubuntu:
 sudo apt-get update
 sudo apt-get install bash git python3 jq                        # checkout route
 sudo apt-get install bash git python3 jq tar gnupg libdigest-sha-perl # signed release
-sudo apt-get install gh                                        # optional
 ```
 
 Fedora:
@@ -41,7 +38,6 @@ Fedora:
 ```bash
 sudo dnf install bash git python3 jq                     # checkout route
 sudo dnf install bash git python3 jq tar gnupg2 perl-Digest-SHA # signed release
-sudo dnf install gh                                      # optional
 ```
 
 For another Linux distribution, install packages providing the same commands.
@@ -155,10 +151,7 @@ These are every key in [INTERFACE.md section 2](INTERFACE.md#2-configuration):
 | `checklist_state_dir` | string | Checklist marker directory; `CHECKLIST_STATE_DIR` overrides it. |
 | `checklist_surfaces` | list of strings | Standing directories the surface detector reports alongside the session's repository. |
 | `checklist_suite_baselines_dir` | string | Per-repository suite baseline directory reported by the surface detector. |
-| `commitment_owner` | string | GitHub owner for pickup's issue-claim scan; absent means `no_owner`. |
-| `machine_lens` | string | Optional command for `pickup --machine`, given `PICKUP_WANT_HOST` and `PICKUP_AS_JSON`; absent means `machine_lens_unavailable`. |
 | `prune_days` | positive integer | Transcript age in days for `stale_transcript` prune candidates; default 7, overridden by `PICKUP_PRUNE_DAYS`. |
-| `host` | string | Host filter for the commitments scan, overridden by `PICKUP_HOST`. |
 | `cycle_sessions` | object | Session names mapped to home-relative directories for an external session-cycling consumer. The package does not run that consumer. |
 | `unattended` | object | Optional unattended-mode adapter: `state_module`, `completion_command`, and `completed_by`, described in interface section 6. Absent by default. |
 
@@ -288,3 +281,30 @@ python3 scripts/lib/reference_check.py --terms /path/to/terms.txt .
 Terms are case-insensitive, one per line. Between letters or digits, a separator
 (`-`, `_`, `.`, or space) matches any run of separators or none. Lines starting
 with `#` are comments; use `\#` for a literal leading `#`. Exit zero is clean.
+
+
+## Guided setup with the user present
+
+After installation, invoke `/continuity:setup` in Claude Code or `Use setup` in
+Codex. Setup is the eighth skill, in addition to the seven listed in the
+original installation layout above; it is discovered by the Claude Code plugin
+and linked by the Codex installer. Both tools use the same setup procedure and
+user profile.
+
+Setup asks about each checklist slot: record, knowledge, lessons and persist.
+It creates a user profile or extends your existing one, preserving notes,
+sections, added steps and unchanged bindings. You can decline any slot;
+explicitly declining lessons leaves it unbound rather than selecting its
+default. Unbound slots carry unsaved items into the handoff.
+
+Setup also asks which tool you track work in. The agent writes your own
+read-only record-read skill outside the installed package, using tools you
+already have. It runs that skill with a real request and shows the package
+validator's verdict before binding it, then checks the written profile with
+the profile composer. No particular work-tracking tool is required or supplied.
+Missing access or invalid output leaves setup incomplete with an explanation.
+
+Run setup while present to answer its questions. Unattended setup stops without
+writes. Setup changes neither shared configuration nor repository profiles.
+The user profile and user-owned read skill remain yours when continuity is
+updated or uninstalled.
