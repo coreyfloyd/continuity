@@ -16,6 +16,13 @@ def isolate_continuity_config(tmp_path, monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def isolate_user_profile(tmp_path, monkeypatch):
+    """Record reads start unbound; tests may opt into their own profile."""
+    monkeypatch.delenv("CHECKLIST_USER_PROFILE", raising=False)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg-config"))
+
+
+@pytest.fixture(autouse=True)
 def isolate_codex_identity(monkeypatch):
     """No test takes its invoking worker's Codex session as an input."""
     monkeypatch.delenv("CODEX_THREAD_ID", raising=False)
