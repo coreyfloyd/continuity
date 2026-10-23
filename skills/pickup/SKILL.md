@@ -152,7 +152,9 @@ A standalone engine copied outside the package needs that helper override.
 
 The selected report resolves the user profile at `$CHECKLIST_USER_PROFILE`, or
 `checklist/profile.md` under `$XDG_CONFIG_HOME` (default `~/.config`). Only an
-absent default profile means configured-nothing. An unreadable or invalid profile
+absent default profile means configured-nothing. A default profile link whose
+target is unavailable reports the same path-naming diagnostic as an explicitly
+configured path. An unreadable or invalid profile
 is **record read unavailable: <reason>**, not an unbound profile. Repository
 profiles cannot bind this read. This path reads profiles without starting a
 checklist or writing a ledger marker.

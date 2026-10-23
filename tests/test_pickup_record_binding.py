@@ -170,6 +170,53 @@ def test_explicit_missing_profile_is_unavailable(selected):
     assert 'No record read is bound.' not in lines(report)
 
 
+@pytest.mark.parametrize('use_xdg', [False, True])
+@pytest.mark.parametrize('condition', ['absent', 'dangling', 'loop', 'directory', 'invalid'])
+def test_profile_diagnostics_preserve_every_handoff_section(selected, tmp_path, use_xdg, condition):
+    env = selected[2]
+    env['HOME'] = str(tmp_path)
+    env.pop('CHECKLIST_USER_PROFILE', None)
+    env.pop('XDG_CONFIG_HOME', None)
+    config_home = tmp_path / '.config'
+    if use_xdg:
+        config_home = tmp_path / 'isolated-config'
+        env['XDG_CONFIG_HOME'] = str(config_home)
+    profile = config_home / 'checklist/profile.md'
+    profile.parent.mkdir(parents=True)
+    baseline = pickup(selected)
+    handoff_rows = [row for row in baseline['briefing'] if row.get('source') != 'record_read']
+    assert lines(baseline).count('No record read is bound.') == 1
+
+    if condition == 'dangling':
+        profile.symlink_to(tmp_path / 'unavailable-profile.md')
+    elif condition == 'loop':
+        profile.symlink_to(profile.name)
+    elif condition == 'directory':
+        profile.mkdir()
+    elif condition == 'invalid':
+        profile.write_text('```checklist-profile\n{\n```\n')
+    default = pickup(selected)
+    env['CHECKLIST_USER_PROFILE'] = str(profile)
+    explicit = pickup(selected)
+
+    for report in (default, explicit):
+        assert report['handoff'] == selected[1]
+        assert report['resume'] == selected[1]['resume']
+        assert [row for row in report['briefing'] if row.get('source') != 'record_read'] == handoff_rows
+        assert 'record_read' not in report
+        assert 'Tickets from record:' not in lines(report)
+        assert 'Commitments from record:' not in lines(report)
+        if condition != 'absent' or report is explicit:
+            assert lines(report).count('record read unavailable: user profile:') == 1
+            if condition != 'invalid':
+                assert str(profile) in lines(report)
+            assert 'No record read is bound.' not in lines(report)
+    if condition == 'absent':
+        assert lines(default).count('No record read is bound.') == 1
+    else:
+        assert default['briefing'] == explicit['briefing']
+
+
 @pytest.mark.parametrize('entry', [
     'default', 'external_absolute', 'external_relative', 'engine_symlink',
     'wrapper_symlink', 'direct', 'direct_symlink', 'external_direct_helper_override',

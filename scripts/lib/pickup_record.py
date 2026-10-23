@@ -36,8 +36,9 @@ def prepare(report, no_commitments=False):
         os.environ.get('XDG_CONFIG_HOME', str(Path.home() / '.config'))) / 'checklist/profile.md'
     try:
         # Only an absent default is configured-nothing. An explicit path that
-        # cannot be read must not masquerade as an unbound profile.
-        binding = record_read_binding(load_profile(path)) if configured or path.exists() else None
+        # cannot be read, including an unavailable link, is still configured.
+        binding = record_read_binding(load_profile(path)) if (
+            configured or path.exists() or path.is_symlink()) else None
     except (OSError, ValueError, TypeError, AttributeError) as error:
         line(report, 'record read unavailable: user profile: ' + ' '.join(str(error).split()))
         return report
