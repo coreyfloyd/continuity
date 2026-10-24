@@ -11,7 +11,8 @@ this skill's actual directory (`../..`); the shared command is
 may enable act mode in continuity configuration. In act mode the command owns
 record writes, asks and archive moves through the executable binding protocol
 in [INTERFACE.md](../../INTERFACE.md#12-sweep-act-binding-protocol). Never execute
-those writes separately from the engine. Neither mode removes worktrees. Never write a handoff for the sweep itself.
+those writes separately from the engine. Act mode also removes eligible clean, merged
+linked worktrees and their local branches. Never write a handoff for the sweep itself.
 
 Take the requested directory or `all` as scope. If none is given, use the
 working directory. Read the user checklist profile at `$CHECKLIST_USER_PROFILE`,
@@ -28,14 +29,21 @@ python3 <package>/scripts/lib/sweep.py inspect --scope <directory-or-all>
 ```
 
 Unattended runs use idle time alone with no open-session checks configured.
-They never wait for input. Interactive runs first inspect the available session
+Configured `open_session_checks` commands protect the union of their reported
+session ids; any failed check prevents abandonment across the scope. They never
+wait for input. With no configured checks, interactive runs first inspect the available session
 surfaces read-only, then pass `--interactive --open-sessions <evidence-file>`
 to both inspect and run. Evidence is JSON with `session_ids` (possibly empty)
 and `method` (how the session surfaces were inspected). Never claim no open
 sessions when inspection failed; report that blocker. No process is closed or
 wrapped by the sweep. The report's open idle sessions have the choices `wrap it`,
 `leave it`, `close it`; present these directly to the user after writing the
-interactive report. Do not wait before completing the report.
+interactive report. With configured checks, `--interactive` uses their results;
+additional agent evidence is optional. Do not wait before completing the report.
+In act mode the engine records the activity at which each open-session ask was
+raised or presented, and suppresses repeats until a newer handoff or transcript
+write. Watch-only proposes asks without recording them as raised. Never read
+ask answers or interpret them as permission to wrap or close a session.
 
 Before choosing filing rules for an abandoned session, check each item's
 `identity_occurrences`, the number of copies of its identity in that handoff.

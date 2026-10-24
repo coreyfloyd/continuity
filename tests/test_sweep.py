@@ -514,7 +514,7 @@ def test_second_run_exits_without_any_write_when_store_locked(sandbox):
 
 
 @pytest.mark.parametrize('settings', [{'mode': 'invalid'}, {'idle_days': -1}, {'idle_days': True},
-                                      {'open_session_checks': ['unsafe command']}])
+                                      {'open_session_checks': [None]}])
 def test_invalid_or_future_settings_never_execute_actions(sandbox, settings):
     sandbox[2].write_text(json.dumps({'sweep': settings}))
     command(sandbox, 'run', '--scope', 'all', code=1)
@@ -1163,5 +1163,163 @@ def test_archive_other_retention_conditions_remain_independent(sandbox, guard):
 
     assert path.read_bytes() == before
     assert not any(section['handoffs_archived'] for section in data['directories'].values())
-    if guard in ('open-session', 'recent-session', 'pending-item'):
+    if guard in ('recent-session', 'pending-item'):
         assert not calls(sandbox)
+
+
+def configure_checks(sandbox, commands):
+    config = json.loads(sandbox[2].read_text())
+    config['sweep']['open_session_checks'] = commands
+    sandbox[2].write_text(json.dumps(config))
+
+
+def check_command(sandbox, name, content):
+    path = sandbox[0] / (name + '.py')
+    path.write_text(content)
+    return shlex.join([sys.executable, str(path)])
+
+
+def test_configured_checks_union_and_failure_block_abandonment(sandbox):
+    first = source(sandbox, name='first')
+    second = source(sandbox, name='second')
+    a = check_command(sandbox, 'a', 'print("first")')
+    b = check_command(sandbox, 'b', 'print("second")')
+    configure_checks(sandbox, [a, b])
+    _, data = report(sandbox)
+    section = data['directories'][str(sandbox[0])]
+    assert {s['session_id'] for s in section['open_sessions']} == {'first', 'second'}
+    assert not section['filing_outcomes']
+    failing = check_command(sandbox, 'fail', 'import sys; sys.exit(7)')
+    configure_checks(sandbox, [a, failing])
+    profile = act_profile(sandbox)
+    _, data = report(sandbox, '--user-profile', str(profile))
+    assert failing in json.dumps(data['errors'])
+    assert first.exists() and second.exists()
+    assert all(not s['filing_outcomes'] and not s['worktrees_removed']
+               for s in data['directories'].values())
+
+
+@pytest.mark.parametrize('interactive', [False, True])
+def test_open_idle_ask_once_until_activity_changes(sandbox, interactive):
+    path = source(sandbox, loops=[])
+    profile = act_profile(sandbox)
+    configure_checks(sandbox, [check_command(sandbox, 'open', 'print("source")')])
+    args = ['--user-profile', str(profile)]
+    if interactive:
+        args += ['--interactive']
+    _, data = report(sandbox, *args)
+    row, = data['directories'][str(sandbox[0])]['asks_raised']
+    assert row['ask']['choices'] == ['wrap it', 'leave it', 'close it']
+    assert row['outcome'] == ('present directly to user' if interactive else 'written')
+    _, data = report(sandbox, *args)
+    assert not data['directories'][str(sandbox[0])]['asks_raised']
+    activity = path.stat().st_mtime + 60
+    os.utime(path, (activity, activity))
+    _, data = report(sandbox, *args)
+    assert len(data['directories'][str(sandbox[0])]['asks_raised']) == 1
+    writes = [r for r in calls(sandbox) if r['operation'] == 'ask']
+    assert len(writes) == (0 if interactive else 2)
+    assert path.exists()
+
+
+@pytest.mark.parametrize('kind', ['clean', 'dirty', 'unmerged', 'main', 'open', 'failed-check', 'locked'])
+def test_act_worktree_cleanup_safeguards(sandbox, kind):
+    root, directory = archive_test_repository(sandbox, 'main' if kind == 'main' else 'linked')
+    repo = sandbox[0] / 'repo'
+    profile = act_profile(sandbox)
+    path = source(sandbox, directory=directory, loops=[])
+    git = lambda *args: subprocess.run(['git', '-C', str(repo), *map(str, args)],
+                                      capture_output=True, text=True, check=True)
+    head = git('rev-parse', 'HEAD').stdout.strip()
+    if kind == 'dirty':
+        (root / 'untracked').write_text('work')
+    if kind == 'unmerged':
+        subprocess.run(['git', '-C', str(root), '-c', 'user.name=Test', '-c',
+                        'user.email=test@example.test', 'commit', '--allow-empty', '-qm', 'work'], check=True)
+    if kind == 'locked':
+        git('worktree', 'lock', root)
+    if kind == 'open':
+        source(sandbox, name='live', directory=root / 'docs', loops=[])
+        configure_checks(sandbox, [check_command(sandbox, 'open', 'print("live")')])
+    if kind == 'failed-check':
+        configure_checks(sandbox, [check_command(sandbox, 'fail', 'import sys; sys.exit(1)')])
+    _, data = report(sandbox, '--user-profile', str(profile))
+    section = data['directories'][str(directory)]
+    if kind == 'clean':
+        assert not root.exists()
+        assert git('branch', '--list', 'feature').stdout == ''
+        row, = section['worktrees_removed']
+        assert row['branch'] == 'feature' and row['commit'] == head
+        assert row['checks']['plain_removal'] is True
+        assert row['outcome'] == 'removed'
+        assert not path.exists()
+    else:
+        assert root.exists() and not section['worktrees_removed']
+        if kind in ('dirty', 'unmerged', 'open', 'locked'):
+            assert section['asks_raised']
+        if kind == 'failed-check':
+            assert path.exists()
+    assert git('ls-remote', 'origin', 'refs/heads/main').stdout.split()[0] == head
+
+
+def test_worktree_becoming_dirty_during_filing_raises_failed_check_ask(sandbox):
+    root, directory = archive_test_repository(sandbox, 'linked')
+    source(sandbox, directory=directory)
+    profile = act_profile(sandbox, {'dirty_file': str(root / 'untracked')})
+    args = decisions(sandbox, [{'rule': 'R3', 'destination': 'ask', 'choices': ['save', 'leave it']}])
+    _, data = report(sandbox, *args, '--user-profile', str(profile))
+    section = data['directories'][str(directory)]
+    assert root.exists() and not section['worktrees_removed']
+    assert any('Keep worktree' in r['ask']['text'] for r in section['asks_raised'])
+    assert section['worktrees_kept'][0]['checks']['clean'] is False
+
+
+@pytest.mark.parametrize('failure', ['missing', 'timeout'])
+def test_unrunnable_check_keeps_handoffs_and_reports_command(sandbox, failure):
+    path = source(sandbox, loops=[])
+    profile = act_profile(sandbox)
+    cmd = str(sandbox[0] / 'missing-command') if failure == 'missing' else check_command(
+        sandbox, 'slow', 'import time; time.sleep(2)')
+    configure_checks(sandbox, [cmd])
+    inspected = json.loads(command(sandbox, 'inspect', '--scope', 'all').stdout)
+    assert inspected['candidates'][0]['abandoned'] is False
+    _, data = report(sandbox, '--user-profile', str(profile))
+    assert path.exists() and cmd in json.dumps(data['errors'])
+    assert data['directories'][str(sandbox[0])]['handoffs_kept']
+    assert not calls(sandbox)
+
+
+@pytest.mark.parametrize('provider', ['claude', 'codex'])
+def test_transcript_activity_rearms_open_session_ask(sandbox, provider):
+    source(sandbox, loops=[])
+    profile = act_profile(sandbox)
+    configure_checks(sandbox, [check_command(sandbox, 'open', 'print("source")')])
+    if provider == 'claude':
+        transcript = Path(sandbox[3]['HOME']) / '.claude/projects/project/source.jsonl'
+    else:
+        transcript = Path(sandbox[3]['CODEX_HOME']) / 'sessions/2026/10/24/rollout-2026-10-24T00-00-00-source.jsonl'
+    transcript.parent.mkdir(parents=True)
+    transcript.write_text('{}\n')
+    activity = time.time() - 4 * 86400
+    os.utime(transcript, (activity, activity))
+    for expected in (1, 0):
+        _, data = report(sandbox, '--user-profile', str(profile))
+        assert len(data['directories'][str(sandbox[0])]['asks_raised']) == expected
+    os.utime(transcript, (activity + 60, activity + 60))
+    _, data = report(sandbox, '--user-profile', str(profile))
+    assert len(data['directories'][str(sandbox[0])]['asks_raised']) == 1
+    assert len([c for c in calls(sandbox) if c['operation'] == 'ask']) == 2
+
+
+@pytest.mark.parametrize('behavior', [{'lost': True}, {'fail': 'ask'}])
+def test_open_ask_retries_without_reading_answers(sandbox, behavior):
+    source(sandbox, loops=[])
+    profile = act_profile(sandbox, behavior)
+    configure_checks(sandbox, [check_command(sandbox, 'open', 'print("source")')])
+    report(sandbox, '--user-profile', str(profile))
+    (sandbox[0] / 'behavior.json').write_text('{}')
+    _, data = report(sandbox, '--user-profile', str(profile))
+    assert data['directories'][str(sandbox[0])]['asks_raised'][0]['outcome'] == 'written'
+    _, data = report(sandbox, '--user-profile', str(profile))
+    assert not data['directories'][str(sandbox[0])]['asks_raised']
+    assert {c['operation'] for c in calls(sandbox)} == {'identity_exists', 'ask'}

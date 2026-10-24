@@ -517,7 +517,16 @@ unfiled items stay in their handoffs and the ask identifies affected directories
 The limit is global across directory sections, not reset per directory.
 
 Act execution changes only its report, record and ask destinations through
-their bindings, and archive moves. It never removes a worktree or local branch.
+their bindings, open-session ask activity records beside reports, archive moves,
+and eligible linked worktrees and their local branches. Worktree status and
+pushed-trunk containment are rechecked before plain removal; local branch
+compare-and-delete follows successful removal. Remote branches are unchanged.
+Configured read-only open-session commands print whitespace-separated ids;
+any command failure prevents abandonment for the entire scope. An open-session
+ask includes `activity_at`, the newest handoff/transcript write time. Successful
+asks are suppressed until newer activity. Interactive choices appear directly
+in the report instead of invoking the ask binding. No operation reads an ask's
+answer. See [sweep configuration](docs/sweep.md#configuration) for the check contract.
 An archive is a byte-preserving move after all items were written or dropped,
 with no recorded or observed uncommitted files or unsuccessful asks.
 Repository status is checked at planning and again after bindings; a dirty

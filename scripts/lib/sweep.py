@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Identity-bound sweep planning and configured act execution; never removes worktrees."""
+"""Identity-bound sweep planning, open-session protection and safe act execution."""
 from __future__ import annotations
 
 import argparse
@@ -65,8 +65,9 @@ def settings():
         raise ValueError('sweep.binding_timeout_seconds must be positive')
     if type(result['new_ticket_limit']) is not int:
         raise ValueError('sweep.new_ticket_limit must be an integer')
-    if result['open_session_checks'] != []:
-        raise ValueError('configured open-session commands are not supported yet; no sweep performed')
+    checks = result['open_session_checks']
+    if not isinstance(checks, list) or not all(isinstance(c, str) and c.strip() for c in checks):
+        raise ValueError('sweep.open_session_checks must be a list of non-empty command strings')
     if not isinstance(result['report_location'], str) or not result['report_location'].strip():
         raise ValueError('sweep.report_location must be a non-empty directory path')
     return result
@@ -228,6 +229,58 @@ def read_open_sessions(path):
     return data
 
 
+def open_session_checks(config, evidence):
+    """Union successful checks; any failure protects the entire scope."""
+    result = dict(evidence, results=[], failed=False)
+    sessions = set(result['session_ids'])
+    for command in config['open_session_checks']:
+        row = {'command': command, 'session_ids': []}
+        try:
+            done = subprocess.run(shlex.split(command), capture_output=True, text=True,
+                                  timeout=config['binding_timeout_seconds'])
+            if done.returncode:
+                raise ValueError(done.stderr.strip() or f'check exited {done.returncode}')
+            row.update(outcome='ok', session_ids=done.stdout.split())
+            sessions.update(row['session_ids'])
+        except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+            row.update(outcome='failed', error=str(exc))
+            result['failed'] = True
+        result['results'].append(row)
+    result['session_ids'] = sorted(sessions)
+    if config['open_session_checks']:
+        result['method'] = 'configured commands' + (' and ' + evidence['method'] if evidence['method'] != 'idle threshold alone; no checks configured' else '')
+    return result
+
+
+def ask_history_path(config):
+    return Path(config['report_location']).expanduser().resolve() / 'open-session-asks.json'
+
+
+def read_ask_history(config):
+    path = ask_history_path(config)
+    if path.is_symlink():
+        raise ValueError('open-session ask history is a symbolic link')
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict) or not all(isinstance(v, (int, float)) for v in data.values()):
+        raise ValueError('malformed open-session ask history')
+    return data
+
+
+def save_ask_history(config, history):
+    path = ask_history_path(config)
+    temporary = path.with_suffix('.' + uuid.uuid4().hex + '.tmp')
+    try:
+        with temporary.open('x') as handle:
+            json.dump(history, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def read_decisions(path, discovery):
     rows = [] if path is None else json.loads(path.read_text())
     if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
@@ -286,7 +339,7 @@ def git_read(directory, *args):
 
 
 def worktree_plan(candidate, protected):
-    """Read-only eligibility checks, shared seam for a later removal executor."""
+    """Read-only eligibility checks, repeated immediately before plain removal."""
     directory = candidate['directory']
     root = handoff.repository_root(directory)
     if not root:
@@ -321,6 +374,10 @@ def worktree_plan(candidate, protected):
         reason = 'branch not contained in the locally observed pushed trunk'
     if not row['branch']:
         reason = 'detached worktree has no local branch'
+    if candidate['handoff'].get('uncommitted_files'):
+        reason = 'handoff lists uncommitted files'
+    if sum(e.get('branch') == match.get('branch') for e in entries) > 1:
+        reason = 'local branch is used by another worktree'
     row['checks'] = {'clean': status == 0 and not dirty, 'contained_in_pushed_trunk': merged,
                      'plain_removal': 'not attempted in watch-only mode'}
     if reason:
@@ -351,25 +408,35 @@ def add_ask(section, candidate, text, choices, reason, ask):
         'directory': candidate['directory'], 'ticket': None, 'choices': choices}})
 
 
-def build_report(discovery, decisions, plan, ask, checks, interactive, started):
+def build_report(discovery, decisions, plan, ask, checks, interactive, started, history=None):
     report = {'run_id': uuid.uuid4().hex, 'host': socket.gethostname(), 'started_at': started.isoformat(),
               'scope': discovery['scope'], 'mode': 'watch-only', 'interactive': interactive,
               'open_session_checks': [checks], 'errors': discovery['errors'], 'directories': {}}
+    asked_sessions = set()
     protected = {c['directory'] for c in discovery['candidates']
                  if c['session_id'] in checks['session_ids'] or not c['abandoned']}
     for candidate in discovery['candidates']:
         is_open = candidate['session_id'] in checks['session_ids']
-        if not candidate['abandoned'] and not is_open:
+        if not candidate['abandoned'] and not is_open and not checks.get('failed'):
             continue
         section = report['directories'].setdefault(candidate['directory'],
             {**{key: [] for key, _ in SECTIONS}, 'filing_outcomes': [], 'worktrees_kept': [], 'handoffs_kept': []})
         if is_open:
             section['open_sessions'].append({key: candidate[key] for key in
                                             ('session_id', 'idle_seconds', 'activity_at', 'path')})
-            if candidate['abandoned']:
+            if (candidate['idle_seconds'] > discovery['idle_days'] * 86400
+                    and (history or {}).get(candidate['session_id'], -1) < candidate['activity_at']
+                    and candidate['session_id'] not in asked_sessions):
                 add_ask(section, candidate, 'Open idle session: ' + candidate['session_id'],
                         ['wrap it', 'leave it', 'close it'],
                         'present directly to user' if interactive else 'would raise an ask; no ask sent in watch-only', ask)
+                asked_sessions.add(candidate['session_id'])
+                section['asks_raised'][-1].update(open_session=True, activity_at=candidate['activity_at'])
+                section['asks_raised'][-1]['ask']['activity_at'] = candidate['activity_at']
+            continue
+        if not candidate['abandoned']:
+            section['handoffs_kept'].append(dict(path=candidate['path'], outcome='kept',
+                reason='open-session check failed; abandonment unknown'))
             continue
         outcomes = []
         for item in candidate['items']:
@@ -437,12 +504,13 @@ def binding_call(binding, request, timeout):
     return response
 
 
-def execute_act(report, discovery, plan, ask, reader, config, path):
-    """Execute only binding writes, asks and archive moves; journal in the report.
+def execute_act(report, discovery, plan, ask, reader, config, path, history=None):
+    """Execute binding writes, asks, checked worktree removals and archive moves.
 
     Identity queries precede every attempted write, even without an earlier report.
     Bindings must enforce identity uniqueness atomically, including delayed writes.
     """
+    history = {} if history is None else history
     report['mode'] = 'act'
     for section in report['directories'].values():
         section['unfiled_items'] = []
@@ -529,8 +597,10 @@ def execute_act(report, discovery, plan, ask, reader, config, path):
         # Rebuild category arrays from actual outcomes rather than proposals.
         synthetic_asks = [row for row in section['asks_raised'] if row not in section['filing_outcomes']]
         for key in ('asks_raised', 'new_tickets', 'comments_added', 'documents_changed',
-                    'items_dropped', 'worktrees_removed', 'handoffs_archived', 'handoffs_kept'):
+                    'items_dropped', 'worktrees_removed', 'handoffs_archived'):
             section[key] = []
+        section['handoffs_kept'] = [row for row in section['handoffs_kept']
+                                    if report['open_session_checks'][0].get('failed')]
         section['unfiled_items'] = []
         for row in section['filing_outcomes']:
             row['directory'] = directory
@@ -619,13 +689,71 @@ def execute_act(report, discovery, plan, ask, reader, config, path):
         for row in synthetic_asks:
             section['asks_raised'].append(row)
             row['directory'] = directory
-            # Open sessions are observational in this slice. Their ask lifecycle
-            # belongs to open-session integration; never act on their handoffs.
-            if any(s['path'] == row['source_handoff'] for s in section['open_sessions']):
-                row['outcome'] = 'pending open-session integration'
+            if row.get('open_session') and report['interactive']:
+                row['outcome'] = 'present directly to user'
             else:
                 send_ask(row)
             save()
+            if row.get('open_session') and row['outcome'] in ('written', 'present directly to user'):
+                history[row['identity']['session_id']] = row['activity_at']
+                save_ask_history(config, history)
+        protected = {c['directory'] for c in discovery['candidates']
+                     if not c['abandoned'] or c['session_id'] in report['open_session_checks'][0]['session_ids']}
+        removed_paths = set()
+        for candidate in discovery['candidates']:
+            if candidate['directory'] != directory or not candidate['abandoned']:
+                continue
+            proposed = worktree_plan(candidate, protected)
+            if not proposed or proposed['path'] in removed_paths:
+                continue
+            if proposed['outcome'] != 'dry run':
+                if not any(r['path'] == proposed['path'] for r in section['worktrees_kept']):
+                    section['worktrees_kept'].append(proposed)
+                    temporary = {'asks_raised': []}
+                    add_ask(temporary, candidate, 'Keep worktree ' + directory + ': ' + proposed['reason'],
+                            ['review worktree', 'leave it'], proposed['reason'], ask)
+                    failure = temporary['asks_raised'][0]
+                    failure['directory'] = directory
+                    section['asks_raised'].append(failure)
+                    send_ask(failure)
+                    save()
+                continue
+            row = proposed
+            try:
+                check_handoff_source(candidate)
+                # Resolve the main checkout before removing this linked checkout.
+                _, output, _ = git_read(directory, 'worktree', 'list', '--porcelain')
+                main = output.splitlines()[0].removeprefix('worktree ')
+                row.update(outcome='uncertain', reason='plain worktree removal pending')
+                section['worktrees_removed'].append(row)
+                save()
+                check_handoff_source(candidate)
+                code, _, error = git_read(main, 'worktree', 'remove', directory)
+                row['checks']['plain_removal'] = code == 0
+                if code:
+                    raise ValueError(error or 'plain worktree removal failed')
+                removed_paths.add(directory)
+                row.update(outcome='removed', reason='clean branch contained in pushed trunk')
+                # Compare-and-delete preserves a concurrently moved branch.
+                code, _, error = git_read(main, 'update-ref', '-d',
+                    'refs/heads/' + row['branch'], row['commit'])
+                row['branch_deleted'] = code == 0
+                if code:
+                    row['branch_error'] = error or 'local branch deletion failed'
+                save()
+            except (ValueError, OSError) as exc:
+                row.update(outcome='kept', reason=str(exc))
+                if row in section['worktrees_removed']:
+                    section['worktrees_removed'].remove(row)
+                section['worktrees_kept'].append(row)
+                temporary = {'asks_raised': []}
+                add_ask(temporary, candidate, 'Keep worktree ' + directory + ': ' + str(exc),
+                        ['review worktree', 'leave it'], str(exc), ask)
+                failure = temporary['asks_raised'][0]
+                failure['directory'] = directory
+                section['asks_raised'].append(failure)
+                send_ask(failure)
+                save()
         for candidate in discovery['candidates']:
             if candidate['directory'] != directory or not candidate['abandoned']:
                 continue
@@ -635,7 +763,7 @@ def execute_act(report, discovery, plan, ask, reader, config, path):
             outcomes = [r for r in section['filing_outcomes'] if r['source_handoff'] == source]
             asks = [r for r in section['asks_raised'] if r['source_handoff'] == source]
             initial_check = candidate.get('archive_worktree_check')
-            live_check = archive_worktree_check(candidate)
+            live_check = (initial_check if directory in removed_paths else archive_worktree_check(candidate))
             clean = all(check is None or check['clean'] for check in (initial_check, live_check))
             archived = (clean and not candidate['handoff'].get('uncommitted_files') and
                         all(r['outcome'] in ('written', 'dropped') for r in outcomes) and
@@ -715,11 +843,21 @@ def main(argv=None):
     try:
         config = settings()
         checks = read_open_sessions(args.open_sessions)
-        if args.interactive and args.open_sessions is None:
+        if args.interactive and args.open_sessions is None and not config['open_session_checks']:
             raise ValueError('interactive sweep requires open-session inspection evidence, including an empty result')
         with store_lock():
             started = datetime.now(timezone.utc)
+            checks = open_session_checks(config, checks)
+            history = read_ask_history(config)
             discovery = discover(args.scope, config, started)
+            discovery['idle_days'] = config['idle_days']
+            discovery['open_session_checks'] = checks
+            for check in checks['results']:
+                if check['outcome'] == 'failed':
+                    discovery['errors'].append(dict(check, reason='open-session check failed; no session counts as abandoned'))
+            for candidate in discovery['candidates']:
+                if checks['failed'] or candidate['session_id'] in checks['session_ids']:
+                    candidate['abandoned'] = False
             if args.command == 'inspect':
                 print(json.dumps(discovery, indent=2))
                 return 0
@@ -733,7 +871,7 @@ def main(argv=None):
             profiles = [checklist.load_profile(profile_path)] if profile_path else []
             plan = checklist.compose(profiles)
             ask = checklist.ask_binding(profiles[0]) if profiles else None
-            report = build_report(discovery, rows, plan, ask, checks, args.interactive, started)
+            report = build_report(discovery, rows, plan, ask, checks, args.interactive, started, history)
             destination = Path(config['report_location']).expanduser().resolve()
             store = Path(handoff.state_dir()).resolve()
             if destination == store or store in destination.parents:
@@ -744,7 +882,7 @@ def main(argv=None):
                 handle.write(render_report(report))
             if config['mode'] == 'act':
                 execute_act(report, discovery, plan, ask,
-                            checklist.record_read_binding(profiles[0]) if profiles else None, config, path)
+                            checklist.record_read_binding(profiles[0]) if profiles else None, config, path, history)
             print(path)
         return 0
     except RuntimeError as exc:
