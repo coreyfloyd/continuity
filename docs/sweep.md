@@ -198,6 +198,9 @@ are moves, preserve file bytes, and occur only after every item is filed or
 dropped and all asks succeeded. A delivered ask does not clear dirty work.
 Repository status must be clean both at planning and after bindings finish,
 including main checkouts and handoffs naming subdirectories; failed status
-reads keep the source. Worktree removal and configured open-session
+reads keep the source. Discovery also snapshots source bytes and file metadata;
+formatting-only rewrites, same-byte rewrites and file replacement keep the
+source, even when parsed JSON is unchanged. The snapshot is checked again
+immediately before the archive move. Worktree removal and configured open-session
 commands remain separate integration work; act does not remove worktrees or
 local branches. Open-session evidence still protects every listed session.

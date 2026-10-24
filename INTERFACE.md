@@ -522,6 +522,9 @@ An archive is a byte-preserving move after all items were written or dropped,
 with no recorded or observed uncommitted files or unsuccessful asks.
 Repository status is checked at planning and again after bindings; a dirty
 or unreadable status keeps the source even after a successful ask write.
-Existing archive names are preserved; a collision receives a run-id prefix. Source changes detected before
-the move keep the handoff. Reports retain each rule, identity, destination,
+Existing archive names are preserved; a collision receives a run-id prefix.
+Discovery captures a digest of source bytes and file identity, size and
+modification/change times. These must still match before the move, including
+a final check after the report is flushed; an equal-JSON rewrite is a change
+and keeps the handoff. Reports retain each rule, identity, destination,
 outcome, receipt and error for consumers and later reversal support.

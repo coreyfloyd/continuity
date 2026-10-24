@@ -122,6 +122,28 @@ def transcript_index(home, codex_home):
     return found
 
 
+def read_handoff_source(path):
+    """Capture bytes and file identity from one stable read, without rewriting."""
+    if path.is_symlink():
+        raise ValueError('handoff is a symbolic link; left in place')
+    fields = ('st_dev', 'st_ino', 'st_size', 'st_mtime_ns', 'st_ctime_ns')
+    with path.open('rb') as handle:
+        before = os.fstat(handle.fileno())
+        content = handle.read()
+        after = os.fstat(handle.fileno())
+    if any(getattr(before, field) != getattr(after, field) for field in fields):
+        raise ValueError('handoff changed while reading; left in place')
+    return content, {'sha256': hashlib.sha256(content).hexdigest(),
+                     **{field: getattr(after, field) for field in fields}}
+
+
+def check_handoff_source(candidate):
+    """Equal JSON is insufficient: any byte or file-identity change keeps it."""
+    _, current = read_handoff_source(Path(candidate['path']))
+    if current != candidate['source_snapshot']:
+        raise ValueError('handoff changed since discovery')
+
+
 def discover(scope, config, now):
     store = Path(handoff.state_dir()).resolve()
     scoped = None if scope == 'all' else handoff.canonical_subject(scope)
@@ -137,9 +159,8 @@ def discover(scope, config, now):
         return result
     for path in sorted(store.glob('*.json')):
         try:
-            if path.is_symlink():
-                raise ValueError('handoff is a symbolic link; left in place')
-            data = json.loads(path.read_text())
+            source_bytes, source_snapshot = read_handoff_source(path)
+            data = json.loads(source_bytes)
             errors, _ = handoff.lint_data(data)
             if errors:
                 raise ValueError('; '.join(errors))
@@ -169,7 +190,7 @@ def discover(scope, config, now):
             result['candidates'].append({'path': str(path), 'directory': directory or 'unknown directory',
                 'session_id': session or path.stem, 'activity_at': activity, 'idle_seconds': idle,
                 'abandoned': idle > config['idle_days'] * 86400,
-                'items': items, 'handoff': data})
+                'items': items, 'handoff': data, 'source_snapshot': source_snapshot})
         except (OSError, ValueError, TypeError, AttributeError) as exc:
             result['errors'].append({'path': str(path), 'reason': str(exc)})
     return result
@@ -628,8 +649,7 @@ def execute_act(report, discovery, plan, ask, reader, config, path):
             if archived:
                 try:
                     original = Path(source)
-                    if original.is_symlink() or json.loads(original.read_text()) != candidate['handoff']:
-                        raise ValueError('handoff changed since discovery')
+                    check_handoff_source(candidate)
                     target = original.parent / 'archive'
                     if target.is_symlink():
                         raise ValueError('archive is a symbolic link')
@@ -640,6 +660,7 @@ def execute_act(report, discovery, plan, ask, reader, config, path):
                     row.update(destination=str(target), outcome='uncertain', reason='archive move pending')
                     section['handoffs_archived'].append(row)
                     save()
+                    check_handoff_source(candidate)
                     original.rename(target)
                     row.update(outcome='archived', reason='every item filed or dropped')
                 except (ValueError, OSError) as exc:

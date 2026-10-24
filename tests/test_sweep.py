@@ -734,6 +734,24 @@ elif op == 'read_item':
 else:
     if behavior.get('dirty_file'):
         pathlib.Path(behavior['dirty_file']).write_bytes(pathlib.Path(request['source_handoff']).read_bytes())
+    if behavior.get('rewrite_source'):
+        source = pathlib.Path(request['source_handoff'])
+        original = source.read_bytes()
+        data = json.loads(original)
+        mode = behavior['rewrite_source']
+        if mode == 'formatting':
+            source.write_text(json.dumps(data, indent=2))
+        elif mode == 'key-order':
+            source.write_text(json.dumps(dict(reversed(list(data.items())))))
+        elif mode == 'same-bytes':
+            source.write_bytes(original)
+        elif mode == 'replacement':
+            temporary = source.with_suffix('.replacement')
+            temporary.write_bytes(original)
+            temporary.replace(source)
+        elif mode == 'new-content':
+            data['resume']['next_action'] += ' updated'
+            source.write_text(json.dumps(data))
     if behavior.get('require_journal'):
         reports = list((root / 'reports').glob('*.md'))
         current = max(reports, key=lambda p: p.stat().st_mtime_ns).read_text()
@@ -1085,3 +1103,65 @@ def test_archive_keeps_unreadable_worktree_status(sandbox):
     assert not section['handoffs_archived']
     assert path.exists()
     assert 'worktree status unavailable' in section['handoffs_kept'][0]['reason']
+
+
+
+@pytest.mark.parametrize('rewrite', ['formatting', 'key-order', 'same-bytes', 'replacement', 'new-content'])
+def test_archive_keeps_any_source_rewritten_after_discovery(sandbox, rewrite):
+    path = source(sandbox)
+    original = path.read_bytes()
+    profile = act_profile(sandbox, {'rewrite_source': rewrite})
+    args = decisions(sandbox, [new_work()])
+
+    _, data = report(sandbox, *args, '--user-profile', str(profile))
+
+    section = data['directories'][str(sandbox[0])]
+    assert section['filing_outcomes'][0]['outcome'] == 'written'
+    assert not section['handoffs_archived']
+    assert section['handoffs_kept'][0]['error'] == 'handoff changed since discovery'
+    assert path.exists()
+    if rewrite in ('formatting', 'key-order'):
+        assert path.read_bytes() != original
+        assert json.loads(path.read_bytes()) == json.loads(original)
+    elif rewrite in ('same-bytes', 'replacement'):
+        assert path.read_bytes() == original
+    else:
+        assert json.loads(path.read_bytes()) != json.loads(original)
+
+
+@pytest.mark.parametrize('guard', ['pending-item', 'unbound-ask', 'recorded-files',
+                                   'open-session', 'recent-session', 'unbound-record'])
+def test_archive_other_retention_conditions_remain_independent(sandbox, guard):
+    path = source(sandbox)
+    profile = act_profile(sandbox)
+    if guard == 'unbound-ask':
+        data = json.loads(profile.read_text())
+        data.pop('ask')
+        profile.write_text(json.dumps(data))
+    elif guard == 'unbound-record':
+        data = json.loads(profile.read_text())
+        data['bindings']['record'] = None
+        profile.write_text(json.dumps(data))
+    elif guard == 'recorded-files':
+        data = json.loads(path.read_text())
+        data['uncommitted_files'] = [str(sandbox[0] / 'changed.txt')]
+        path.write_text(json.dumps(data))
+        os.utime(path, (time.time() - 5 * 86400,) * 2)
+    entry = ({'rule': 'R3', 'destination': 'ask', 'choices': ['approve', 'decline']}
+             if guard == 'unbound-ask' else
+             {'rule': 'R7', 'destination': 'README.md'} if guard == 'unbound-record' else new_work())
+    args = [] if guard == 'pending-item' else decisions(sandbox, [entry])
+    if guard == 'open-session':
+        evidence = sandbox[0] / 'open.json'
+        evidence.write_text(json.dumps({'session_ids': ['source'], 'method': 'isolated evidence'}))
+        args.extend(['--open-sessions', str(evidence)])
+    if guard == 'recent-session':
+        os.utime(path, None)
+    before = path.read_bytes()
+
+    _, data = report(sandbox, *args, '--user-profile', str(profile))
+
+    assert path.read_bytes() == before
+    assert not any(section['handoffs_archived'] for section in data['directories'].values())
+    if guard in ('open-session', 'recent-session', 'pending-item'):
+        assert not calls(sandbox)
