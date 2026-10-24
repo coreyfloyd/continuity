@@ -69,7 +69,7 @@ The fixed, ordered table that decides what each carried item becomes: dropped wi
 _Avoid_: disposition (an open loop's own instruction), triage
 
 **Ask**:
-An item only the user can resolve: a decision, an approval, a destructive action, or a session left open. The package hands each ask to the user's ask binding, one configured command that is not a spine step. With nothing bound, an ask stays in the sweep report and its handoff is kept.
+An item only the user can resolve: a decision, an approval, a destructive action, or a session left open. The driving agent hands each ask to the user's ask binding, one configured command that is not a spine step. With nothing bound, an ask stays in the sweep report and its handoff is kept.
 _Avoid_: question, needs-you item
 
 **Abandoned session**:

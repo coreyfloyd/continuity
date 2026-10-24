@@ -452,128 +452,140 @@ the record. It validates response structure; the calling agent must also check
 that the response covers the requested references and reflects the requested
 session. A structural verdict cannot establish record accuracy or completeness.
 
-## 12. Sweep act binding protocol
+## 12. Sweep plan and results contract
 
-The shared sweep command defaults to watch-only. A user enables execution with
-`sweep.mode: "act"` in continuity configuration. `--user-profile` overrides
-`CHECKLIST_USER_PROFILE`, then `$XDG_CONFIG_HOME/checklist/profile.md` (default
-`~/.config/checklist/profile.md`). Only that user profile supplies bindings.
-See [sweep usage](docs/sweep.md) for discovery and identity-bound decisions.
+The shared command defaults to watch-only. `sweep.mode: "act"` enables planning
+when `run` receives `--decisions`. Without decisions it writes a watch-only
+inventory, even with act configured. The agent performs every profile binding
+call, following its `command` and `instructions` as during a checklist wrap.
+The package never executes record, record-read, slot or ask bindings. Skill
+commands need no executable adapter or JSON stdin/stdout protocol.
+`--user-profile` overrides `CHECKLIST_USER_PROFILE`, then
+`$XDG_CONFIG_HOME/checklist/profile.md` (default `~/.config/checklist/profile.md`).
+Only the user profile supplies bindings.
 
-In act mode, binding commands are executable argument strings parsed with shell
-quoting rules, **without a shell**. A slash skill name needs a user-owned command
-adapter before it can serve this protocol. Commands receive one JSON object on
-stdin and print one JSON object on stdout; diagnostics go to stderr. No package
-code contacts a particular record service. `sweep.binding_timeout_seconds` is a
-positive finite number, default 30. Watch-only never executes these commands.
+### Plan, perform, complete
 
-Every request contains `operation`, `identity`, `session_id`, `directory`,
-`text`, and `source_handoff`. `identity` is exactly the producing `session_id`,
-`produced_at`, and `text` from inspection; it never contains an array index.
-The top-level `session_id` is the producer, while `source_handoff` identifies
-the current carrier. Read queries also contain `destination` (possibly null).
-Every write additionally contains `rule` and `destination`.
+```bash
+python3 scripts/lib/sweep.py run --scope all --decisions /example/decisions.json --user-profile /example/profile.md
+python3 scripts/lib/sweep.py complete --run-id <run-id> --results /example/results.json
+```
 
-| Operation | User binding | Additional input | Success output |
-|---|---|---|---|
-| `read_item` | `record_read.command` | named `destination` | `{"present":true,"open":true}`; both values must be booleans |
-| `search_open` | `bindings.record.command` | item text and context above | `{"matches":["work:17"]}`; distinct nonempty open-ticket references, empty only after a successful search |
-| `identity_exists` | record or ask command, matching the intended write | unchanged item identity | `{"exists":false}`, or `{"exists":true,"receipt":"ack","destination":"work:17"}` |
-| `create_ticket` | record command | `priority`, `priority_reason` | write acknowledgement below |
-| `comment` | record command | destination ticket | write acknowledgement below; inherits the target's priority |
-| `edit_document` | record command | destination document | write acknowledgement below |
-| `file_slot` | record command | destination `lessons` or `knowledge`, plus `slot` containing that profile binding | write acknowledgement, or `{"status":"pending","reason":"needs user"}` |
-| `ask` | ask command | `ticket` or null and nonempty `choices` | write acknowledgement below |
+Act `run` validates the agent's decisions, journals every planned write with
+outcome `intent`, and returns JSON containing `run_id`, `report`, `phase` and
+`work`. No archive or worktree removal happens at this step. Each work entry
+contains a stable `write_id`, `operation`, unchanged `identity`, producing
+`session_id`, `directory`, `source_handoff`, `text`, `rule` and `destination`.
+Identity consists of the producing session, production time and text, never
+position. A successor keeps the original identity. Per-operation fields are:
 
-The record adapter passes `file_slot` work to the named slot and acknowledges
-only saved work. Pending slot work becomes an ask; an unbound slot or record
-adapter also routes that item to the ask binding. The sweep itself never starts
-a slot command outside the record adapter. An ask is never a ticket.
+| Operation | Agent uses | Additional fields |
+|---|---|---|
+| `create_ticket` | record binding | `priority`, `priority_reason` |
+| `comment` | record binding | destination ticket; inherits its priority |
+| `edit_document` | record binding | destination document |
+| `file_slot` | named slot binding | `slot`: `lessons` or `knowledge` |
+| `ask` | ask binding, or direct presentation for interactive open sessions | `ticket` (possibly null), `choices`; open sessions also carry `activity_at` |
 
-A successful write prints `{"status":"written","receipt":"ack","destination":"work:17"}`
-with nonempty string receipt and destination. A known rejection prints
-`{"status":"failed","error":"reason"}` and must mean **no write occurred**.
-A timeout, nonzero exit, missing or malformed acknowledgement is `uncertain`:
-the process might have completed its write. A failed, unsupported, unbound or
-malformed read is `read failed`, never absence. R1 already-recorded drops require
-`present:true`; R2 requires `open:true`. Information-only R1 needs no record read.
+R1/R2 reads use the profile's `record_read`; the agent searches open tickets
+through the record binding before choosing R5. One match becomes R2 and its
+`destination` names that match; several become R3 with choices listing the
+candidates. The engine treats `read_status: "ok"` as agent evidence, without
+performing a read or search. Missing, failed, unsupported or malformed reads
+remain `read failed`, never absence. Information-only R1 needs no read.
 
-The engine queries `identity_exists` before each write, including every retry
-and a successor carrying the same item. Existence must be durable and cover
-all writes performed by that binding, not just currently open tickets.
-Bindings **must atomically deduplicate writes by identity**, including concurrent
-or delayed completion after a timeout. An existence query failure blocks the
-write. An existing identity returns its original receipt and destination and
-is reported as `already_written`; it is not counted as new this run. The report
-journals uncertain intent before invoking a write, and flushes each result.
-No handoff is rewritten to track outcomes.
+The agent supplies one result per `write_id` in a JSON array:
 
-Before creating a ticket, `search_open` always runs, regardless of supplied
-agent judgments. One match changes R5 to R2 and names the match in the report;
-multiple matches become an R3 ask whose choices list the references. No match
-permits creation with priority and reason. The per-run limit counts confirmed
-creations and reserves capacity for uncertain creations. On reaching it,
-unfiled items stay in their handoffs and the ask identifies affected directories.
-The limit is global across directory sections, not reset per directory.
+```json
+[{"write_id":"<from-work>","status":"written","receipt":"<binding-receipt>","destination":"<actual-destination>"}]
+```
 
-Act execution changes only its report, record and ask destinations through
-their bindings, open-session ask activity records beside reports, archive moves,
-and eligible linked worktrees and their local branches. Worktree status and
-pushed-trunk containment are rechecked before plain removal. Protection includes
-all related handoffs, including subdirectory subjects: recorded uncommitted work,
-kept items or asks, changed sources, and open or active sessions veto removal.
-All directories finish filing before removal decisions; each worktree gets at
-most one removal attempt. Archives follow all removal decisions. Local branch
-compare-and-delete follows successful removal. Remote branches are unchanged.
-Configured read-only open-session commands print whitespace-separated ids;
-any command failure prevents abandonment for the entire scope. An open-session
-ask includes `activity_at`, the newest handoff/transcript write time. Successful
-asks are suppressed until newer activity. Interactive choices appear directly
-in the report instead of invoking the ask binding. No operation reads an ask's
-answer. See [sweep configuration](docs/sweep.md#configuration) for the check contract.
-An archive is a byte-preserving move after all items were written or dropped,
-with no recorded or observed uncommitted files or unsuccessful asks.
-Repository status is checked at planning and again after bindings; a dirty
-or unreadable status keeps the source even after a successful ask write.
-Existing archive names are preserved; a collision receives a run-id prefix.
-Discovery captures a digest of source bytes and file identity, size and
-modification/change times. These must still match before the move, including
-a final check after the report is flushed; an equal-JSON rewrite is a change
-and keeps the handoff. Reports retain each rule, identity, destination,
-outcome, receipt and error for consumers and later reversal support.
+| Status | Meaning and required fields |
+|---|---|
+| `written` | Confirmed write by this run; nonempty `receipt` and `destination` |
+| `already_written` | Identity found before writing; original `receipt` and `destination` |
+| `failed` | No write occurred; `error` |
+| `uncertain` | Write may have occurred; optional `error` |
 
+A missing result is `uncertain`. Missing or malformed acknowledgements and
+lost replies must never be reported as failed. The engine flushes each result
+into the report before post-filing work. Failed and uncertain items keep their
+handoffs. Results cannot overwrite already recorded outcomes. A later run
+resolves uncertain writes through identity lookup. `already_written` does not
+count as new this run and does not belong to this run's undo journal.
+
+If a slot leaves work pending without writing, return `failed` with `pending:
+true` and an error. Completion journals an ask for that item. If worktree
+checks fail after the plan, completion likewise journals a new ask. In either
+case it returns `phase: "planned"` with the expanded work list: perform only
+new `intent` entries and call `complete` again. Archive waits for those results.
+The global new-ticket limit (default 10) reserves a place for each planned
+creation across all directories. Excess items stay unfiled and one ask names
+the affected directories. This conservatively counts failed or preexisting
+creations against that plan's capacity too.
+
+### Binding identity obligation
+
+Record and ask bindings store the unchanged item identity with every write,
+with its original receipt, destination and originating run id. The agent asks
+the appropriate binding whether that identity exists **before every write**,
+including retries, slots, asks and successor handoffs. An existing identity
+becomes `already_written`; a failed lookup blocks the write. The identity
+index covers all writes, including closed destinations, and must prevent
+concurrent or delayed writes with the same identity. Never change an existing
+write's ownership to the current run. Keep preimages needed for document or
+slot reversal under the receipt. These obligations name no record service.
+
+### Store reservation and completion safeguards
+
+Each command acquires the exclusive nonblocking lock on the handoff store's
+directory inode (or nearest existing ancestor). Before an act plan returns,
+it also saves a store-scoped reservation report pointer beside the store,
+`.<store-name>.sweep-pending.json`. This survives the command exiting and a
+change of configured report location. A later `run`, undo or retention exits
+with `already running` until the reserved run completes; `inspect` remains
+read-only. `complete` follows that pointer and accepts only its owning run id.
+After recording all results and finalizing the run it releases the reservation.
+To recover an interrupted plan, complete that run with known receipts and
+`uncertain` for unknown writes. Do not discard its reservation or intents.
+
+Completion rechecks handoff byte/file snapshots, current repository status,
+open-session checks, and newly discovered sibling handoffs. Recorded dirty
+files, retained items or asks, changed sources, active or open sessions veto
+worktree removal. Each worktree gets at most one plain removal attempt;
+successful removal precedes compare-and-delete of its local branch at its
+observed commit. Remote refs are never changed. Archives are byte-preserving
+moves, after every item is filed or dropped and every ask confirmed, with no
+recorded or observed uncommitted files. Name collisions preserve existing
+archives. See [sweep usage](docs/sweep.md) for the full worktree safeguards.
 
 ### Reversing a sweep run
 
-Act writes also include `run_id`. Adapters persist the originating run id with
-identity and receipt; a later `identity_exists` response for an uncertain write
-must include that original `run_id`. Identity reuse must never change ownership.
-The act report includes `undo_items` containing only this run's attempted record
-writes and archive moves; already-recorded identities and asks are excluded.
-A known failed write is excluded from reversal; an uncertain write requires a
-successful ownership lookup before a reverse request can be sent.
+```bash
+python3 scripts/lib/sweep.py undo --run-id <act-run-id> --user-started
+python3 scripts/lib/sweep.py complete-undo --run-id <act-run-id> --results /example/reversals.json
+```
 
-`reverse` uses `bindings.record.command`, with the original identity,
-`session_id`, `directory`, `text`, `source_handoff`, `destination`, `receipt`,
-`run_id`, and `write_operation` (`create_ticket`, `comment`, `edit_document`, or
-`file_slot`). The adapter retains the original write and any document preimage
-under its receipt. It must **atomically check and reverse**: if the target has
-changed after the run (including later comments or edits on a created ticket,
-or a later edit to a document), return `{"status":"conflict","reason":"..."}`
-without changing anything. For unchanged targets, close a created ticket as not
-planned, remove the run's comment, or revert exactly the run's document/slot
-edit, and return `{"status":"reversed"}`. Never close an existing ticket.
-When reversal is unavailable, return `{"status":"failed","reason":"..."}`.
-An unbound command, timeout, process failure, unsupported operation or malformed
-reply is also failed and reported. The adapter must deduplicate reversals by
-`run_id` and `receipt` and acknowledge an already reversed write as `reversed`;
-this handles a crash or lost reply after the remote change. Checking for newer
-work in a separate query is insufficient because it would race with reversal.
+Only an explicit user request starts undo. Planning returns a journaled work
+list of confirmed record/slot writes belonging to that run, plus
+`archive_restorations`; it performs no reversal or restoration. Asks and
+preexisting identities are excluded. The agent checks each target immediately
+before reversing it through its profile binding. For an unchanged target,
+close a ticket this run created as not planned, remove its comment, or restore
+its document/slot preimage. Never close an existing ticket. A later comment or
+edit on a created ticket, or a later document edit, is a `conflict` and must
+remain unchanged. A change made **between the check and the reversal is not
+detected**. Bindings need not check and reverse atomically.
 
-Only user-started `undo --run-id <id> --user-started` invokes this protocol.
-Undo never invokes the ask binding or the original write operation. Its durable
-report retries only failed rows and retains reversed/conflict rows. Archive
-restoration is exclusive and checks the recorded snapshot; a newer handoff at
-the source path stays untouched. Worktree and local branch removal cannot be
-undone. Optional retention is a separate operation, off by default, deleting
-only strictly old regular archive handoffs; see [usage](docs/sweep.md#undo-and-retention).
+Reversal results are an array of `write_id`, `status` (`reversed`, `conflict`
+or `failed`), and a reason/error when needed. Missing results are failed.
+Undo also reserves the store between plan and completion; repeating a pending
+undo returns that same work list. Completion flushes results and exclusively
+restores archive snapshots, never
+overwriting a newer handoff or a changed archive. The undo report is
+`<run-id>.undo.md`; rerunning undo retries only failed items. Reversals use
+the original run id and receipt so an already completed reversal can be
+acknowledged after a lost reply. Worktree removal and local branch deletion
+cannot be undone. Asks and their activity history remain delivered. Optional
+retention remains a separate operation, off by default; see
+[usage](docs/sweep.md#undo-and-retention).

@@ -33,8 +33,9 @@ Add a `sweep` object to the existing continuity configuration file resolved by
 }
 ```
 
-`mode` defaults to `watch-only`; the user can switch it to `act` to execute
-filing through their bindings and move completed handoffs to the archive. `idle_days` is a non-negative finite number. `report_location` is a
+`mode` defaults to `watch-only`; the user can switch it to `act` to plan
+filing for an agent to perform through their bindings, then complete the run
+and move handled handoffs to the archive. `idle_days` is a non-negative finite number. `report_location` is a
 directory; absent, reports go to `sweep-reports` beside the resolved handoff
 store. A report location inside the handoff store is rejected. The handoff
 store itself follows `HANDOFF_STATE_DIR`, then `handoff_dir`, then the existing
@@ -98,8 +99,8 @@ candidate's path), copies `identity` unchanged, and supplies the checklist
 filing fields: `rule`, `destination`, `reason`, `choices`, `read_status`,
 `information_only`, `priority`, `priority_reason`, and `error` as applicable.
 The engine uses the checklist's filing validator and binding resolution,
-without executing the bindings in watch-only mode. Act mode additionally
-verifies reads and executes the [binding protocol](../INTERFACE.md#12-sweep-act-binding-protocol). Untyped legacy items use the same fields for
+without executing bindings in any mode. The agent performs the reads and all
+binding calls under the [plan/results contract](../INTERFACE.md#12-sweep-plan-and-results-contract). Untyped legacy items use the same fields for
 every rule. For R4, `destination: "lessons"` or `"knowledge"` supplies the agent's
 classification to the validator using a temporary typed copy; the report keeps
 the original item and its identity. R4 with `destination: "ask"` routes pending
@@ -109,8 +110,8 @@ reported. R1/R2/R5 reads must succeed; failed or unsupported reads remain
 `read failed`, never evidence that no ticket exists. Missing decisions stay
 `pending judgment`. Stale and unknown decisions fail explicitly, as do multiple
 decisions for an identity that occurs only once in its source handoff.
-A direct run without decisions remains useful as an inventory and archives
-no handoff carrying undecided items.
+A direct run without decisions is a watch-only inventory even with act
+configured: it archives no handoff and removes no worktree.
 
 Unattended runs never request input. With no configured checks, interactive runs require `--interactive
 --open-sessions /example/open.json` on both commands. This evidence object has
@@ -122,7 +123,8 @@ sessions with their idle time. The skill presents the choices `wrap it`,
 waits for those choices nor acts on them. An open or recently active session
 also protects a worktree from removal, including when its directory is inside
 that worktree. In act mode an idle open session raises one ask, or presents the
-choice directly in an interactive report without invoking the ask binding.
+choice directly through the driving agent without invoking the ask binding.
+The agent returns a receipt for that presentation in completion.
 `open-session-asks.json` beside the reports records session ids and the activity
 at which asks succeeded or choices were presented. A later run suppresses that
 ask until a newer handoff or transcript write. Unbound or failed writes retry;
@@ -134,7 +136,8 @@ inode before discovering candidates. It writes no lock file; when the store
 is absent it locks the nearest existing ancestor conservatively. A concurrent
 sweep over the same store exits 2 with `already running` and writes nothing.
 Other command/configuration failures exit 1. Successful inspect/run exits 0;
-a successful run prints its report path. Source parse failures appear inside
+a watch-only run prints its report path. An act plan or completion prints JSON
+with its report path, run id, phase and work list. Source parse failures appear inside
 the report, so they do not prevent reporting the remaining sources. An item's
 planning or validation failure also stays in the report: its outcome is `failed`,
 with the source item, unchanged identity, chosen rule/destination and error. Its
@@ -179,7 +182,7 @@ A run with no work still writes a report with `nothing_to_do: true` and
 The package ships no scheduler. For example, a user-owned cron entry can run a
 local agent driver daily. Replace the paths with an installed package and your
 existing unattended driver; the driver invokes the sweep skill and supplies
-its read-only judgments:
+its judgments, performs binding calls, and supplies their results to completion:
 
 ```cron
 0 3 * * * /absolute/path/to/agent-driver 'Use the sweep skill with scope all unattended'
@@ -192,6 +195,9 @@ command directly instead:
 0 3 * * * /usr/bin/python3 /absolute/path/to/continuity/scripts/lib/sweep.py run --scope all
 ```
 
+Scheduled act runs require this agent driver; the direct command without
+decisions remains a watch-only inventory even when act is configured.
+
 The driver's environment must resolve the same configuration and local handoff
 store as interactive use. No session, transcript, handoff, binding destination,
 or worktree is modified by either watch-only route. Review real-directory
@@ -199,19 +205,54 @@ reports and their rule choices before switching configuration to act mode.
 
 ## Act mode
 
-The same `inspect` and `run` commands work when configuration selects `act`.
-Inspect remains read-only. Run executes only successfully validated decisions;
-missing judgments and read failures keep their handoffs. Commands must implement
-the protocol in [INTERFACE.md](../INTERFACE.md#12-sweep-act-binding-protocol);
-existing interactive skill names need an executable adapter.
+Act mode needs an agent. `inspect` stays read-only; `run --decisions` journals
+validated write intents before returning a machine-readable plan. It performs
+no binding call, archive or removal. Missing judgments and read failures keep
+their handoffs. The driving agent follows the profile's existing `command` and
+`instructions` for each binding, as during wrap. No executable adapter or
+binding stdin/stdout protocol is required.
 
-Act reports list actual outcomes. `new_tickets` is **new this run**, with priority
-and reason; `comments_added` names matching tickets; `unfiled_items` names retained
-work and errors. `already_written` receipts resolve retries without another
-write. Unknown write results stay `uncertain` and keep the handoff. Record and
-ask identity queries run before retries, including after lost acknowledgements.
-The default new-ticket limit is 10 across the entire run; uncertain creations
-reserve a place. The tripwire asks for user review and leaves excess work unfiled.
+```bash
+python3 scripts/lib/sweep.py run --scope all --decisions /example/decisions.json --user-profile /example/profile.md
+python3 scripts/lib/sweep.py complete --run-id <run-id> --results /example/results.json
+```
+
+The plan includes stable write ids, operations, identities, sources and
+operation fields. The agent performs record reads and the open-ticket search
+before choosing R5: one match becomes R2, several become an R3 ask. Successful
+`read_status` is agent evidence; the engine does not repeat the read or search.
+Before every write the agent checks the record or ask binding's durable identity
+index. Bindings store the identity with each write, covering closed destinations
+and successor handoffs, and prevent concurrent or delayed duplicates. Found
+identities return `already_written` with their original receipt and destination.
+A failed identity lookup blocks writing.
+
+Completion takes an array of write ids and results: `written` or
+`already_written` (receipt and destination), `failed` (error, no write occurred),
+or `uncertain`. Missing results are uncertain. It flushes each result, rechecks
+sources and repository/session protections, attempts worktree removals, and
+archives only fully handled sources. If a slot leaves work pending, report
+`failed` with `pending: true` and its error. Completion journals the follow-up
+ask. A newly failed worktree check also adds an ask. In either case completion
+returns `phase: "planned"`: the agent performs the new `intent` entries and
+completes the same run again. `phase: "completed"` ends the run.
+
+Every command takes the store lock. Between act planning and completion a
+durable report pointer beside the store (`.<store-name>.sweep-pending.json`)
+reserves that entire store. Later runs, undo and retention exit `already running`
+even if report configuration changes. Inspect remains available. Recover by
+completing the reserved run with known results and uncertain for unknowns; do
+not delete its intents or reservation. The reservation is released only after
+finalization. This prevents a second run from filing the same planned item or
+archiving it before the first run's results arrive.
+
+`new_tickets` is **new this run**, with priority and reason; `comments_added`
+names matching tickets; `unfiled_items` names retained work and errors. The
+default new-ticket limit is 10 across the entire run. Each planned creation
+reserves capacity, conservatively including failures, unknown results and
+identities later found to exist. One tripwire ask names affected directories
+and leaves excess work unfiled. Unknown results keep their source until a later
+run's identity lookup resolves them.
 
 Asks carry the original item identity and producer, directory, linked ticket,
 and choices. An unbound or failed ask keeps its handoff. Uncommitted-files asks
@@ -255,21 +296,30 @@ python3 scripts/lib/sweep.py undo --run-id <act-run-id> --user-started --user-pr
 python3 scripts/lib/sweep.py retention
 ```
 
-These commands need no scope. Undo uses the original act report in the configured
-report directory and the current user profile's record binding. Retention is a
-separate, schedulable command and never runs implicitly during inspect, watch-only,
-act, or undo. Both acquire the same handoff-store lock as a sweep.
+These commands need no scope. Undo is planned separately from completion:
 
-Each act report durably journals its own record-write intents, operations,
-identities, receipts, destinations and archive paths with byte/file snapshots.
-Writes found through an existing identity belong to their original run and are
-excluded. Asks remain delivered. Undo restores only that run's archived handoffs
-and requests `reverse` through the record binding: close a created ticket as
-not planned, remove a comment, or restore a document's prior content. Slot writes
-also require reversal through that binding. The adapter must atomically verify
-that no newer work has changed the target before reversing it; an unsupported
-reversal is reported as failed. Uncertain writes require a successful identity
-lookup confirming the original run id, destination and receipt before reversal.
+```bash
+python3 scripts/lib/sweep.py complete-undo --run-id <act-run-id> --results /example/reversals.json
+```
+
+Undo reads the completed act report and journals a reversal work list plus
+archive restorations. Planning performs no reversal or restore. Confirmed record
+and slot writes belonging to this run are included; preexisting identities,
+failed/uncertain writes and asks are excluded. The agent uses the original
+profile's bindings and checks each target immediately before reversing it:
+close a ticket the run created as not planned, remove a comment, or restore a
+document/slot preimage. A later comment or edit on a created ticket, or a later
+document edit, is a conflict and must be preserved. The check and reversal are
+separate: a change made **between them is not detected**. An atomic check and
+reverse binding is not required.
+
+The agent supplies `write_id` and `status` (`reversed`, `conflict`, `failed`)
+plus a reason/error when needed. Missing results are failed. Completion flushes
+each result and restores archives under the conflict rules. Both commands
+acquire the handoff-store lock. Undo also reserves the store between steps,
+using the same durable report pointer as act; repeating an incomplete undo
+returns its original work list. Retention remains separate and never runs
+implicitly during any sweep or undo operation.
 
 An occupied original handoff path is a conflict; it is never overwritten. An
 archive changed since the act run is also preserved. Worktree removal and local
@@ -280,7 +330,7 @@ records, delivered asks, remote branches, or unrelated record writes.
 Undo writes `<run-id>.undo.md` beside the original report. Its structured `items`
 list gives each record write and archive the outcome `reversed`, `conflict`, or
 `failed` and a reason when needed. Each outcome is flushed atomically; retries
-use the same reversal key (run id and receipt), so the adapter must return
+use the same reversal key (run id and receipt), so the binding must acknowledge
 `reversed` for an already completed reversal even after a lost response.
 Running undo again retries only failed items. Conflicts and successful reversals
 are retained without another attempt. A missing archived file, including one
