@@ -519,7 +519,11 @@ The limit is global across directory sections, not reset per directory.
 Act execution changes only its report, record and ask destinations through
 their bindings, open-session ask activity records beside reports, archive moves,
 and eligible linked worktrees and their local branches. Worktree status and
-pushed-trunk containment are rechecked before plain removal; local branch
+pushed-trunk containment are rechecked before plain removal. Protection includes
+all related handoffs, including subdirectory subjects: recorded uncommitted work,
+kept items or asks, changed sources, and open or active sessions veto removal.
+All directories finish filing before removal decisions; each worktree gets at
+most one removal attempt. Archives follow all removal decisions. Local branch
 compare-and-delete follows successful removal. Remote branches are unchanged.
 Configured read-only open-session commands print whitespace-separated ids;
 any command failure prevents abandonment for the entire scope. An open-session

@@ -1323,3 +1323,66 @@ def test_open_ask_retries_without_reading_answers(sandbox, behavior):
     _, data = report(sandbox, '--user-profile', str(profile))
     assert not data['directories'][str(sandbox[0])]['asks_raised']
     assert {c['operation'] for c in calls(sandbox)} == {'identity_exists', 'ask'}
+
+
+@pytest.mark.parametrize('order', ['protected-first', 'clean-first'])
+@pytest.mark.parametrize('mode,protection',
+    [('watch-only', kind) for kind in ('recorded-files', 'pending-item', 'open', 'recent')] +
+    [('act', kind) for kind in ('recorded-files', 'pending-item', 'failed-write', 'changed-source', 'open', 'recent')])
+@pytest.mark.parametrize('nested', [False, True])
+def test_shared_worktree_protection_is_independent_of_handoff_order(
+        sandbox, order, mode, protection, nested):
+    root, directory = archive_test_repository(sandbox, 'linked')
+    protected_dir = root / 'docs' if nested else root
+    protected_dir.mkdir(exist_ok=True)
+    protected_name, clean_name = ('a-protected', 'z-clean') if order == 'protected-first' else ('z-protected', 'a-clean')
+    source(sandbox, name=clean_name, directory=directory, loops=[])
+    protected = source(sandbox, name=protected_name, directory=protected_dir,
+                       loops=None if protection in ('pending-item', 'failed-write', 'changed-source') else [])
+    behavior = {'fail': 'ask'} if protection == 'failed-write' else (
+        {'rewrite_source': 'same-bytes'} if protection == 'changed-source' else {})
+    profile = act_profile(sandbox, behavior)
+    if protection == 'recorded-files':
+        data = json.loads(protected.read_text())
+        data['uncommitted_files'] = [str(root / 'changed.txt')]
+        protected.write_text(json.dumps(data))
+        os.utime(protected, (time.time() - 5 * 86400,) * 2)
+    if protection == 'open':
+        configure_checks(sandbox, [check_command(sandbox, 'open-shared', f'print({protected_name!r})')])
+    if protection == 'recent':
+        os.utime(protected, None)
+    config = json.loads(sandbox[2].read_text())
+    config['sweep']['mode'] = mode
+    sandbox[2].write_text(json.dumps(config))
+    args = []
+    if protection in ('failed-write', 'changed-source'):
+        args = decisions(sandbox, [{'rule': 'R3', 'destination': 'ask', 'choices': ['save', 'leave it']}])
+    _, data = report(sandbox, *args, '--user-profile', str(profile))
+    assert not data['errors'], 'the shared handoffs must be valid discovery inputs'
+    assert root.exists(), 'a sibling handoff must protect the shared worktree'
+    assert not any(s['worktrees_removed'] for s in data['directories'].values())
+    assert any(r['path'] == str(root) for s in data['directories'].values() for r in s['worktrees_kept'])
+    assert subprocess.run(['git', '-C', str(root), 'rev-parse', '--verify', 'refs/heads/feature'],
+                          capture_output=True).returncode == 0
+    if mode == 'act':
+        assert protected.exists()
+
+
+@pytest.mark.parametrize('order', ['root-first', 'child-first'])
+def test_shared_eligible_worktree_is_removed_once_and_all_handoffs_archive(sandbox, order):
+    root, directory = archive_test_repository(sandbox, 'linked')
+    child = root / 'docs'
+    child.mkdir()
+    root_name, child_name = ('a-root', 'z-child') if order == 'root-first' else ('z-root', 'a-child')
+    paths = [source(sandbox, name=root_name, directory=directory, loops=[]),
+             source(sandbox, name=child_name, directory=child, loops=[]),
+             source(sandbox, name='same-root', directory=directory, loops=[])]
+    profile = act_profile(sandbox)
+    _, data = report(sandbox, '--user-profile', str(profile))
+    removed = [r for s in data['directories'].values() for r in s['worktrees_removed']]
+    assert len(removed) == 1 and removed[0]['path'] == str(root)
+    assert not root.exists()
+    archived = [r for s in data['directories'].values() for r in s['handoffs_archived']]
+    assert {r['path'] for r in archived} == {str(p) for p in paths}
+    assert all(r['outcome'] == 'archived' for r in archived)
+    assert not any(s['handoffs_kept'] or s['worktrees_kept'] for s in data['directories'].values())

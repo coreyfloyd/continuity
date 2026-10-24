@@ -338,6 +338,29 @@ def git_read(directory, *args):
     return done.returncode, done.stdout.strip(), done.stderr.strip()
 
 
+def worktree_protection(discovery, report, checks, act=False):
+    """Gather every source's veto before planning any shared-path removal."""
+    retained = {row['path'] for section in report['directories'].values()
+                for row in section['handoffs_kept']} if not act else set()
+    if act:
+        for section in report['directories'].values():
+            for row in section['filing_outcomes'] + section['asks_raised']:
+                if row['outcome'] not in ('written', 'dropped', 'present directly to user'):
+                    retained.add(row['source_handoff'])
+    protected = {}
+    for candidate in discovery['candidates']:
+        reasons = protected.setdefault(candidate['directory'], set())
+        if not candidate['abandoned'] or candidate['session_id'] in checks['session_ids']:
+            reasons.add('another open or active session uses this worktree')
+        if candidate['handoff'].get('uncommitted_files'):
+            reasons.add('handoff lists uncommitted files: ' + candidate['path'])
+        if candidate['path'] in retained:
+            reasons.add('handoff is kept: ' + candidate['path'])
+        if candidate.get('worktree_retention_reason'):
+            reasons.add(candidate['worktree_retention_reason'])
+    return {directory: '; '.join(sorted(reasons)) for directory, reasons in protected.items() if reasons}
+
+
 def worktree_plan(candidate, protected):
     """Read-only eligibility checks, repeated immediately before plain removal."""
     directory = candidate['directory']
@@ -357,9 +380,10 @@ def worktree_plan(candidate, protected):
     reason = None
     # Subjects are canonical directories, but an active subject may be below
     # this worktree root. Compare path components, not string prefixes.
-    if any(Path(directory) == Path(active) or Path(directory) in Path(active).parents
-           for active in protected):
-        reason = 'another open or active session uses this worktree'
+    reasons = {why for active, why in protected.items()
+               if Path(directory) == Path(active) or Path(directory) in Path(active).parents}
+    if reasons:
+        reason = '; '.join(sorted(reasons))
     status, dirty, error = git_read(directory, 'status', '--porcelain', '--untracked-files=all')
     if status or dirty:
         reason = error or 'uncommitted or untracked changes'
@@ -413,8 +437,6 @@ def build_report(discovery, decisions, plan, ask, checks, interactive, started, 
               'scope': discovery['scope'], 'mode': 'watch-only', 'interactive': interactive,
               'open_session_checks': [checks], 'errors': discovery['errors'], 'directories': {}}
     asked_sessions = set()
-    protected = {c['directory'] for c in discovery['candidates']
-                 if c['session_id'] in checks['session_ids'] or not c['abandoned']}
     for candidate in discovery['candidates']:
         is_open = candidate['session_id'] in checks['session_ids']
         if not candidate['abandoned'] and not is_open and not checks.get('failed'):
@@ -465,6 +487,20 @@ def build_report(discovery, decisions, plan, ask, checks, interactive, started, 
             add_ask(section, candidate, 'Uncommitted files for session ' + candidate['session_id'] +
                     ' in ' + candidate['directory'] + ': ' + ', '.join(dirty),
                     ['keep work', 'review files'], 'handoff lists uncommitted files', ask)
+        clean_check = archive_worktree_check(candidate)
+        candidate['archive_worktree_check'] = clean_check
+        archive = (not dirty and (clean_check is None or clean_check['clean']) and
+                   all(row['outcome'] == 'dry run' for row in outcomes))
+        key = 'handoffs_archived' if archive else 'handoffs_kept'
+        section[key].append({'path': candidate['path'], 'outcome': 'dry run' if archive else 'kept',
+            'worktree_check': clean_check,
+            'destination': str(Path(candidate['path']).parent / 'archive' / Path(candidate['path']).name),
+            'reason': 'all items would be filed or dropped' if archive else 'unfiled items, unbound ask, or uncommitted files'})
+    protected = worktree_protection(discovery, report, checks)
+    for candidate in discovery['candidates']:
+        if not candidate['abandoned']:
+            continue
+        section = report['directories'][candidate['directory']]
         worktree = worktree_plan(candidate, protected)
         if worktree:
             if worktree['outcome'] == 'dry run':
@@ -474,17 +510,13 @@ def build_report(discovery, decisions, plan, ask, checks, interactive, started, 
                 section['worktrees_kept'].append(worktree)
                 add_ask(section, candidate, 'Keep worktree ' + worktree['path'] + ': ' + worktree['reason'],
                         ['review worktree', 'leave it'], worktree['reason'], ask)
-        clean_check = archive_worktree_check(candidate)
-        candidate['archive_worktree_check'] = clean_check
-        archive = (not dirty and (clean_check is None or clean_check['clean']) and
-                   all(row['outcome'] == 'dry run' for row in outcomes))
-        if worktree and worktree['outcome'] == 'kept' and ask is None:
-            archive = False
-        key = 'handoffs_archived' if archive else 'handoffs_kept'
-        section[key].append({'path': candidate['path'], 'outcome': 'dry run' if archive else 'kept',
-            'worktree_check': clean_check,
-            'destination': str(Path(candidate['path']).parent / 'archive' / Path(candidate['path']).name),
-            'reason': 'all items would be filed or dropped' if archive else 'unfiled items, unbound ask, or uncommitted files'})
+                section['asks_raised'][-1]['worktree'] = True
+                if ask is None:
+                    for row in list(section['handoffs_archived']):
+                        if row['path'] == candidate['path']:
+                            section['handoffs_archived'].remove(row)
+                            row.update(outcome='kept', reason='unbound worktree ask')
+                            section['handoffs_kept'].append(row)
     report['nothing_to_do'] = not report['directories'] and not report['errors']
     report['ended_at'] = datetime.now(timezone.utc).isoformat()
     return report
@@ -595,9 +627,10 @@ def execute_act(report, discovery, plan, ask, reader, config, path, history=None
 
     for directory, section in report['directories'].items():
         # Rebuild category arrays from actual outcomes rather than proposals.
-        synthetic_asks = [row for row in section['asks_raised'] if row not in section['filing_outcomes']]
+        synthetic_asks = [row for row in section['asks_raised']
+                          if row not in section['filing_outcomes'] and not row.get('worktree')]
         for key in ('asks_raised', 'new_tickets', 'comments_added', 'documents_changed',
-                    'items_dropped', 'worktrees_removed', 'handoffs_archived'):
+                    'items_dropped', 'worktrees_removed', 'worktrees_kept', 'handoffs_archived'):
             section[key] = []
         section['handoffs_kept'] = [row for row in section['handoffs_kept']
                                     if report['open_session_checks'][0].get('failed')]
@@ -697,15 +730,31 @@ def execute_act(report, discovery, plan, ask, reader, config, path, history=None
             if row.get('open_session') and row['outcome'] in ('written', 'present directly to user'):
                 history[row['identity']['session_id']] = row['activity_at']
                 save_ask_history(config, history)
-        protected = {c['directory'] for c in discovery['candidates']
-                     if not c['abandoned'] or c['session_id'] in report['open_session_checks'][0]['session_ids']}
-        removed_paths = set()
+    # All sections finish filing before a worktree can be removed. Include
+    # sibling sources below the worktree root, not just exact directory peers.
+    checks = report['open_session_checks'][0]
+    for candidate in discovery['candidates']:
+        try:
+            check_handoff_source(candidate)
+            initial = candidate.get('archive_worktree_check')
+            current = archive_worktree_check(candidate)
+            if any(check is not None and not check['clean'] for check in (initial, current)):
+                candidate['worktree_retention_reason'] = 'related handoff has unconfirmed clean worktree: ' + candidate['path']
+        except (ValueError, OSError) as exc:
+            candidate['worktree_retention_reason'] = 'related handoff changed or unreadable: ' + candidate['path'] + ': ' + str(exc)
+    protected = worktree_protection(discovery, report, checks, act=True)
+    removed_paths = set()
+    attempted_paths = set()
+    for directory, section in report['directories'].items():
         for candidate in discovery['candidates']:
             if candidate['directory'] != directory or not candidate['abandoned']:
                 continue
-            proposed = worktree_plan(candidate, protected)
-            if not proposed or proposed['path'] in removed_paths:
+            if directory in attempted_paths:
                 continue
+            proposed = worktree_plan(candidate, protected)
+            if not proposed:
+                continue
+            attempted_paths.add(directory)
             if proposed['outcome'] != 'dry run':
                 if not any(r['path'] == proposed['path'] for r in section['worktrees_kept']):
                     section['worktrees_kept'].append(proposed)
@@ -720,14 +769,18 @@ def execute_act(report, discovery, plan, ask, reader, config, path, history=None
                 continue
             row = proposed
             try:
-                check_handoff_source(candidate)
+                related = [c for c in discovery['candidates']
+                           if Path(directory) == Path(c['directory']) or Path(directory) in Path(c['directory']).parents]
+                for source in related:
+                    check_handoff_source(source)
                 # Resolve the main checkout before removing this linked checkout.
                 _, output, _ = git_read(directory, 'worktree', 'list', '--porcelain')
                 main = output.splitlines()[0].removeprefix('worktree ')
                 row.update(outcome='uncertain', reason='plain worktree removal pending')
                 section['worktrees_removed'].append(row)
                 save()
-                check_handoff_source(candidate)
+                for source in related:
+                    check_handoff_source(source)
                 code, _, error = git_read(main, 'worktree', 'remove', directory)
                 row['checks']['plain_removal'] = code == 0
                 if code:
@@ -754,6 +807,7 @@ def execute_act(report, discovery, plan, ask, reader, config, path, history=None
                 section['asks_raised'].append(failure)
                 send_ask(failure)
                 save()
+    for directory, section in report['directories'].items():
         for candidate in discovery['candidates']:
             if candidate['directory'] != directory or not candidate['abandoned']:
                 continue
@@ -763,7 +817,8 @@ def execute_act(report, discovery, plan, ask, reader, config, path, history=None
             outcomes = [r for r in section['filing_outcomes'] if r['source_handoff'] == source]
             asks = [r for r in section['asks_raised'] if r['source_handoff'] == source]
             initial_check = candidate.get('archive_worktree_check')
-            live_check = (initial_check if directory in removed_paths else archive_worktree_check(candidate))
+            live_check = (initial_check if any(Path(directory) == Path(root) or Path(root) in Path(directory).parents
+                                              for root in removed_paths) else archive_worktree_check(candidate))
             clean = all(check is None or check['clean'] for check in (initial_check, live_check))
             archived = (clean and not candidate['handoff'].get('uncommitted_files') and
                         all(r['outcome'] in ('written', 'dropped') for r in outcomes) and

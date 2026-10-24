@@ -225,6 +225,14 @@ formatting-only rewrites, same-byte rewrites and file replacement keep the
 source, even when parsed JSON is unchanged. The snapshot is checked again
 immediately before the archive move.
 
+Before proposing removal, the sweep gathers protection from every handoff for
+the worktree, including subjects in its subdirectories. Recorded uncommitted
+files, kept handoffs, and open or recently active sessions protect the whole
+worktree. Act mode finishes filing across every directory before gathering
+actual retention outcomes and checking all related handoff snapshots. It makes
+one removal attempt per worktree, then archives handoffs across all directories;
+removing a root does not make its subdirectory handoffs unreadable for archiving.
+
 Act mode rechecks worktree eligibility after filing, verifies the source handoff
 is unchanged, and runs plain `git worktree remove` without force. Only after it
 succeeds does it compare-and-delete the local branch at its observed commit.
