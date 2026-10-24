@@ -516,9 +516,13 @@ count as new this run and does not belong to this run's undo journal.
 
 If a slot leaves work pending without writing, return `failed` with `pending:
 true` and an error. Completion journals an ask for that item. If worktree
-checks fail after the plan, completion likewise journals a new ask. In either
-case it returns `phase: "planned"` with the expanded work list: perform only
-new `intent` entries and call `complete` again. Archive waits for those results.
+checks fail after filing, completion journals an ask from that recheck, never
+from the initial inventory's retention proposal. Open-idle-session asks likewise
+wait for refreshed session checks and activity during completion. Configured
+checks rerun without inheriting their earlier session ids; `complete` accepts
+`--open-sessions` to replace agent inspection evidence. These deferred asks and
+slot-pending asks return `phase: "planned"` with the expanded work list: perform
+only new `intent` entries and call `complete` again. Archive waits for those results.
 The global new-ticket limit (default 10) reserves a place for each planned
 creation across all directories. Excess items stay unfiled and one ask names
 the affected directories. This conservatively counts failed or preexisting

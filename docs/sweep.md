@@ -233,8 +233,13 @@ or `uncertain`. Missing results are uncertain. It flushes each result, rechecks
 sources and repository/session protections, attempts worktree removals, and
 archives only fully handled sources. If a slot leaves work pending, report
 `failed` with `pending: true` and its error. Completion journals the follow-up
-ask. A newly failed worktree check also adds an ask. In either case completion
-returns `phase: "planned"`: the agent performs the new `intent` entries and
+ask. Worktree-retention and open-idle-session asks are deferred until completion
+rechecks eligibility, current open sessions and activity after filing; initial
+inventory proposals are never delivered as act intents. Configured session
+checks rerun with no inherited command results. Interactive drivers refresh
+their inspection and pass `--open-sessions /example/open.json` to `complete`.
+When those rechecks require an ask, completion returns `phase: "planned"`:
+the agent performs the new `intent` entries and
 completes the same run again. `phase: "completed"` ends the run.
 
 Every command takes the store lock. Between act planning and completion a

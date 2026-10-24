@@ -248,8 +248,10 @@ def test_interactive_open_session_is_presented_even_with_unbound_ask(sandbox):
     payload = json.loads(command(sandbox, 'run', '--scope', 'all', '--decisions', str(choices),
                                  '--interactive', '--open-sessions', str(evidence)).stdout)
     run = read_run(payload['report'])
-    assert run['work'][0]['delivery'] == 'direct'
-    complete(sandbox, run)
+    assert not run['work']
+    checked = complete(sandbox, run)
+    assert checked['work'][0]['delivery'] == 'direct'
+    complete(sandbox, checked)
     payload = json.loads(command(sandbox, 'run', '--scope', 'all', '--decisions', str(choices),
                                  '--interactive', '--open-sessions', str(evidence)).stdout)
     assert not payload['work']
@@ -465,3 +467,105 @@ def test_agent_search_evidence_names_matches_in_the_report(sandbox, matches):
         assert row['destination'] == matches[0]
     else:
         assert all(match in ' '.join(row['choices']) for match in matches)
+
+
+@pytest.mark.parametrize('bound', [False, True])
+@pytest.mark.parametrize('merged_after_filing', [False, True])
+def test_retention_asks_wait_for_post_write_eligibility(sandbox, bound, merged_after_filing):
+    from test_sweep import act_profile
+    root, directory = archive_test_repository(sandbox, 'linked')
+    source(sandbox, directory=directory)
+    git = lambda *args: subprocess.run(['git', '-C', str(root), *args],
+                                      check=True, text=True, capture_output=True)
+    git('-c', 'user.name=Test', '-c', 'user.email=test@example.test',
+        'commit', '--allow-empty', '-qm', 'work')
+    profile = act_profile(sandbox)
+    if not bound:
+        data = json.loads(profile.read_text())
+        data.pop('ask')
+        profile.write_text(json.dumps(data))
+    args = decisions(sandbox, [new_work()])
+    payload = json.loads(command(sandbox, 'run', '--scope', 'all', *args,
+                                 '--user-profile', str(profile)).stdout)
+    run = read_run(payload['report'])
+    assert [row['operation'] for row in run['work']] == ['create_ticket']
+    assert not run['directories'][str(directory)]['asks_raised']
+    if merged_after_filing:
+        git('push', 'origin', 'HEAD:main')
+    checked = complete(sandbox, run)
+    section = checked['directories'][str(directory)]
+    if merged_after_filing:
+        assert not root.exists()
+        assert not section['asks_raised']
+        assert checked['phase'] == 'completed'
+    else:
+        assert root.exists()
+        ask, = section['asks_raised']
+        assert 'not contained' in ask['ask']['text']
+        assert ask['outcome'] == ('intent' if bound else 'unbound')
+        assert checked['phase'] == ('planned' if bound else 'completed')
+        if bound:
+            finished = complete(sandbox, checked)
+            assert len(finished['directories'][str(directory)]['asks_raised']) == 1
+
+
+@pytest.mark.parametrize('change', ['closed', 'active', 'unchanged', 'new-idle-activity'])
+@pytest.mark.parametrize('legacy_plan', [False, True])
+def test_open_session_ask_uses_post_write_checks_and_activity(sandbox, change, legacy_plan):
+    from test_sweep import configure_checks
+    path = source(sandbox, loops=[])
+    open_ids = sandbox[0] / 'open-ids.txt'
+    open_ids.write_text('source\n')
+    configure_checks(sandbox, ['cat ' + str(open_ids)])
+    run = act(sandbox)
+    assert not run['work']
+    assert not run['directories'][str(sandbox[0])]['asks_raised']
+    if legacy_plan:
+        run['discovery'].pop('open_session_evidence')
+        journal = sandbox[0] / 'reports' / (run['run_id'] + '.md')
+        journal.write_text('```json\n' + json.dumps(run) + '\n```\n')
+    if change == 'closed':
+        open_ids.write_text('')
+    elif change == 'active':
+        os.utime(path, None)
+    elif change == 'new-idle-activity':
+        activity = path.stat().st_mtime + 60
+        os.utime(path, (activity, activity))
+    checked = complete(sandbox, run)
+    section = checked['directories'][str(sandbox[0])]
+    if change in ('closed', 'active'):
+        assert not section['asks_raised']
+        assert checked['phase'] == 'completed'
+        if change == 'closed':
+            assert not section['open_sessions']
+    else:
+        ask, = section['asks_raised']
+        assert checked['phase'] == 'planned'
+        assert ask['activity_at'] == path.stat().st_mtime
+        finished = complete(sandbox, checked)
+        assert finished['phase'] == 'completed'
+        history = json.loads((sandbox[0] / 'reports/open-session-asks.json').read_text())
+        assert history['source'] == path.stat().st_mtime
+
+
+def test_completion_accepts_refreshed_agent_session_evidence(sandbox):
+    source(sandbox, loops=[])
+    cfg = json.loads(sandbox[2].read_text())
+    cfg['sweep']['mode'] = 'act'
+    sandbox[2].write_text(json.dumps(cfg))
+    choices = sandbox[0] / 'choices.json'
+    choices.write_text('[]')
+    evidence = sandbox[0] / 'open.json'
+    evidence.write_text(json.dumps(dict(session_ids=['source'], method='initial inspection')))
+    payload = json.loads(command(sandbox, 'run', '--scope', 'all', '--decisions', str(choices),
+                                 '--interactive', '--open-sessions', str(evidence)).stdout)
+    assert not payload['work']
+    evidence.write_text(json.dumps(dict(session_ids=[], method='post-write inspection')))
+    results = sandbox[0] / 'results.json'
+    results.write_text('[]')
+    payload = json.loads(command(sandbox, 'complete', '--run-id', payload['run_id'], '--results', str(results),
+                                 '--open-sessions', str(evidence)).stdout)
+    checked = read_run(payload['report'])
+    assert checked['phase'] == 'completed' and not checked['work']
+    assert not checked['directories'][str(sandbox[0])]['open_sessions']
+    assert checked['open_session_checks'][0]['method'] == 'post-write inspection'

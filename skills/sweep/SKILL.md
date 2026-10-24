@@ -149,8 +149,15 @@ write; the next attempt first looks up its identity.
 python3 <package>/scripts/lib/sweep.py complete --run-id <run-id> --results <results-file>
 ```
 
+Before completion, refresh interactive session inspection and pass the updated
+`--open-sessions <evidence-file>` when using agent evidence. Configured session
+checks rerun automatically. Worktree-retention and open-idle asks are deferred
+until these post-filing checks. For those asks in act mode, use only deferred
+intents, never inventory proposals.
+
 Read the returned JSON and report. If `phase` is `planned`, completion added
-asks after a slot or worktree check: perform only new `intent` entries, then
+asks after a slot, worktree or open-session check: perform only new `intent`
+entries, then
 complete the **same run** again. Stop when `phase` is `completed`. Failed,
 uncertain, unbound, ambiguous, read-failed and undecided items are retained.
 Report those outcomes, parse errors, actual archives/removals and tripwire

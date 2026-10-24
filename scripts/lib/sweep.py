@@ -577,6 +577,10 @@ def plan_act(report, discovery, ask, config, path):
         section['worktrees_kept'] = []
         section['handoffs_archived'] = []
         section['handoffs_kept'] = []
+        # These proposals depend on checks repeated after filing. Never expose
+        # them as deliverable intents until completion has refreshed the premise.
+        section['asks_raised'] = [row for row in section['asks_raised']
+                                  if not row.get('worktree') and not row.get('open_session')]
         for index, row in enumerate(section['filing_outcomes']):
             row['directory'] = directory
             if row['rule'] == 'R4' and row['outcome'] == 'unbound' and row.get('binding') != 'ask':
@@ -598,11 +602,8 @@ def plan_act(report, discovery, ask, config, path):
                     created += 1
                 add_intent(report, row, directory, operation)
         for row in section['asks_raised']:
-            direct = row.get('open_session') and report['interactive']
-            if row['outcome'] == 'dry run' or direct:
+            if row['outcome'] == 'dry run':
                 add_intent(report, row, directory, 'ask')
-                if direct:
-                    row.update(delivery='direct', binding='direct')
     if tripwires:
         directory, source = next(iter(tripwires.items()))
         candidate = next(c for c in discovery['candidates'] if c['path'] == source)
@@ -656,7 +657,7 @@ def rehydrate(report):
             section[key] = [work.get(row.get('write_id'), row) for row in rows]
 
 
-def complete_act(config, run_id, results_path):
+def complete_act(config, run_id, results_path, evidence=None):
     reservation = json.loads(pending_path().read_text())
     if reservation['run_id'] != run_id or reservation['mode'] != 'act':
         raise ValueError('run id does not own the incomplete act plan')
@@ -689,7 +690,10 @@ def complete_act(config, run_id, results_path):
                 add_intent(report, followup, row['directory'], 'ask')
         save_act(path, report)
     discovery = report['discovery']
-    checks = open_session_checks(config, report['open_session_checks'][0])
+    if evidence is not None:
+        discovery['open_session_evidence'] = evidence
+    checks = open_session_checks(config, discovery.get('open_session_evidence',
+                                                       read_open_sessions(None)))
     report['open_session_checks'] = [checks]
     current = discover('all', config, datetime.now(timezone.utc))
     discovery_failed = any(error.get('blocks_sweep') for error in current['errors'])
@@ -747,11 +751,38 @@ def complete_act(config, run_id, results_path):
             section = report['directories'][row['directory']]
             section['asks_raised'].remove(row)
             return
-        if ask:
+        direct = row.get('open_session') and report['interactive']
+        if ask or direct:
             add_intent(report, row, row['directory'], 'ask')
+            if direct:
+                row.update(delivery='direct', binding='direct')
         else:
             row.update(outcome='unbound', binding='ask', destination='ask')
 
+    # Open-idle asks, like worktree-retention asks, use post-filing evidence.
+    # Seed configured checks from agent evidence, never their previous results.
+    for section in report['directories'].values():
+        section['open_sessions'] = []
+    asked_sessions = set()
+    for candidate in current['candidates']:
+        original = originals.get(candidate['path'])
+        if not original or not original.get('planned_source') or candidate['session_id'] not in checks['session_ids']:
+            continue
+        section = report['directories'].get(candidate['directory'])
+        if section is None:
+            continue
+        section['open_sessions'].append({key: candidate[key] for key in
+                                        ('session_id', 'idle_seconds', 'activity_at', 'path')})
+        if (not checks['failed'] and candidate['idle_seconds'] > config['idle_days'] * 86400
+                and history.get(candidate['session_id'], -1) < candidate['activity_at']
+                and candidate['session_id'] not in asked_sessions):
+            add_ask(section, candidate, 'Open idle session: ' + candidate['session_id'],
+                    ['wrap it', 'leave it', 'close it'], 'open session remains idle after filing', ask)
+            row = section['asks_raised'][-1]
+            row.update(open_session=True, activity_at=candidate['activity_at'], directory=candidate['directory'])
+            row['ask']['activity_at'] = candidate['activity_at']
+            send_ask(row)
+            asked_sessions.add(candidate['session_id'])
     finish_act(report, discovery, ask, path, save, send_ask)
     if report['phase'] == 'completed':
         pending_path().unlink()
@@ -1113,8 +1144,11 @@ def main(argv=None):
                 if args.command in ('complete', 'complete-undo'):
                     if args.results is None:
                         raise ValueError('completion requires --results')
-                    operation = complete_act if args.command == 'complete' else complete_undo
-                    path, report = operation(config, args.run_id, args.results)
+                    if args.command == 'complete':
+                        evidence = read_open_sessions(args.open_sessions) if args.open_sessions else None
+                        path, report = complete_act(config, args.run_id, args.results, evidence)
+                    else:
+                        path, report = complete_undo(config, args.run_id, args.results)
                 elif args.command == 'undo':
                     if not args.user_started:
                         raise ValueError('undo must be explicitly user-started with --user-started')
@@ -1134,18 +1168,19 @@ def main(argv=None):
             return 0
         if args.scope is None:
             raise ValueError('inspect and run require --scope')
-        checks = read_open_sessions(args.open_sessions)
+        evidence = read_open_sessions(args.open_sessions)
         if args.interactive and args.open_sessions is None and not config['open_session_checks']:
             raise ValueError('interactive sweep requires open-session inspection evidence, including an empty result')
         with store_lock():
             if args.command == 'run':
                 require_idle()
             started = datetime.now(timezone.utc)
-            checks = open_session_checks(config, checks)
+            checks = open_session_checks(config, evidence)
             history = read_ask_history(config)
             discovery = discover(args.scope, config, started)
             discovery['idle_days'] = config['idle_days']
             discovery['open_session_checks'] = checks
+            discovery['open_session_evidence'] = evidence
             for check in checks['results']:
                 if check['outcome'] == 'failed':
                     discovery['errors'].append(dict(check, reason='open-session check failed; no session counts as abandoned'))
