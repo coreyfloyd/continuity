@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Identity-bound sweep planning and configured act execution; never removes worktrees."""
+"""Identity-bound sweep planning, open-session protection and safe act execution."""
 from __future__ import annotations
 
 import argparse
@@ -65,8 +65,9 @@ def settings():
         raise ValueError('sweep.binding_timeout_seconds must be positive')
     if type(result['new_ticket_limit']) is not int:
         raise ValueError('sweep.new_ticket_limit must be an integer')
-    if result['open_session_checks'] != []:
-        raise ValueError('configured open-session commands are not supported yet; no sweep performed')
+    checks = result['open_session_checks']
+    if not isinstance(checks, list) or not all(isinstance(c, str) and c.strip() for c in checks):
+        raise ValueError('sweep.open_session_checks must be a list of non-empty command strings')
     if not isinstance(result['report_location'], str) or not result['report_location'].strip():
         raise ValueError('sweep.report_location must be a non-empty directory path')
     return result
@@ -228,6 +229,58 @@ def read_open_sessions(path):
     return data
 
 
+def open_session_checks(config, evidence):
+    """Union successful checks; any failure protects the entire scope."""
+    result = dict(evidence, results=[], failed=False)
+    sessions = set(result['session_ids'])
+    for command in config['open_session_checks']:
+        row = {'command': command, 'session_ids': []}
+        try:
+            done = subprocess.run(shlex.split(command), capture_output=True, text=True,
+                                  timeout=config['binding_timeout_seconds'])
+            if done.returncode:
+                raise ValueError(done.stderr.strip() or f'check exited {done.returncode}')
+            row.update(outcome='ok', session_ids=done.stdout.split())
+            sessions.update(row['session_ids'])
+        except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+            row.update(outcome='failed', error=str(exc))
+            result['failed'] = True
+        result['results'].append(row)
+    result['session_ids'] = sorted(sessions)
+    if config['open_session_checks']:
+        result['method'] = 'configured commands' + (' and ' + evidence['method'] if evidence['method'] != 'idle threshold alone; no checks configured' else '')
+    return result
+
+
+def ask_history_path(config):
+    return Path(config['report_location']).expanduser().resolve() / 'open-session-asks.json'
+
+
+def read_ask_history(config):
+    path = ask_history_path(config)
+    if path.is_symlink():
+        raise ValueError('open-session ask history is a symbolic link')
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text())
+    if not isinstance(data, dict) or not all(isinstance(v, (int, float)) for v in data.values()):
+        raise ValueError('malformed open-session ask history')
+    return data
+
+
+def save_ask_history(config, history):
+    path = ask_history_path(config)
+    temporary = path.with_suffix('.' + uuid.uuid4().hex + '.tmp')
+    try:
+        with temporary.open('x') as handle:
+            json.dump(history, handle)
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def read_decisions(path, discovery):
     rows = [] if path is None else json.loads(path.read_text())
     if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
@@ -285,12 +338,37 @@ def git_read(directory, *args):
     return done.returncode, done.stdout.strip(), done.stderr.strip()
 
 
+def worktree_protection(discovery, report, checks, act=False):
+    """Gather every source's veto before planning any shared-path removal."""
+    retained = {row['path'] for section in report['directories'].values()
+                for row in section['handoffs_kept']} if not act else set()
+    if act:
+        for section in report['directories'].values():
+            for row in section['filing_outcomes'] + section['asks_raised']:
+                if row['outcome'] not in ('written', 'dropped', 'present directly to user'):
+                    retained.add(row['source_handoff'])
+    protected = {}
+    for candidate in discovery['candidates']:
+        reasons = protected.setdefault(candidate['directory'], set())
+        if not candidate['abandoned'] or candidate['session_id'] in checks['session_ids']:
+            reasons.add('another open or active session uses this worktree')
+        if candidate['handoff'].get('uncommitted_files'):
+            reasons.add('handoff lists uncommitted files: ' + candidate['path'])
+        if candidate['path'] in retained:
+            reasons.add('handoff is kept: ' + candidate['path'])
+        if candidate.get('worktree_retention_reason'):
+            reasons.add(candidate['worktree_retention_reason'])
+    return {directory: '; '.join(sorted(reasons)) for directory, reasons in protected.items() if reasons}
+
+
 def worktree_plan(candidate, protected):
-    """Read-only eligibility checks, shared seam for a later removal executor."""
-    directory = candidate['directory']
-    root = handoff.repository_root(directory)
-    if not root:
+    """Read-only eligibility checks, repeated immediately before plain removal."""
+    # repository_root identifies the shared repository, not this checkout.
+    # A subdirectory subject must resolve to its containing linked worktree.
+    code, root, _ = git_read(candidate['directory'], 'rev-parse', '--show-toplevel')
+    if code or not root:
         return None
+    directory = handoff.canonical_subject(root)
     code, output, error = git_read(directory, 'worktree', 'list', '--porcelain')
     if code:
         return {'path': directory, 'outcome': 'kept', 'reason': error or 'worktree lookup failed'}
@@ -298,15 +376,16 @@ def worktree_plan(candidate, protected):
                     for line in block.splitlines()) for block in output.split('\n\n')]
     match = next((e for e in entries if e.get('worktree') == directory), None)
     if not match or directory == entries[0].get('worktree'):
-        return None  # never propose removing the main checkout or a subdirectory
+        return None  # never propose removing the main checkout
     row = {'path': directory, 'branch': match.get('branch', '').removeprefix('refs/heads/'),
            'commit': match.get('HEAD'), 'outcome': 'dry run'}
     reason = None
     # Subjects are canonical directories, but an active subject may be below
     # this worktree root. Compare path components, not string prefixes.
-    if any(Path(directory) == Path(active) or Path(directory) in Path(active).parents
-           for active in protected):
-        reason = 'another open or active session uses this worktree'
+    reasons = {why for active, why in protected.items()
+               if Path(directory) == Path(active) or Path(directory) in Path(active).parents}
+    if reasons:
+        reason = '; '.join(sorted(reasons))
     status, dirty, error = git_read(directory, 'status', '--porcelain', '--untracked-files=all')
     if status or dirty:
         reason = error or 'uncommitted or untracked changes'
@@ -321,6 +400,10 @@ def worktree_plan(candidate, protected):
         reason = 'branch not contained in the locally observed pushed trunk'
     if not row['branch']:
         reason = 'detached worktree has no local branch'
+    if candidate['handoff'].get('uncommitted_files'):
+        reason = 'handoff lists uncommitted files'
+    if sum(e.get('branch') == match.get('branch') for e in entries) > 1:
+        reason = 'local branch is used by another worktree'
     row['checks'] = {'clean': status == 0 and not dirty, 'contained_in_pushed_trunk': merged,
                      'plain_removal': 'not attempted in watch-only mode'}
     if reason:
@@ -351,25 +434,33 @@ def add_ask(section, candidate, text, choices, reason, ask):
         'directory': candidate['directory'], 'ticket': None, 'choices': choices}})
 
 
-def build_report(discovery, decisions, plan, ask, checks, interactive, started):
+def build_report(discovery, decisions, plan, ask, checks, interactive, started, history=None):
     report = {'run_id': uuid.uuid4().hex, 'host': socket.gethostname(), 'started_at': started.isoformat(),
               'scope': discovery['scope'], 'mode': 'watch-only', 'interactive': interactive,
               'open_session_checks': [checks], 'errors': discovery['errors'], 'directories': {}}
-    protected = {c['directory'] for c in discovery['candidates']
-                 if c['session_id'] in checks['session_ids'] or not c['abandoned']}
+    asked_sessions = set()
     for candidate in discovery['candidates']:
         is_open = candidate['session_id'] in checks['session_ids']
-        if not candidate['abandoned'] and not is_open:
+        if not candidate['abandoned'] and not is_open and not checks.get('failed'):
             continue
         section = report['directories'].setdefault(candidate['directory'],
             {**{key: [] for key, _ in SECTIONS}, 'filing_outcomes': [], 'worktrees_kept': [], 'handoffs_kept': []})
         if is_open:
             section['open_sessions'].append({key: candidate[key] for key in
                                             ('session_id', 'idle_seconds', 'activity_at', 'path')})
-            if candidate['abandoned']:
+            if (candidate['idle_seconds'] > discovery['idle_days'] * 86400
+                    and (history or {}).get(candidate['session_id'], -1) < candidate['activity_at']
+                    and candidate['session_id'] not in asked_sessions):
                 add_ask(section, candidate, 'Open idle session: ' + candidate['session_id'],
                         ['wrap it', 'leave it', 'close it'],
                         'present directly to user' if interactive else 'would raise an ask; no ask sent in watch-only', ask)
+                asked_sessions.add(candidate['session_id'])
+                section['asks_raised'][-1].update(open_session=True, activity_at=candidate['activity_at'])
+                section['asks_raised'][-1]['ask']['activity_at'] = candidate['activity_at']
+            continue
+        if not candidate['abandoned']:
+            section['handoffs_kept'].append(dict(path=candidate['path'], outcome='kept',
+                reason='open-session check failed; abandonment unknown'))
             continue
         outcomes = []
         for item in candidate['items']:
@@ -398,6 +489,20 @@ def build_report(discovery, decisions, plan, ask, checks, interactive, started):
             add_ask(section, candidate, 'Uncommitted files for session ' + candidate['session_id'] +
                     ' in ' + candidate['directory'] + ': ' + ', '.join(dirty),
                     ['keep work', 'review files'], 'handoff lists uncommitted files', ask)
+        clean_check = archive_worktree_check(candidate)
+        candidate['archive_worktree_check'] = clean_check
+        archive = (not dirty and (clean_check is None or clean_check['clean']) and
+                   all(row['outcome'] == 'dry run' for row in outcomes))
+        key = 'handoffs_archived' if archive else 'handoffs_kept'
+        section[key].append({'path': candidate['path'], 'outcome': 'dry run' if archive else 'kept',
+            'worktree_check': clean_check,
+            'destination': str(Path(candidate['path']).parent / 'archive' / Path(candidate['path']).name),
+            'reason': 'all items would be filed or dropped' if archive else 'unfiled items, unbound ask, or uncommitted files'})
+    protected = worktree_protection(discovery, report, checks)
+    for candidate in discovery['candidates']:
+        if not candidate['abandoned']:
+            continue
+        section = report['directories'][candidate['directory']]
         worktree = worktree_plan(candidate, protected)
         if worktree:
             if worktree['outcome'] == 'dry run':
@@ -407,17 +512,13 @@ def build_report(discovery, decisions, plan, ask, checks, interactive, started):
                 section['worktrees_kept'].append(worktree)
                 add_ask(section, candidate, 'Keep worktree ' + worktree['path'] + ': ' + worktree['reason'],
                         ['review worktree', 'leave it'], worktree['reason'], ask)
-        clean_check = archive_worktree_check(candidate)
-        candidate['archive_worktree_check'] = clean_check
-        archive = (not dirty and (clean_check is None or clean_check['clean']) and
-                   all(row['outcome'] == 'dry run' for row in outcomes))
-        if worktree and worktree['outcome'] == 'kept' and ask is None:
-            archive = False
-        key = 'handoffs_archived' if archive else 'handoffs_kept'
-        section[key].append({'path': candidate['path'], 'outcome': 'dry run' if archive else 'kept',
-            'worktree_check': clean_check,
-            'destination': str(Path(candidate['path']).parent / 'archive' / Path(candidate['path']).name),
-            'reason': 'all items would be filed or dropped' if archive else 'unfiled items, unbound ask, or uncommitted files'})
+                section['asks_raised'][-1]['worktree'] = True
+                if ask is None:
+                    for row in list(section['handoffs_archived']):
+                        if row['path'] == candidate['path']:
+                            section['handoffs_archived'].remove(row)
+                            row.update(outcome='kept', reason='unbound worktree ask')
+                            section['handoffs_kept'].append(row)
     report['nothing_to_do'] = not report['directories'] and not report['errors']
     report['ended_at'] = datetime.now(timezone.utc).isoformat()
     return report
@@ -437,13 +538,15 @@ def binding_call(binding, request, timeout):
     return response
 
 
-def execute_act(report, discovery, plan, ask, reader, config, path):
-    """Execute only binding writes, asks and archive moves; journal in the report.
+def execute_act(report, discovery, plan, ask, reader, config, path, history=None):
+    """Execute binding writes, asks, checked worktree removals and archive moves.
 
     Identity queries precede every attempted write, even without an earlier report.
     Bindings must enforce identity uniqueness atomically, including delayed writes.
     """
+    history = {} if history is None else history
     report['mode'] = 'act'
+    report['undo_items'] = []
     for section in report['directories'].values():
         section['unfiled_items'] = []
     bindings = {step['slot']: step.get('binding') for step in plan if 'slot' in step}
@@ -455,10 +558,15 @@ def execute_act(report, discovery, plan, ask, reader, config, path):
 
     def save():
         report['ended_at'] = datetime.now(timezone.utc).isoformat()
-        with path.open('w') as handle:
-            handle.write(render_report(report))
-            handle.flush()
-            os.fsync(handle.fileno())
+        temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
+        try:
+            with temporary.open('x') as handle:
+                handle.write(render_report(report))
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def request(row, operation):
         return dict(operation=operation, identity=row['identity'],
@@ -475,9 +583,15 @@ def execute_act(report, discovery, plan, ask, reader, config, path):
         # Persist intent before starting a process: a crash or a lost reply is
         # recoverable through the destination's durable identity index.
         row.update(outcome='uncertain', operation=operation)
+        intent = None
+        if operation != 'ask':
+            intent = dict(kind='record', write_operation=operation,
+                          run_id=report['run_id'], **request(row, 'reverse'))
+            intent.update(destination=row.get('destination'), write_outcome='uncertain')
+            report['undo_items'].append(intent)
         save()
         payload = request(row, operation)
-        payload.update(destination=row.get('destination'), rule=row['rule'])
+        payload.update(destination=row.get('destination'), rule=row['rule'], run_id=report['run_id'])
         if operation == 'file_slot':
             payload['slot'] = bindings[row['binding']]
         if operation == 'create_ticket':
@@ -499,6 +613,11 @@ def execute_act(report, discovery, plan, ask, reader, config, path):
         except (subprocess.TimeoutExpired, ValueError, OSError) as exc:
             # A process error may follow a successful remote write too.
             row['error'] = str(exc)
+        if intent is not None:
+            intent.update(write_outcome=row['outcome'])
+            for key in ('receipt', 'destination'):
+                if key in row:
+                    intent[key] = row[key]
         save()
         return row['outcome'] == 'written'
 
@@ -527,10 +646,13 @@ def execute_act(report, discovery, plan, ask, reader, config, path):
 
     for directory, section in report['directories'].items():
         # Rebuild category arrays from actual outcomes rather than proposals.
-        synthetic_asks = [row for row in section['asks_raised'] if row not in section['filing_outcomes']]
+        synthetic_asks = [row for row in section['asks_raised']
+                          if row not in section['filing_outcomes'] and not row.get('worktree')]
         for key in ('asks_raised', 'new_tickets', 'comments_added', 'documents_changed',
-                    'items_dropped', 'worktrees_removed', 'handoffs_archived', 'handoffs_kept'):
+                    'items_dropped', 'worktrees_removed', 'worktrees_kept', 'handoffs_archived'):
             section[key] = []
+        section['handoffs_kept'] = [row for row in section['handoffs_kept']
+                                    if report['open_session_checks'][0].get('failed')]
         section['unfiled_items'] = []
         for row in section['filing_outcomes']:
             row['directory'] = directory
@@ -619,13 +741,94 @@ def execute_act(report, discovery, plan, ask, reader, config, path):
         for row in synthetic_asks:
             section['asks_raised'].append(row)
             row['directory'] = directory
-            # Open sessions are observational in this slice. Their ask lifecycle
-            # belongs to open-session integration; never act on their handoffs.
-            if any(s['path'] == row['source_handoff'] for s in section['open_sessions']):
-                row['outcome'] = 'pending open-session integration'
+            if row.get('open_session') and report['interactive']:
+                row['outcome'] = 'present directly to user'
             else:
                 send_ask(row)
             save()
+            if row.get('open_session') and row['outcome'] in ('written', 'present directly to user'):
+                history[row['identity']['session_id']] = row['activity_at']
+                save_ask_history(config, history)
+    # All sections finish filing before a worktree can be removed. Include
+    # sibling sources below the worktree root, not just exact directory peers.
+    checks = report['open_session_checks'][0]
+    for candidate in discovery['candidates']:
+        try:
+            check_handoff_source(candidate)
+            initial = candidate.get('archive_worktree_check')
+            current = archive_worktree_check(candidate)
+            if any(check is not None and not check['clean'] for check in (initial, current)):
+                candidate['worktree_retention_reason'] = 'related handoff has unconfirmed clean worktree: ' + candidate['path']
+        except (ValueError, OSError) as exc:
+            candidate['worktree_retention_reason'] = 'related handoff changed or unreadable: ' + candidate['path'] + ': ' + str(exc)
+    protected = worktree_protection(discovery, report, checks, act=True)
+    removed_paths = set()
+    attempted_paths = set()
+    for directory, section in report['directories'].items():
+        for candidate in discovery['candidates']:
+            if candidate['directory'] != directory or not candidate['abandoned']:
+                continue
+            if any(Path(directory) == Path(root) or Path(root) in Path(directory).parents
+                   for root in attempted_paths):
+                continue
+            proposed = worktree_plan(candidate, protected)
+            if not proposed:
+                continue
+            worktree = proposed['path']
+            attempted_paths.add(worktree)
+            if proposed['outcome'] != 'dry run':
+                if not any(r['path'] == proposed['path'] for r in section['worktrees_kept']):
+                    section['worktrees_kept'].append(proposed)
+                    temporary = {'asks_raised': []}
+                    add_ask(temporary, candidate, 'Keep worktree ' + worktree + ': ' + proposed['reason'],
+                            ['review worktree', 'leave it'], proposed['reason'], ask)
+                    failure = temporary['asks_raised'][0]
+                    failure['directory'] = directory
+                    section['asks_raised'].append(failure)
+                    send_ask(failure)
+                    save()
+                continue
+            row = proposed
+            try:
+                related = [c for c in discovery['candidates']
+                           if Path(worktree) == Path(c['directory']) or Path(worktree) in Path(c['directory']).parents]
+                for source in related:
+                    check_handoff_source(source)
+                # Resolve the main checkout before removing this linked checkout.
+                _, output, _ = git_read(worktree, 'worktree', 'list', '--porcelain')
+                main = output.splitlines()[0].removeprefix('worktree ')
+                row.update(outcome='uncertain', reason='plain worktree removal pending')
+                section['worktrees_removed'].append(row)
+                save()
+                for source in related:
+                    check_handoff_source(source)
+                code, _, error = git_read(main, 'worktree', 'remove', worktree)
+                row['checks']['plain_removal'] = code == 0
+                if code:
+                    raise ValueError(error or 'plain worktree removal failed')
+                removed_paths.add(worktree)
+                row.update(outcome='removed', reason='clean branch contained in pushed trunk')
+                # Compare-and-delete preserves a concurrently moved branch.
+                code, _, error = git_read(main, 'update-ref', '-d',
+                    'refs/heads/' + row['branch'], row['commit'])
+                row['branch_deleted'] = code == 0
+                if code:
+                    row['branch_error'] = error or 'local branch deletion failed'
+                save()
+            except (ValueError, OSError) as exc:
+                row.update(outcome='kept', reason=str(exc))
+                if row in section['worktrees_removed']:
+                    section['worktrees_removed'].remove(row)
+                section['worktrees_kept'].append(row)
+                temporary = {'asks_raised': []}
+                add_ask(temporary, candidate, 'Keep worktree ' + worktree + ': ' + str(exc),
+                        ['review worktree', 'leave it'], str(exc), ask)
+                failure = temporary['asks_raised'][0]
+                failure['directory'] = directory
+                section['asks_raised'].append(failure)
+                send_ask(failure)
+                save()
+    for directory, section in report['directories'].items():
         for candidate in discovery['candidates']:
             if candidate['directory'] != directory or not candidate['abandoned']:
                 continue
@@ -635,7 +838,8 @@ def execute_act(report, discovery, plan, ask, reader, config, path):
             outcomes = [r for r in section['filing_outcomes'] if r['source_handoff'] == source]
             asks = [r for r in section['asks_raised'] if r['source_handoff'] == source]
             initial_check = candidate.get('archive_worktree_check')
-            live_check = archive_worktree_check(candidate)
+            live_check = (initial_check if any(Path(directory) == Path(root) or Path(root) in Path(directory).parents
+                                              for root in removed_paths) else archive_worktree_check(candidate))
             clean = all(check is None or check['clean'] for check in (initial_check, live_check))
             archived = (clean and not candidate['handoff'].get('uncommitted_files') and
                         all(r['outcome'] in ('written', 'dropped') for r in outcomes) and
@@ -658,6 +862,8 @@ def execute_act(report, discovery, plan, ask, reader, config, path):
                     if target.exists() or target.is_symlink():
                         target = target.with_name(report['run_id'] + '-' + original.name)
                     row.update(destination=str(target), outcome='uncertain', reason='archive move pending')
+                    report['undo_items'].append(dict(kind='handoff', path=source,
+                        archive=str(target), snapshot=candidate['source_snapshot']))
                     section['handoffs_archived'].append(row)
                     save()
                     check_handoff_source(candidate)
@@ -703,23 +909,202 @@ def render_report(report):
     return '\n'.join(lines)
 
 
+def save_operation(path, report):
+    """Atomically replace the durable operation journal after every outcome."""
+    temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
+    try:
+        with temporary.open('x') as handle:
+            handle.write('# Sweep ' + report['mode'] + ' report\n\n' +
+                         report.get('note', '') + '\n\n```json\n' +
+                         json.dumps(report, indent=2) + '\n```\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def read_report(path):
+    if path.is_symlink():
+        raise ValueError('report is a symbolic link')
+    return json.loads(path.read_text().split('```json\n', 1)[1].rsplit('\n```', 1)[0])
+
+
+def report_directory(config):
+    destination = Path(config['report_location']).expanduser().resolve()
+    store = Path(handoff.state_dir()).resolve()
+    if destination == store or store in destination.parents:
+        raise ValueError('report location must be outside the handoff store')
+    return destination
+
+
+def execute_undo(config, run_id, record):
+    if not run_id or any(c not in '0123456789abcdef' for c in run_id):
+        raise ValueError('run id must be a hexadecimal sweep run id')
+    destination = report_directory(config)
+    original = read_report(destination / (run_id + '.md'))
+    if original.get('mode') != 'act' or original.get('run_id') != run_id:
+        raise ValueError('undo requires an act run')
+    if 'undo_items' not in original:
+        raise ValueError('run has no reversal journal')
+    path = destination / (run_id + '.undo.md')
+    report = read_report(path) if path.exists() else dict(
+        mode='undo', run_id=run_id, items=[dict(row, outcome='failed')
+            for row in original['undo_items'] if row['kind'] == 'handoff'
+            or row.get('write_outcome') in ('written', 'uncertain')],
+        note='Worktree removal and local branch deletion cannot be reversed. '
+             'Asks remain delivered. Conflicts are preserved; only failed items retry.')
+    save_operation(path, report)
+    store = Path(handoff.state_dir()).resolve()
+    archive = store / 'archive'
+    for row in report['items']:
+        if row['outcome'] != 'failed':
+            continue
+        try:
+            if row['kind'] == 'handoff':
+                source, target = Path(row['archive']), Path(row['path'])
+                if (archive.is_symlink() or source.parent != archive or target.parent != store
+                        or source.is_symlink() or target.is_symlink()):
+                    raise ValueError('restore paths must be regular handoffs in this store and archive')
+                if target.exists():
+                    # Recover a crash between the non-overwriting link and unlink.
+                    restored = False
+                    if not source.exists():
+                        _, current = read_handoff_source(target)
+                        restored = all(current[k] == v for k, v in row['snapshot'].items()
+                                       if k != 'st_ctime_ns')
+                    if restored:
+                        row.update(outcome='reversed')
+                    elif source.exists() and os.path.samefile(source, target):
+                        source.unlink()
+                        row.update(outcome='reversed')
+                    else:
+                        row.update(outcome='conflict', reason='original path is occupied; archived handoff preserved')
+                elif not source.exists():
+                    raise ValueError('archived handoff is missing (possibly removed by retention)')
+                else:
+                    _, current = read_handoff_source(source)
+                    if any(current[k] != v for k, v in row['snapshot'].items() if k != 'st_ctime_ns'):
+                        row.update(outcome='conflict', reason='archived handoff changed')
+                    else:
+                        # link is exclusive: a newly written handoff is never overwritten.
+                        os.link(source, target, follow_symlinks=False)
+                        source.unlink()
+                        row.update(outcome='reversed')
+            else:
+                if row.get('write_outcome') == 'uncertain' and not row.get('receipt'):
+                    result = binding_call(record, dict(row, operation='identity_exists'),
+                                          config['binding_timeout_seconds'])
+                    if result.get('exists') is not True or result.get('run_id') != run_id:
+                        raise ValueError('uncertain write ownership not confirmed for this run')
+                    if not all(isinstance(result.get(k), str) and result[k].strip()
+                               for k in ('receipt', 'destination')):
+                        raise ValueError('uncertain write needs receipt and destination')
+                    row.update(receipt=result['receipt'], destination=result['destination'])
+                    save_operation(path, report)
+                result = binding_call(record, dict(row, operation='reverse'),
+                                      config['binding_timeout_seconds'])
+                status = result.get('status')
+                if status not in ('reversed', 'conflict', 'failed'):
+                    raise ValueError('unsupported or malformed reversal acknowledgement')
+                row.update(outcome=status, reason=result.get('reason') or result.get('error') or status)
+        except FileExistsError:
+            row.update(outcome='conflict', reason='original path is occupied')
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            row.update(outcome='failed', reason=str(exc))
+        save_operation(path, report)
+    return path
+
+
+def execute_retention(config, now, save=None):
+    report = dict(mode='retention', started_at=now.isoformat(),
+                  archive_retention_days=config['archive_retention_days'], items=[])
+    archive = Path(handoff.state_dir()).resolve() / 'archive'
+    days = config['archive_retention_days']
+    if days is None or not archive.exists():
+        if save:
+            save(report)
+        return report
+    if archive.is_symlink():
+        raise ValueError('archive is a symbolic link')
+    for path in sorted(archive.glob('*.json')):
+        if path.is_symlink() or not path.is_file():
+            continue
+        row = dict(path=str(path), outcome='kept')
+        report['items'].append(row)
+        try:
+            _, snapshot = read_handoff_source(path)
+            row['modified_at'] = snapshot['st_mtime_ns'] / 1e9
+            if now.timestamp() - row['modified_at'] > days * 86400:
+                row.update(outcome='failed', reason='deletion pending')
+                if save:
+                    save(report)
+                _, current = read_handoff_source(path)
+                if current != snapshot:
+                    raise ValueError('archived handoff changed during retention')
+                path.unlink()
+                row.update(outcome='deleted', reason='strictly older than configured age')
+            else:
+                row['reason'] = 'at or newer than age boundary'
+        except (OSError, ValueError) as exc:
+            row.update(outcome='failed', reason=str(exc))
+        if save:
+            save(report)
+    if save:
+        save(report)
+    return report
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('inspect', 'run'))
-    parser.add_argument('--scope', required=True, help='all or a directory')
+    parser.add_argument('command', choices=('inspect', 'run', 'undo', 'retention'))
+    parser.add_argument('--scope', help='all or a directory')
     parser.add_argument('--decisions', type=Path)
     parser.add_argument('--user-profile', type=Path)
     parser.add_argument('--open-sessions', type=Path, help='agent-supplied session_ids and method JSON')
     parser.add_argument('--interactive', action='store_true')
+    parser.add_argument('--run-id')
+    parser.add_argument('--user-started', action='store_true')
     args = parser.parse_args(argv)
     try:
         config = settings()
+        if args.command in ('undo', 'retention'):
+            with store_lock():
+                if args.command == 'undo':
+                    if not args.user_started:
+                        raise ValueError('undo must be explicitly user-started with --user-started')
+                    profile_path = args.user_profile or Path(os.environ.get('CHECKLIST_USER_PROFILE') or
+                        str(Path(os.environ.get('XDG_CONFIG_HOME', os.path.expanduser('~/.config'))) / 'checklist/profile.md'))
+                    profiles = [checklist.load_profile(profile_path)] if args.user_profile or profile_path.exists() else []
+                    plan = checklist.compose(profiles)
+                    record = next((step.get('binding') for step in plan if step.get('slot') == 'record'), None)
+                    path = execute_undo(config, args.run_id, record)
+                else:
+                    destination = report_directory(config)
+                    destination.mkdir(parents=True, exist_ok=True)
+                    path = destination / (uuid.uuid4().hex + '.retention.md')
+                    execute_retention(config, datetime.now(timezone.utc),
+                                      lambda report: save_operation(path, report))
+                print(path)
+            return 0
+        if args.scope is None:
+            raise ValueError('inspect and run require --scope')
         checks = read_open_sessions(args.open_sessions)
-        if args.interactive and args.open_sessions is None:
+        if args.interactive and args.open_sessions is None and not config['open_session_checks']:
             raise ValueError('interactive sweep requires open-session inspection evidence, including an empty result')
         with store_lock():
             started = datetime.now(timezone.utc)
+            checks = open_session_checks(config, checks)
+            history = read_ask_history(config)
             discovery = discover(args.scope, config, started)
+            discovery['idle_days'] = config['idle_days']
+            discovery['open_session_checks'] = checks
+            for check in checks['results']:
+                if check['outcome'] == 'failed':
+                    discovery['errors'].append(dict(check, reason='open-session check failed; no session counts as abandoned'))
+            for candidate in discovery['candidates']:
+                if checks['failed'] or candidate['session_id'] in checks['session_ids']:
+                    candidate['abandoned'] = False
             if args.command == 'inspect':
                 print(json.dumps(discovery, indent=2))
                 return 0
@@ -733,7 +1118,7 @@ def main(argv=None):
             profiles = [checklist.load_profile(profile_path)] if profile_path else []
             plan = checklist.compose(profiles)
             ask = checklist.ask_binding(profiles[0]) if profiles else None
-            report = build_report(discovery, rows, plan, ask, checks, args.interactive, started)
+            report = build_report(discovery, rows, plan, ask, checks, args.interactive, started, history)
             destination = Path(config['report_location']).expanduser().resolve()
             store = Path(handoff.state_dir()).resolve()
             if destination == store or store in destination.parents:
@@ -744,7 +1129,7 @@ def main(argv=None):
                 handle.write(render_report(report))
             if config['mode'] == 'act':
                 execute_act(report, discovery, plan, ask,
-                            checklist.record_read_binding(profiles[0]) if profiles else None, config, path)
+                            checklist.record_read_binding(profiles[0]) if profiles else None, config, path, history)
             print(path)
         return 0
     except RuntimeError as exc:

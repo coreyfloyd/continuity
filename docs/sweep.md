@@ -40,14 +40,28 @@ store. A report location inside the handoff store is rejected. The handoff
 store itself follows `HANDOFF_STATE_DIR`, then `handoff_dir`, then the existing
 default. No handoff migration is performed.
 
-`open_session_checks` reserves the later command-check integration and defaults
-to none. Nonempty command lists currently stop the command before any sweep,
-rather than silently ignoring protection. `new_ticket_limit` (a non-negative
+`open_session_checks` is a list of command strings, default none. Each command
+prints whitespace-separated session ids; the union is open. Commands use argv
+quoting without a shell and have the configured binding timeout. Nonzero exits,
+timeouts, and commands that cannot start prevent every session in scope from
+counting as abandoned; the report names the command and error. Successful checks
+and their ids are recorded too. Checks must be read-only, including in watch-only.
+For example, a user-owned adapter can inspect Herdr's session surfaces:
+
+```json
+{"sweep":{"open_session_checks":["/absolute/path/to/herdr-open-sessions"]}}
+```
+
+That adapter reads `herdr workspace list` and `herdr tab list`, extracts actual
+session ids from the user's session metadata, and prints only those ids. It must
+exit nonzero if inspection fails. Tab titles alone are not session ids. Herdr
+is an optional example, never a package dependency. Other session managers can
+implement the same command contract. `new_ticket_limit` (a non-negative
 integer, default 10) and `archive_retention_days` (default null, retention off)
-control creation capacity and reserve retention configuration respectively.
-Retention is not executed by this command. Watch-only creates no ticket and
-deletes nothing, regardless of these values. Act mode also never deletes a
-handoff or removes a worktree. `binding_timeout_seconds` defaults to 30; it
+control creation capacity and optional archive deletion respectively.
+Retention runs only through the separate `retention` command described below. Watch-only creates no ticket and
+deletes nothing, regardless of these values. Act mode never deletes a
+handoff; it can remove eligible linked worktrees and their local branches. `binding_timeout_seconds` defaults to 30; it
 must be a positive finite number.
 
 ## Command and judgment contract
@@ -98,14 +112,22 @@ decisions for an identity that occurs only once in its source handoff.
 A direct run without decisions remains useful as an inventory and archives
 no handoff carrying undecided items.
 
-Unattended runs never request input. Interactive runs require `--interactive
+Unattended runs never request input. With no configured checks, interactive runs require `--interactive
 --open-sessions /example/open.json` on both commands. This evidence object has
 `session_ids` (an array) and `method` (a description of the read-only inspection).
-An empty result is explicit. The report records that evidence and lists open
+With configured checks, `--interactive` uses their results and agent evidence
+is optional. An empty result is explicit. The report records that evidence and lists open
 sessions with their idle time. The skill presents the choices `wrap it`,
 `leave it`, `close it` directly for open idle sessions. This command neither
 waits for those choices nor acts on them. An open or recently active session
-also protects a worktree from any proposed removal.
+also protects a worktree from removal, including when its directory is inside
+that worktree. In act mode an idle open session raises one ask, or presents the
+choice directly in an interactive report without invoking the ask binding.
+`open-session-asks.json` beside the reports records session ids and the activity
+at which asks succeeded or choices were presented. A later run suppresses that
+ask until a newer handoff or transcript write. Unbound or failed writes retry;
+uncertain writes first query identity existence. Watch-only never updates this
+record. The sweep never reads ask answers or wraps or closes a live session.
 
 `run` acquires an exclusive nonblocking lock on the handoff store's directory
 inode before discovering candidates. It writes no lock file; when the store
@@ -201,6 +223,77 @@ including main checkouts and handoffs naming subdirectories; failed status
 reads keep the source. Discovery also snapshots source bytes and file metadata;
 formatting-only rewrites, same-byte rewrites and file replacement keep the
 source, even when parsed JSON is unchanged. The snapshot is checked again
-immediately before the archive move. Worktree removal and configured open-session
-commands remain separate integration work; act does not remove worktrees or
-local branches. Open-session evidence still protects every listed session.
+immediately before the archive move.
+
+Before proposing removal, the sweep gathers protection from every handoff for
+the worktree, including subjects in its subdirectories. Recorded uncommitted
+files, kept handoffs, and open or recently active sessions protect the whole
+worktree. Act mode finishes filing across every directory before gathering
+actual retention outcomes and checking all related handoff snapshots. It makes
+one removal attempt per worktree, then archives handoffs across all directories;
+removing a root does not make its subdirectory handoffs unreadable for archiving.
+
+Act mode rechecks worktree eligibility after filing, verifies the source handoff
+is unchanged, and runs plain `git worktree remove` without force. Only after it
+succeeds does it compare-and-delete the local branch at its observed commit.
+Remote branches are never changed. A failed eligibility or removal check keeps
+the worktree and raises an ask naming its path and failed check. The main
+checkout, detached worktrees, worktrees with recorded or observed uncommitted
+work, and worktrees used by open or recently active sessions are kept. A removal
+row records path, branch, commit, all three checks, and whether branch deletion
+succeeded; a concurrently moved branch is preserved and reported. Pushed trunk
+means the locally observed remote trunk ref; the sweep does not fetch. A check
+failure prevents all removals for that run. Open-session evidence protects every
+listed session.
+
+## Undo and retention
+
+Only an explicit user request starts undo, in either Claude Code or Codex:
+
+```bash
+python3 scripts/lib/sweep.py undo --run-id <act-run-id> --user-started --user-profile /example/profile.json
+python3 scripts/lib/sweep.py retention
+```
+
+These commands need no scope. Undo uses the original act report in the configured
+report directory and the current user profile's record binding. Retention is a
+separate, schedulable command and never runs implicitly during inspect, watch-only,
+act, or undo. Both acquire the same handoff-store lock as a sweep.
+
+Each act report durably journals its own record-write intents, operations,
+identities, receipts, destinations and archive paths with byte/file snapshots.
+Writes found through an existing identity belong to their original run and are
+excluded. Asks remain delivered. Undo restores only that run's archived handoffs
+and requests `reverse` through the record binding: close a created ticket as
+not planned, remove a comment, or restore a document's prior content. Slot writes
+also require reversal through that binding. The adapter must atomically verify
+that no newer work has changed the target before reversing it; an unsupported
+reversal is reported as failed. Uncertain writes require a successful identity
+lookup confirming the original run id, destination and receipt before reversal.
+
+An occupied original handoff path is a conflict; it is never overwritten. An
+archive changed since the act run is also preserved. Worktree removal and local
+branch deletion cannot be reversed by undo; their commits remain in the pushed
+trunk. Undo does not re-create those worktrees. It does not change ask activity
+records, delivered asks, remote branches, or unrelated record writes.
+
+Undo writes `<run-id>.undo.md` beside the original report. Its structured `items`
+list gives each record write and archive the outcome `reversed`, `conflict`, or
+`failed` and a reason when needed. Each outcome is flushed atomically; retries
+use the same reversal key (run id and receipt), so the adapter must return
+`reversed` for an already completed reversal even after a lost response.
+Running undo again retries only failed items. Conflicts and successful reversals
+are retained without another attempt. A missing archived file, including one
+removed by retention, is reported as failed. Original act reports are retained.
+
+Retention defaults to off: `archive_retention_days: null` deletes nothing.
+When configured, only regular `*.json` files directly in the resolved handoff
+store's `archive` directory are eligible. Age is measured from the archived
+file's modification time, preserved by the archive move; it is the handoff's
+age, not time since the sweep. Only ages **strictly greater** than the configured
+number of days are deleted; an exact age boundary is kept. Symbolic links,
+nested directories, non-JSON files and every live handoff are preserved. A
+symbolic-link archive is rejected. Each retention command writes one
+`<id>.retention.md` report listing kept/deleted/failed files and reasons, with
+intent saved before deletion. Retention removes the ability to restore deleted
+handoffs; it never deletes reports or changes record destinations.
