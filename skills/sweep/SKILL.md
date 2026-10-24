@@ -35,9 +35,17 @@ wrapped by the sweep. The report's open idle sessions have the choices `wrap it`
 `leave it`, `close it`; present these directly to the user after writing the
 interactive report. Do not wait before completing the report.
 
+Before choosing filing rules for an abandoned session, check each item's
+`identity_occurrences`, the number of copies of its identity in that handoff.
+A value greater than one is ambiguous: skip filing judgments
+for all those copies. The report retains each copy for manual judgment and
+keeps the handoff, even if decisions were supplied. Do not distinguish copies
+by position or alter their producing identity. The same identity carried into
+a separate successor handoff is valid and does not trigger this check.
+
 Read the [checklist filing rules](../checklist/SKILL.md#5-write-and-validate-the-handoff--fixed)
-and apply their ordered table to **every** item in an abandoned session, including
-untyped items and schema-version-1 handoffs. Interpret the text and disposition;
+and apply their ordered table to every unambiguous item in an abandoned session,
+including untyped items and schema-version-1 handoffs. Interpret the text and disposition;
 do not classify solely by item type or keyword. An observation with no outcome
 is R6; a concrete deliverable needing work is R5 only after a successful open
 ticket search. Mentioning a ticket is insufficient for R2 unless it is open and
@@ -81,9 +89,9 @@ and writes nothing. An item's planning or validation failure appears as `failed`
 with its rule, destination and error; its handoff is kept and the remaining items
 are still processed into the same report. Command-level errors are reported
 explicitly; do not treat them as an empty store. Read the report path printed on
-stdout. Report each missing binding, failed item/read, parse error, retained
-handoff and proposed action. Its text and embedded JSON describe the same run.
-A dry-run archive or worktree removal
-is a proposal, never a completed operation. With no work it still writes a report.
+stdout. Report each ambiguous identity, missing binding, failed item, failed read,
+parse error, retained handoff and proposed action. Its text and embedded JSON
+describe the same run. A dry-run archive or worktree removal is a proposal,
+never a completed operation. With no work it still writes a report.
 
 Scheduling belongs to the user. See [the command contract and scheduling example](../../docs/sweep.md).

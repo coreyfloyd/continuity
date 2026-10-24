@@ -93,6 +93,136 @@ def outside_report_snapshot(sandbox):
 
 
 @pytest.mark.parametrize('version', [1, 2])
+@pytest.mark.parametrize('copies', ['identical', 'different-metadata'])
+@pytest.mark.parametrize('judgments', ['none', 'one', 'repeated', 'conflicting'])
+def test_duplicate_identities_in_one_handoff_are_retained_as_ambiguous(sandbox, version, copies, judgments):
+    captured = json.loads(FIXTURE.read_text())['resume']['open_loops']
+    first = dict(captured[0])
+    if version == 1:
+        first = {key: value for key, value in first.items()
+                 if key not in ('type', 'session_id', 'produced_at')}
+    second = dict(first)
+    if copies == 'different-metadata':
+        # These fields affect filing but are outside the approved identity.
+        second.update(anchor={'ticket': 'https://example.test/other-ticket'}, disposition='consider')
+        if version == 2:
+            second['type'] = 'knowledge'
+    items = [first, second, captured[3]]
+    path = source(sandbox, loops=items, version=version)
+    profile = bound_profile(sandbox)
+    inspected = json.loads(command(sandbox, 'inspect', '--scope', 'all').stdout)['candidates'][0]['items']
+    assert inspected[0]['identity'] == inspected[1]['identity']
+    identity = inspected[0]['identity']
+    drop = {'rule': 'R6', 'reason': 'No stated outcome'}
+    rows = [dict(handoff=str(path), identity=inspected[2]['identity'], **drop)]
+    decision = dict(handoff=str(path), identity=identity, rule='R2',
+                    destination='https://example.test/ticket', read_status='ok')
+    if judgments != 'none':
+        rows.append(decision)
+    if judgments in ('repeated', 'conflicting'):
+        rows.append(dict(decision) if judgments == 'repeated' else
+                    dict(handoff=str(path), identity=identity, **drop))
+    choices = sandbox[0] / 'decisions.json'
+    choices.write_text(json.dumps(rows))
+    before = outside_report_snapshot(sandbox)
+
+    text, data = report(sandbox, '--decisions', str(choices), '--user-profile', str(profile))
+
+    section = data['directories'][str(sandbox[0])]
+    outcomes = section['filing_outcomes']
+    assert len(outcomes) == len(items)
+    for item, row in zip(items[:2], outcomes[:2]):
+        assert row['outcome'] == 'ambiguous identity'
+        assert row['rule'] is None
+        assert row['identity'] == identity
+        assert row['item'] == item and row['source_handoff'] == str(path)
+        assert row['identity_occurrences'] == 2
+        assert 'manual judgment' in row['reason']
+        assert 'no filing decision applied' in row['reason']
+        rendered = json.dumps(row, ensure_ascii=False, sort_keys=True)
+        assert text.split('## Structured data')[0].count(rendered) == outcomes.count(row)
+    assert [item['identity_occurrences'] for item in inspected] == [2, 2, 1]
+    assert outcomes[2]['outcome'] == 'dry run'
+    assert section['items_dropped'] == [outcomes[2]]
+    for key in ('asks_raised', 'new_tickets', 'comments_added', 'documents_changed', 'handoffs_archived'):
+        assert not section[key]
+    assert section['handoffs_kept'][0]['path'] == str(path)
+    assert not data['nothing_to_do']
+    assert outside_report_snapshot(sandbox) == before
+    assert len(list((sandbox[0] / 'reports').iterdir())) == 1
+
+
+@pytest.mark.parametrize('field', ['session_id', 'produced_at', 'context'])
+def test_each_identity_component_distinguishes_items_in_one_handoff(sandbox, field):
+    captured = json.loads(FIXTURE.read_text())['resume']['open_loops']
+    first = dict(captured[0])
+    second = dict(first)
+    second[field] = {'session_id': 'another-producer', 'produced_at': '2026-10-02T00:00:00Z',
+                     'context': captured[1]['context']}[field]
+    path = source(sandbox, loops=[first, second])
+    args = decisions(sandbox, [{'rule': 'R6', 'reason': 'No stated outcome'}])
+
+    _, data = report(sandbox, *args)
+
+    section = data['directories'][str(sandbox[0])]
+    assert len(section['items_dropped']) == 2
+    assert all(row['outcome'] == 'dry run' for row in section['filing_outcomes'])
+    assert section['filing_outcomes'][0]['identity'] != section['filing_outcomes'][1]['identity']
+    assert section['handoffs_archived'][0]['path'] == str(path)
+
+
+def test_same_identity_carried_to_a_successor_is_not_a_within_handoff_ambiguity(sandbox):
+    item = json.loads(FIXTURE.read_text())['resume']['open_loops'][0]
+    original = source(sandbox, name='original', loops=[item])
+    successor = source(sandbox, name='successor', directory=sandbox[0] / 'successor', loops=[item])
+    args = decisions(sandbox, [{'rule': 'R6', 'reason': 'No stated outcome'}])
+
+    _, data = report(sandbox, *args)
+
+    identities = []
+    for directory, path in ((sandbox[0], original), (sandbox[0] / 'successor', successor)):
+        section = data['directories'][str(directory)]
+        row, = section['filing_outcomes']
+        assert row['outcome'] == 'dry run' and row['source_handoff'] == str(path)
+        assert section['handoffs_archived'][0]['path'] == str(path)
+        identities.append(row['identity'])
+    assert identities[0] == identities[1] == {
+        'session_id': item['session_id'], 'produced_at': item['produced_at'], 'text': item['context']}
+
+
+def test_duplicate_identity_added_after_inspection_blocks_the_existing_decision(sandbox):
+    item = json.loads(FIXTURE.read_text())['resume']['open_loops'][0]
+    path = source(sandbox, loops=[item])
+    args = decisions(sandbox, [{'rule': 'R6', 'reason': 'No stated outcome'}])
+    source(sandbox, loops=[item, dict(item)])
+    before = outside_report_snapshot(sandbox)
+
+    _, data = report(sandbox, *args)
+
+    section = data['directories'][str(sandbox[0])]
+    assert len(section['filing_outcomes']) == 2
+    assert all(row['outcome'] == 'ambiguous identity' for row in section['filing_outcomes'])
+    assert not section['items_dropped'] and not section['handoffs_archived']
+    assert section['handoffs_kept'][0]['path'] == str(path)
+    assert outside_report_snapshot(sandbox) == before
+
+
+def test_duplicate_decisions_for_a_unique_source_identity_are_still_rejected(sandbox):
+    source(sandbox)
+    args = decisions(sandbox, [{'rule': 'R6', 'reason': 'No stated outcome'}])
+    path = Path(args[1])
+    rows = json.loads(path.read_text())
+    path.write_text(json.dumps(rows + rows))
+    before = outside_report_snapshot(sandbox)
+
+    result = command(sandbox, 'run', '--scope', 'all', *args, code=1)
+
+    assert 'duplicate' in result.stderr
+    assert outside_report_snapshot(sandbox) == before
+    assert not (sandbox[0] / 'reports').exists()
+
+
+@pytest.mark.parametrize('version', [1, 2])
 @pytest.mark.parametrize('entry,binding,section_key', [
     pytest.param({'rule': 'R1', 'information_only': True, 'reason': 'Information only'},
                  None, 'items_dropped', id='R1-information'),

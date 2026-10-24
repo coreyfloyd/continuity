@@ -63,6 +63,18 @@ session, production time and text. Legacy items without provenance use their
 source handoff's session and timestamp, falling back to the filename and file
 write time. No item is identified by its array position.
 
+Each inspected item has `identity_occurrences`, the number of times its identity
+appears within that handoff. More than one occurrence is ambiguous, including
+exact copies: fields outside the identity can affect filing, and the sweep
+does not guess which copy a judgment meant. For a swept handoff, all copies
+remain visible with the outcome `ambiguous identity`, their unchanged identity and source item, the
+occurrence count, and a reason requiring manual judgment. No filing rule or
+action is proposed for these copies, and their handoff is kept. Zero, one or
+multiple supplied decisions for an ambiguous identity all produce that same
+retained outcome per copy; none is applied. Discovery repeats this check at
+run time. This check is local to a handoff: carrying the same identity into a
+separate successor handoff is valid and does not create an ambiguity.
+
 The sweep skill chooses filing rules using the checklist's ordered filing
 rules, then supplies an array via `--decisions`. Each row names `handoff` (the
 candidate's path), copies `identity` unchanged, and supplies the checklist
@@ -77,7 +89,8 @@ slot work to an ask. `--user-profile` accepts the existing JSON or
 Markdown checklist profile. Unbound destinations keep their handoffs and are
 reported. R1/R2/R5 reads must succeed; failed or unsupported reads remain
 `read failed`, never evidence that no ticket exists. Missing decisions stay
-`pending judgment`. Stale, duplicate and unknown decisions fail explicitly.
+`pending judgment`. Stale and unknown decisions fail explicitly, as do multiple
+decisions for an identity that occurs only once in its source handoff.
 A direct run without decisions remains useful as an inventory and archives
 no handoff carrying undecided items.
 
@@ -120,8 +133,9 @@ end times, scope, mode, open-session inspection results, parse errors, and
 8. `handoffs_archived`: proposed archives with source and destination.
 
 `filing_outcomes` includes every item, including lessons/knowledge, pending
-judgments, failed items, read failures and unbound destinations. `worktrees_kept` and
-`handoffs_kept` explain retention. Every decided item names its rule.
+judgments, ambiguous identities, failed items, read failures and unbound
+destinations. `worktrees_kept` and `handoffs_kept` explain retention. Every decided
+item names its rule.
 `dry run` means a proposal; nothing has been filed, dropped, archived, or
 removed. An uncommitted-files ask names the session, directory and files and
 always keeps its handoff. Proposed archives require every item to be fileable

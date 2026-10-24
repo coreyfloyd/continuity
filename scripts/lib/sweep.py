@@ -7,6 +7,7 @@ Its only filesystem write is one report containing text and structured data.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
@@ -163,6 +164,9 @@ def discover(scope, config, now):
             idle = max(0, now.timestamp() - activity)
             items = [{'item': item, 'identity': item_identity(item, data, path)}
                      for item in data.get('resume', {}).get('open_loops', [])]
+            occurrences = Counter(identity_key(item['identity']) for item in items)
+            for item in items:
+                item['identity_occurrences'] = occurrences[identity_key(item['identity'])]
             result['candidates'].append({'path': str(path), 'directory': directory or 'unknown directory',
                 'session_id': session or path.stem, 'activity_at': activity, 'idle_seconds': idle,
                 'abandoned': idle > config['idle_days'] * 86400,
@@ -208,18 +212,30 @@ def read_decisions(path, discovery):
     rows = [] if path is None else json.loads(path.read_text())
     if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
         raise ValueError('decisions must be an array of objects')
-    allowed = {(c['path'], identity_key(i['identity'])) for c in discovery['candidates'] for i in c['items']}
+    allowed = {(c['path'], identity_key(i['identity'])): i['identity_occurrences']
+               for c in discovery['candidates'] for i in c['items']}
     result = {}
     for row in rows:
         key = (row.get('handoff'), identity_key(row.get('identity')))
-        if key not in allowed or key in result:
-            raise ValueError('stale, duplicate, or unknown decision identity; inspect again')
+        if key not in allowed:
+            raise ValueError('stale or unknown decision identity; inspect again')
+        if allowed[key] > 1:
+            # No decision can select one copy without extending the identity.
+            # Report every ambiguous copy, regardless of supplied judgments.
+            continue
+        if key in result:
+            raise ValueError('duplicate decision for unique item identity; inspect again')
         result[key] = row
     return result
 
 
 def plan_item(candidate, item, decision, plan, ask):
     base = dict(identity=item['identity'], source_handoff=candidate['path'], item=item['item'])
+    occurrences = item['identity_occurrences']
+    if occurrences > 1:
+        return dict(base, rule=None, outcome='ambiguous identity', identity_occurrences=occurrences,
+                    reason=f'Identity occurs {occurrences} times in this handoff; kept for manual judgment; '
+                           'no filing decision applied')
     if decision is None:
         return dict(base, rule=None, outcome='pending judgment', reason='No agent filing decision supplied')
     row = {k: v for k, v in decision.items() if k not in ('handoff', 'identity')}
