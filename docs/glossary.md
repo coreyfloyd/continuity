@@ -59,3 +59,23 @@ _Avoid_: log, history
 **Open loop**:
 One item carried in a handoff, with a disposition saying what should happen to it. A carried item names its session-item type (progress, commitment, decision, knowledge, lesson, artifact, or open loop) and keeps the identity of the session that produced it and when; a decision also keeps who made it and where. A slot that consumes an open loop removes it from the handoff.
 _Avoid_: todo, task
+
+**Sweep**:
+An unattended-safe pass over the handoffs in one scope: a directory together with every worktree of its repository, or every handoff on the machine. For each abandoned session in scope it applies the filing rules to the handoff's items, removes the session's clean, merged worktrees, archives the handoff once nothing in it is left unhandled, and writes a sweep report. A sweep never acts on a session that is still open.
+_Avoid_: cleanup, reconcile, prune (prune is pickup's move of dead handoffs into the archive)
+
+**Filing rules**:
+The fixed, ordered table that decides what each carried item becomes: dropped with a reason, a comment on the ticket it names, an ask, a lesson or knowledge item for its slot, a document change, or a new ticket. A wrap and a sweep apply the same rules.
+_Avoid_: disposition (an open loop's own instruction), triage
+
+**Ask**:
+An item only the user can resolve: a decision, an approval, a destructive action, or a session left open. The package hands each ask to the user's ask binding, one configured command that is not a spine step. With nothing bound, an ask stays in the sweep report and its handoff is kept.
+_Avoid_: question, needs-you item
+
+**Abandoned session**:
+An interactive session idle for longer than the configured threshold that no open-session check reports as open. Only an abandoned session's handoff is swept.
+_Avoid_: dead session, stale session
+
+**Sweep report**:
+The file one sweep run writes, grouped by directory: the asks it raised, the items it filed and where, the items it dropped and why, the sessions still open, and the worktrees it removed. It gives status and asks for nothing; the asks themselves go through the ask binding.
+_Avoid_: digest, summary

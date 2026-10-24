@@ -39,7 +39,9 @@ notes that qualify its steps.
 
 Profiles with a `checklist-profile` JSON fence are composed by the standard-library
 module `scripts/lib/checklist.py`. The fence declares `name`, optional `bindings`,
-and optional `steps`. A binding has a `command` and a list of item types it
+optional `steps`, and an optional `ask: {"command": "/ask-step"}`. The ask
+binding is one user command, not a slot or a spine step. Repository profiles
+cannot bind it. A binding has a `command` and a list of item types it
 `consumes`; a step has a unique `id`, an `after` anchor, and `instructions` (or
 a `section` naming a level-two heading in the same Markdown file).
 
@@ -58,7 +60,7 @@ ledger; `--session-id` defaults to the Claude Code session in the environment,
 so pass it in Codex. No profile is also a valid plan: omit the profile arguments, and the plan is the
 five spine steps ending with the handoff. Record, knowledge, and persist are
 unbound in the spine; lessons defaults to `/improve-harness`, consuming `lesson`
-items. An unbound slot's `carries` lists the item types it leaves in the handoff.
+items. An unbound slot's `carries` lists item types for the final filing pass.
 
 Added steps may run `before-spine` or after `record`, `knowledge`, `lessons`, or
 `persist`. At each anchor they run in profile order, then declaration order.
@@ -102,21 +104,30 @@ prints which applies now: `none`, `checkpoint`, `unattended-checklist`, or
 nudge records the successful call as a marker under `CHECKLIST_STATE_DIR`
 (the module's state directory). While it exists the cadence stays
 `unattended-checklist`, and `wrap-check` without `--unattended` fails for that
-session. A passing `wrap-check --unattended` removes it.
+session. A passing `wrap-check --unattended` removes it. An explicit attended `plan`
+also removes it and starts all steps afresh, including after a failed unattended wrap.
 
 **Unattended runs.** Nobody is present to answer. A step, binding, or profile
 step that would need the user's answer (an approval, a choice, a confirmation)
 reports `pending` with the answer it needs, writes nothing, and the checklist
-continues with the next step. Its items stay carried in the handoff as open
-loops. Step 5 still runs and the wrap check still applies.
+continues with the next step. Keep its unsaved items for the filing pass;
+items are not deferred to a next session. Before writing the handoff, turn each item
+that needs the user into an ask through the ask binding; never file an ask as a
+ticket. Step 5 still runs and the wrap check still applies.
 
 ## The five-step spine
+
+An attended run after an unattended run starts a fresh `plan`, runs **every
+step again**, and asks the user wherever an answer is needed. Never reuse an
+earlier run's pending results, saved-item receipts, or filing outcomes as the
+new run's results. The composer returns every step without cached statuses
+(`rerun_all_steps: true`). Prior durable writes remain evidence to read under R1.
 
 ### 1. Reconcile the record — slot `record`
 
 Run the bound command with current session items and matching carried items.
 The profile defines the record's stores and policy. If unbound, the step does
-not fail: keep its `carries` items as open loops for the final handoff. When
+not fail: send its `carries` items through the filing rules before the final handoff. When
 bound, note the UTC time the record write finishes; the wrap check needs it.
 
 A bound record also composes the **session summary** after its ticket step,
@@ -129,23 +140,86 @@ the report starts with it.
 ### 2. Capture knowledge — slot `knowledge`
 
 Run the binding on new knowledge and matching carried knowledge. Keep anything
-pending approval or otherwise unsaved as open loops. If unbound, carry it.
+pending approval or otherwise unsaved for the filing pass. If unbound, the
+filing pass warns and retains the item.
 
 ### 3. Fold in lessons — slot `lessons`
 
 Run the bound lesson-routing command on current lessons and carried lesson text.
 The default command is `/improve-harness`; a user profile can replace it.
-Retain lessons whose routing is pending or failed.
+Send every unsaved lesson through R4 in the filing pass. Anything the slot
+leaves pending becomes an ask; a failed bound write is reported with its error.
 
 ### 4. Persist — slot `persist`
 
 Run the bound command after steps 1–3 and their additions so it includes their
-edits. If unbound, retain unsaved items for the handoff. Ticket-state decisions
+edits. Send unsaved items through the filing pass, including when unbound. Ticket-state decisions
 and merge authorization belong to profiles and their bindings.
 
 ### 5. Write and validate the handoff — fixed
 
-After every profile addition, write the interactive session's handoff using the
+After the additions through persist, apply the **filing rules** to every item
+the earlier steps did not save, including current `session_items`, remaining
+typed or legacy open loops, and items needing approval. Evaluate in this order;
+the first match decides. Rule numbers are names, not evaluation order.
+
+| Rule | First matching condition | Outcome |
+|---|---|---|
+| R1 | Already on the ticket or document it names, or information only | Drop with the reason. |
+| R3 | Needs the user's decision, approval, or a destructive action | Ask, linking its ticket if any. Removing a clean, merged worktree and its local branch under the sweep's S6 rule is not destructive: its commits are in the pushed trunk. |
+| R4 | Lesson or knowledge | Pass to `lessons` or `knowledge`; anything the slot leaves pending becomes an ask. |
+| R7 | Changes a project document (spec, design document, README) | Edit through `record`; a change to an approved spec becomes an ask. |
+| R2 | Names an open ticket | Comment on that ticket through `record`. |
+| R5 | Work with a stated outcome and no matching open ticket | New ticket through `record`, with recommended priority and a one-line reason. |
+| R6 | Otherwise: optional suggestion, observation, idea with no outcome | Drop with the reason. |
+
+The agent makes the judgment, including R5 versus R6 and whether R7 needs
+approval. R1's already-recorded check, R2's open-ticket check and R5's matching
+search require a successful, supported, valid record read. Use `record_read`
+and its response contract when bound. A failed, unsupported, or malformed read
+is **unknown**, never absence: keep the item with outcome `read failed`, naming
+the item and the error. Never drop it under R1 or create a ticket under R5 on
+that evidence. An information-only R1 can explicitly set `information_only: true`.
+
+Run the required bound command for each write and collect explicit receipts.
+For each ask, pass the ask command a JSON object containing `text` (the item),
+`session_id` (its source session), `directory`, `ticket` (linked ticket or null),
+and `choices` (the user's options). An ask is **never filed as a ticket**.
+These fields also appear in the filing report's `ask` payload. For R4 pending
+items, use `destination: "ask"` and the ask command's write acknowledgement.
+A successful invocation alone does not acknowledge every input.
+
+Combine remaining open loops with unsaved current `session_items` in a payload.
+Create a JSON array with one outcome for each item, indexed first by the
+remaining loops and then by unrecorded `session_items` in order:
+
+```json
+[{"index": 0, "rule": "R3", "status": "filed", "destination": "ask receipt", "choices": ["approve", "decline"]}]
+```
+
+Each row names `index`, `rule`, and `status` (`filed`, `dropped`, `pending`,
+`failed`, or `read failed`). A filed row names `destination`, a drop names
+`reason`, and a failed row names `error`. Read-dependent rules need
+`read_status: "ok"`; any other or missing read status is a read failure. R5
+also needs `priority` and `priority_reason`. R3 and R4-to-ask need `choices`.
+Use the same profile arguments for the filing pass:
+
+```bash
+python3 <checklist-module> file --user-profile <user-profile> \
+  --repository-profile <repository-profile> --handoff <remaining-items> \
+  --filing <filing-outcomes>
+```
+
+The module does bookkeeping, not command execution. Its output removes only
+explicitly filed or dropped items and includes a `filing` report listing every
+item, rule, destination or reason, warnings and failures. Keep that report in
+the payload through checkpoint. A missing binding retains the item and warns,
+without failing wrap. A bound write failure retains it and fails wrap. With no
+ask binding, the report's `asks` groups asks under their directory; retain this
+report for the sweep report and keep the producing handoff. Do not archive it.
+For a failed write, checkpoint the retained payload before reporting failure.
+
+Write the interactive session's handoff using the
 same checkpoint module as `checkpoint`. Its slash skill is user-only;
 call its script directly: `<checkpoint.sh>` is `scripts/checkpoint.sh` in that
 skill's real directory (`../checkpoint/scripts/checkpoint.sh` from this
@@ -153,16 +227,16 @@ one). Use the actual current session identity in either tool.
 
 ```bash
 bash <checkpoint.sh> <<'JSON'
-<current handoff JSON with remaining carried items and current open loops>
+<current handoff JSON returned by the filing pass, including its filing report>
 JSON
 ```
 
-The handoff points to the record and holds what the record does not yet hold.
-Preserve unconsumed carried items and their producing identities. Include the
-session's uncommitted files through the checkpoint/ledger contract. Never turn
-a successful binding invocation into evidence that every input was saved.
-Each session item no binding acknowledged goes in `session_items` without
-`recorded: true`, so checkpoint carries it as an open loop.
+The finished handoff holds context only, with `resume.next_action` saying
+`Session finished.`. The filing output sets it; when an unbound destination
+keeps items, it names those items instead. Preserve the producing identities
+and provenance of retained items. Do not add a next-session work queue after
+the filing pass. Checkpoint still includes the session's uncommitted files
+through the ledger contract; any newly included open loop must pass wrap check.
 
 Then run the wrap check with the same profile arguments:
 
@@ -203,7 +277,8 @@ Collect explicit saved-item acknowledgements from each binding as JSON:
 `{"record": [0, 2], "knowledge": [3]}`. These are indexes into the original
 input, not into a shrinking list. Do not acknowledge pending, failed, unsupported,
 or merely presented items. If a binding lacks provenance support, report it and
-retain the affected loops. Untyped legacy loops remain continuation context.
+send the affected loops through the filing rules. Untyped legacy loops also
+pass through the filing rules at wrap; checkpoints may still carry them.
 
 Use the same profile arguments to settle the input:
 
@@ -215,8 +290,8 @@ python3 <checklist-module> settle --user-profile <user-profile> \
 
 The returned JSON removes only acknowledged loops of types the binding consumes.
 It preserves every other field and never rewrites the source handoff. Merge its
-remaining loops with this session's unsaved items, then checkpoint the result in
-step 5 under the current session. Unbound slots carry their items without failing.
+remaining loops with this session's unsaved items, then apply the filing rules
+in step 5 under the current session. Unbound destinations warn without failing.
 
 ## Report
 
@@ -230,9 +305,11 @@ arguments before reporting completion:
 ```bash
 python3 <checklist-module> report --user-profile <user-profile> \
   --repository-profile <repository-profile> --results <results.json> \
-  --summary <summary-file> [--unattended]
+  --summary <summary-file> --handoff <written-handoff> [--unattended]
 ```
 
+`--handoff` is required and must name the valid handoff checkpoint wrote;
+report refuses an omitted, unreadable, malformed, or invalid handoff.
 `--summary` is the file the record binding wrote. When it could not compose
 one, pass `--no-summary <reason>` with its reason instead. When its output has
 no session summary at all (a binding that predates session summaries), pass
@@ -246,7 +323,9 @@ output's first field is the summary.
 A pending step needs a `reason` naming the answer it waits for and an empty
 `writes`. Every planned step reports, so a pending or failed step never ends the
 run early; unattended, the handoff step must have run. On a non-zero exit, fix
-the run or report each `report invalid:` reason. Include what was saved, what remains carried, and the final
+the run or report each `report invalid:` reason. Include the filing report: each item, rule, destination or drop reason,
+missing-binding warnings, and failed-read/write errors. Include what was saved,
+what remains carried, and the final
 handoff location, validation result, the wrap check's result, and the own-worktree result:
 removed, or kept with the failed check. Profile steps appear at their declared anchors; after
 the handoff write, only `own-worktree` and reporting the result follow.

@@ -98,5 +98,7 @@
       "title": "Write and validate the handoff"
     }
   ],
-  "record_read": null
+  "record_read": null,
+  "ask": null,
+  "rerun_all_steps": true
 }
