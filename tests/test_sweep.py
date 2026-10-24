@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import time
@@ -70,6 +71,162 @@ def decisions(sandbox, entries):
                              **entries[index % len(entries)]))
     path.write_text(json.dumps(rows))
     return ['--decisions', str(path)]
+
+
+def bound_profile(sandbox):
+    stub = sandbox[0] / 'binding.sh'
+    stub.write_text('printf called > "$0.called"\nexit 1\n')
+    binding = {'command': 'sh ' + shlex.quote(str(stub))}
+    profile = sandbox[0] / 'profile.json'
+    profile.write_text(json.dumps({'name': 'test', 'ask': binding,
+        'bindings': {slot: dict(binding, consumes=[])
+                     for slot in ('record', 'lessons', 'knowledge')}}))
+    return profile
+
+
+def outside_report_snapshot(sandbox):
+    root = sandbox[0]
+    reports = root / 'reports'
+    return {str(path.relative_to(root)): (path.read_bytes(), path.stat().st_mtime_ns)
+            if path.is_file() else None
+            for path in root.rglob('*') if path != reports and reports not in path.parents}
+
+
+@pytest.mark.parametrize('version', [1, 2])
+@pytest.mark.parametrize('entry,binding,section_key', [
+    pytest.param({'rule': 'R1', 'information_only': True, 'reason': 'Information only'},
+                 None, 'items_dropped', id='R1-information'),
+    pytest.param({'rule': 'R1', 'read_status': 'ok', 'reason': 'Already recorded'},
+                 None, 'items_dropped', id='R1-recorded'),
+    pytest.param({'rule': 'R3', 'destination': 'ask', 'choices': ['approve', 'decline']},
+                 'ask', 'asks_raised', id='R3'),
+    pytest.param({'rule': 'R4', 'destination': 'lessons'},
+                 'lessons', 'filing_outcomes', id='R4-lesson'),
+    pytest.param({'rule': 'R4', 'destination': 'knowledge'},
+                 'knowledge', 'filing_outcomes', id='R4-knowledge'),
+    pytest.param({'rule': 'R4', 'destination': 'ask', 'choices': ['save', 'leave it']},
+                 'ask', 'asks_raised', id='R4-pending'),
+    pytest.param({'rule': 'R7', 'destination': 'README.md'},
+                 'record', 'documents_changed', id='R7'),
+    pytest.param({'rule': 'R2', 'destination': 'https://example.test/ticket', 'read_status': 'ok'},
+                 'record', 'comments_added', id='R2'),
+    pytest.param({'rule': 'R5', 'destination': 'record', 'read_status': 'ok',
+                  'priority': 'p2', 'priority_reason': 'Needed'},
+                 'record', 'new_tickets', id='R5'),
+    pytest.param({'rule': 'R6', 'reason': 'No stated outcome'},
+                 None, 'items_dropped', id='R6'),
+])
+def test_untyped_legacy_items_receive_every_filing_outcome(sandbox, version, entry, binding, section_key):
+    captured = json.loads(FIXTURE.read_text())['resume']['open_loops'][2]
+    item = {key: value for key, value in captured.items()
+            if key not in ('type', 'session_id', 'produced_at')}
+    path = source(sandbox, loops=[item], version=version)
+    profile = bound_profile(sandbox)
+    args = decisions(sandbox, [entry])
+    identity = json.loads(Path(args[1]).read_text())[0]['identity']
+    before = outside_report_snapshot(sandbox)
+
+    text, data = report(sandbox, *args, '--user-profile', str(profile))
+
+    section = data['directories'][str(sandbox[0])]
+    row, = section['filing_outcomes']
+    assert row['item'] == item
+    assert row['identity'] == identity
+    assert row['source_handoff'] == str(path)
+    assert row['rule'] == entry['rule'] and row['binding'] == binding
+    assert row['outcome'] == 'dry run'
+    for key, value in entry.items():
+        assert row[key] == value
+    if binding == 'ask':
+        assert row['ask']['identity'] == identity
+    assert section[section_key] == [row]
+    assert section['handoffs_archived'][0]['path'] == str(path)
+    assert not section['handoffs_kept']
+    assert json.dumps(row, ensure_ascii=False, sort_keys=True) in text.split('## Structured data')[0]
+    assert outside_report_snapshot(sandbox) == before
+    assert len(list((sandbox[0] / 'reports').iterdir())) == 1
+
+
+@pytest.mark.parametrize('slot', ['lessons', 'knowledge'])
+def test_untyped_legacy_slot_without_binding_is_reported_and_kept(sandbox, slot):
+    captured = json.loads(FIXTURE.read_text())['resume']['open_loops'][2]
+    item = {key: value for key, value in captured.items() if key != 'type'}
+    path = source(sandbox, loops=[item], version=1)
+    profile = sandbox[0] / 'profile.json'
+    profile.write_text(json.dumps({'name': 'test', 'bindings': {slot: None}}))
+    args = decisions(sandbox, [{'rule': 'R4', 'destination': slot}])
+    before = outside_report_snapshot(sandbox)
+
+    _, data = report(sandbox, *args, '--user-profile', str(profile))
+
+    section = data['directories'][str(sandbox[0])]
+    row, = section['filing_outcomes']
+    assert row['rule'] == 'R4' and row['binding'] == slot and row['outcome'] == 'unbound'
+    assert row['item'] == item
+    assert row['identity']['session_id'] == item['session_id']
+    assert row['identity']['produced_at'] == item['produced_at']
+    assert not section['handoffs_archived']
+    assert section['handoffs_kept'][0]['path'] == str(path)
+    assert outside_report_snapshot(sandbox) == before
+
+
+@pytest.mark.parametrize('bad_index', [0, 2])
+@pytest.mark.parametrize('bad_entry,item_overrides,error', [
+    pytest.param({'rule': 'R1', 'information_only': True}, {}, 'requires dropped with a reason', id='R1'),
+    pytest.param({'rule': 'R3', 'destination': 'ask'}, {}, "an ask requires the user's choices", id='R3'),
+    pytest.param({'rule': 'R4', 'destination': 'record'}, {}, 'R4 requires', id='R4'),
+    pytest.param({'rule': 'R7'}, {}, 'a filed item requires its destination', id='R7'),
+    pytest.param({'rule': 'R2', 'read_status': 'ok'}, {}, 'a filed item requires its destination', id='R2'),
+    pytest.param({'rule': 'R5', 'destination': 'record', 'read_status': 'ok'}, {},
+                 'a new ticket requires priority', id='R5'),
+    pytest.param({'rule': 'R6', 'reason': ''}, {}, 'requires dropped with a reason', id='R6'),
+    pytest.param({'rule': 'unknown'}, {}, 'unknown rule', id='unknown-rule'),
+    pytest.param({'rule': 'R3', 'destination': 'ask', 'choices': ['approve', 'decline']},
+                 {'anchor': ['invalid anchor']}, 'has no attribute', id='malformed-legacy-anchor'),
+])
+def test_item_failure_is_reported_without_aborting_other_items_or_handoffs(sandbox, bad_index, bad_entry,
+                                                                         item_overrides, error):
+    captured = json.loads(FIXTURE.read_text())['resume']['open_loops']
+    items = [{key: value for key, value in item.items() if key != 'type'} for item in captured[:3]]
+    items[bad_index].update(item_overrides)
+    path = source(sandbox, name='broken', loops=items, version=1)
+    other_directory = sandbox[0] / 'other'
+    other = source(sandbox, name='healthy', directory=other_directory, loops=[captured[3]])
+    profile = bound_profile(sandbox)
+    valid = {'rule': 'R6', 'reason': 'No stated outcome'}
+    entries = [bad_entry if index == bad_index else valid for index in range(len(items))]
+    args = decisions(sandbox, entries)
+    rows = json.loads(Path(args[1]).read_text())
+    rows = [dict(handoff=row['handoff'], identity=row['identity'], **valid)
+            if row['handoff'] == str(other) else row for row in rows]
+    Path(args[1]).write_text(json.dumps(rows))
+    before = outside_report_snapshot(sandbox)
+
+    text, data = report(sandbox, *args, '--user-profile', str(profile))
+
+    section = data['directories'][str(sandbox[0])]
+    outcomes = section['filing_outcomes']
+    assert len(outcomes) == len(items)
+    for index, row in enumerate(outcomes):
+        assert row['item'] == items[index]
+        assert row['identity'] == rows[index]['identity']
+        assert row['source_handoff'] == str(path)
+        assert row['outcome'] == ('failed' if index == bad_index else 'dry run')
+    failed = outcomes[bad_index]
+    assert failed['rule'] == bad_entry['rule']
+    assert failed.get('destination') == bad_entry.get('destination')
+    assert error in failed['error']
+    assert json.dumps(failed, ensure_ascii=False, sort_keys=True) in text.split('## Structured data')[0]
+    assert len(section['items_dropped']) == len(items) - 1
+    for key in ('asks_raised', 'comments_added', 'new_tickets', 'documents_changed', 'handoffs_archived'):
+        assert not section[key]
+    assert section['handoffs_kept'][0]['path'] == str(path)
+    healthy = data['directories'][str(other_directory)]
+    assert healthy['filing_outcomes'][0]['outcome'] == 'dry run'
+    assert healthy['handoffs_archived'][0]['path'] == str(other)
+    assert not data['nothing_to_do']
+    assert outside_report_snapshot(sandbox) == before
+    assert len(list((sandbox[0] / 'reports').iterdir())) == 1
 
 
 def test_watch_report_covers_legacy_drop_and_changes_only_report(sandbox):

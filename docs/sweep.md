@@ -69,7 +69,11 @@ candidate's path), copies `identity` unchanged, and supplies the checklist
 filing fields: `rule`, `destination`, `reason`, `choices`, `read_status`,
 `information_only`, `priority`, `priority_reason`, and `error` as applicable.
 The engine uses the checklist's filing validator and binding resolution,
-without executing the bindings. `--user-profile` accepts the existing JSON or
+without executing the bindings. Untyped legacy items use the same fields for
+every rule. For R4, `destination: "lessons"` or `"knowledge"` supplies the agent's
+classification to the validator using a temporary typed copy; the report keeps
+the original item and its identity. R4 with `destination: "ask"` routes pending
+slot work to an ask. `--user-profile` accepts the existing JSON or
 Markdown checklist profile. Unbound destinations keep their handoffs and are
 reported. R1/R2/R5 reads must succeed; failed or unsupported reads remain
 `read failed`, never evidence that no ticket exists. Missing decisions stay
@@ -92,7 +96,11 @@ is absent it locks the nearest existing ancestor conservatively. A concurrent
 sweep over the same store exits 2 with `already running` and writes nothing.
 Other command/configuration failures exit 1. Successful inspect/run exits 0;
 a successful run prints its report path. Source parse failures appear inside
-the report, so they do not prevent reporting the remaining sources.
+the report, so they do not prevent reporting the remaining sources. An item's
+planning or validation failure also stays in the report: its outcome is `failed`,
+with the source item, unchanged identity, chosen rule/destination and error. Its
+handoff is kept, and the run continues with other items and handoffs. Exit 0 means
+the report was written; read its outcomes to distinguish failures from proposals.
 
 ## Sweep report
 
@@ -112,7 +120,7 @@ end times, scope, mode, open-session inspection results, parse errors, and
 8. `handoffs_archived`: proposed archives with source and destination.
 
 `filing_outcomes` includes every item, including lessons/knowledge, pending
-judgments, read failures and unbound destinations. `worktrees_kept` and
+judgments, failed items, read failures and unbound destinations. `worktrees_kept` and
 `handoffs_kept` explain retention. Every decided item names its rule.
 `dry run` means a proposal; nothing has been filed, dropped, archived, or
 removed. An uncommitted-files ask names the session, directory and files and

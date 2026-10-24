@@ -225,10 +225,15 @@ def plan_item(candidate, item, decision, plan, ask):
     row = {k: v for k, v in decision.items() if k not in ('handoff', 'identity')}
     rule = row.get('rule')
     row.update(index=0, status='dropped' if rule in ('R1', 'R6') else 'filed')
+    validation_item = item['item']
+    if rule == 'R4' and 'type' not in validation_item and row.get('destination') in ('lessons', 'knowledge'):
+        # The agent's chosen slot classifies a legacy item for the shared
+        # validator. Preserve the original item and identity in the report.
+        validation_item = dict(validation_item, type='lesson' if row['destination'] == 'lessons' else 'knowledge')
     # Reuse the wrap's validation, binding resolution, read failure handling and
     # ask payload. It only does bookkeeping; no binding command is ever invoked.
     single = dict(candidate['handoff'], subject={'working_directory': candidate['directory'],
-                  'session_id': candidate['session_id']}, resume={'open_loops': [item['item']]})
+                  'session_id': candidate['session_id']}, resume={'open_loops': [validation_item]})
     checked = checklist.file_items(plan, single, [row], ask)['filing']['items'][0]
     checked.pop('index', None)
     if 'ask' in checked:
@@ -319,7 +324,15 @@ def build_report(discovery, decisions, plan, ask, checks, interactive, started):
         outcomes = []
         for item in candidate['items']:
             decision = decisions.get((candidate['path'], identity_key(item['identity'])))
-            row = plan_item(candidate, item, decision, plan, ask)
+            try:
+                row = plan_item(candidate, item, decision, plan, ask)
+            except Exception as exc:
+                # One item's validation or planning failure must not hide the
+                # run. Keep its source and continue reporting the other items.
+                row = dict(identity=item['identity'], source_handoff=candidate['path'], item=item['item'],
+                           rule=decision.get('rule') if decision else None,
+                           destination=decision.get('destination') if decision else None,
+                           outcome='failed', error=f'{type(exc).__name__}: {exc}')
             outcomes.append(row)
             section['filing_outcomes'].append(row)
             binding = row.get('binding')

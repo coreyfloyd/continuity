@@ -45,6 +45,9 @@ the item belongs on it. A proposed change to an approved spec is R3, not R7.
 Knowledge for reuse is R4; information already saved in its named destination is
 R1 only with evidence from a successful read. Anything a lesson/knowledge slot
 would leave pending becomes an ask under R4 with `destination: "ask"`.
+For an untyped legacy item going to a slot under R4, set `destination` to
+`"lessons"` or `"knowledge"`. That choice supplies its type for validation;
+the original item and identity stay unchanged. Other rules need no added type.
 
 Use the profile's read-only `record_read` skill for R1 already-recorded checks,
 R2 ticket status, and R5 matching searches. A failed, unbound, unsupported or
@@ -74,10 +77,13 @@ Pass the same interactive evidence when applicable. The command validates
 choices through the checklist filing engine and checks current source identities;
 a changed item requires a fresh inspection and decision. Omitted decisions stay
 pending and keep their handoffs. A concurrent sweep exits with `already running`
-and writes nothing. Other errors are reported explicitly; do not treat them as
-an empty store. Read the report path printed on stdout. Report each missing
-binding, failed read, parse error, retained handoff and proposed action. Its text
-and embedded JSON describe the same run. A dry-run archive or worktree removal
+and writes nothing. An item's planning or validation failure appears as `failed`
+with its rule, destination and error; its handoff is kept and the remaining items
+are still processed into the same report. Command-level errors are reported
+explicitly; do not treat them as an empty store. Read the report path printed on
+stdout. Report each missing binding, failed item/read, parse error, retained
+handoff and proposed action. Its text and embedded JSON describe the same run.
+A dry-run archive or worktree removal
 is a proposal, never a completed operation. With no work it still writes a report.
 
 Scheduling belongs to the user. See [the command contract and scheduling example](../../docs/sweep.md).
