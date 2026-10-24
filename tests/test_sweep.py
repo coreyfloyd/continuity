@@ -367,3 +367,53 @@ def test_captured_handoff_can_be_swept_without_losing_any_item(sandbox):
     assert len(outcomes) == len(captured['resume']['open_loops'])
     assert all(row['rule'] == 'R1' for row in outcomes)
     assert path.exists()
+
+
+@pytest.mark.parametrize('scope_kind', ['all', 'repository-subdirectory'])
+@pytest.mark.parametrize('activity', ['open-subdirectory', 'recent-subdirectory', 'open-root', 'open-sibling-prefix'])
+def test_active_sessions_protect_containing_worktree_without_merging_directories(sandbox, scope_kind, activity):
+    repo, bare, linked = [sandbox[0] / name for name in ('repo', 'origin.git', 'linked')]
+
+    def git(*args):
+        return subprocess.run(['git', *map(str, args)], check=True, capture_output=True, text=True)
+
+    git('init', '--bare', '-q', bare)
+    git('init', '-qb', 'main', repo)
+    git('-C', repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.test',
+        'commit', '--allow-empty', '-qm', 'base')
+    git('-C', repo, 'remote', 'add', 'origin', bare)
+    git('-C', repo, 'push', '-q', 'origin', 'main')
+    git('-C', repo, 'worktree', 'add', '-qb', 'feature-a', linked)
+    (repo / 'docs').mkdir()
+    (linked / 'docs').mkdir()
+    old = source(sandbox, 'abandoned', directory=linked, loops=[])
+    if activity == 'open-sibling-prefix':
+        sibling = sandbox[0] / 'linked-other'
+        git('-C', repo, 'worktree', 'add', '-qb', 'feature-b', sibling)
+        active_dir = sibling
+    else:
+        active_dir = linked if activity == 'open-root' else linked / 'docs'
+    active = source(sandbox, 'active', directory=active_dir, loops=[])
+    if activity == 'recent-subdirectory':
+        os.utime(active, None)
+    evidence = sandbox[0] / 'open.json'
+    evidence.write_text(json.dumps({'session_ids': [] if activity == 'recent-subdirectory' else ['active'],
+                                    'method': 'isolated test session evidence'}))
+    scope = 'all' if scope_kind == 'all' else str(repo / 'docs')
+    inspected = json.loads(command(sandbox, 'inspect', '--scope', scope).stdout)
+    assert {c['directory'] for c in inspected['candidates']} == {str(linked), str(active_dir)}
+    before = {path: path.read_bytes() for path in (old, active)}
+    _, data = report(sandbox, '--scope', scope, '--open-sessions', str(evidence))
+    section = data['directories'][str(linked)]
+    if activity == 'open-sibling-prefix':
+        assert section['worktrees_removed'][0]['path'] == str(linked)
+        assert not section['worktrees_kept']
+    else:
+        assert section['worktrees_removed'] == []
+        kept = section['worktrees_kept'][0]
+        assert kept['path'] == str(linked)
+        assert kept['reason'] == 'another open or active session uses this worktree'
+    if activity.startswith('open'):
+        assert data['directories'][str(active_dir)]['open_sessions'][0]['session_id'] == 'active'
+    assert {path: path.read_bytes() for path in before} == before
+    assert (linked / '.git').exists()

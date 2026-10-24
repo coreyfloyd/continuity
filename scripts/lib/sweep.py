@@ -261,7 +261,10 @@ def worktree_plan(candidate, protected):
     row = {'path': directory, 'branch': match.get('branch', '').removeprefix('refs/heads/'),
            'commit': match.get('HEAD'), 'outcome': 'dry run'}
     reason = None
-    if directory in protected:
+    # Subjects are canonical directories, but an active subject may be below
+    # this worktree root. Compare path components, not string prefixes.
+    if any(Path(directory) == Path(active) or Path(directory) in Path(active).parents
+           for active in protected):
         reason = 'another open or active session uses this worktree'
     status, dirty, error = git_read(directory, 'status', '--porcelain', '--untracked-files=all')
     if status or dirty:
