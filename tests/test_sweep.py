@@ -1232,9 +1232,11 @@ def test_open_idle_ask_once_until_activity_changes(sandbox, interactive):
     assert path.exists()
 
 
+@pytest.mark.parametrize('subdirectory', [False, True])
 @pytest.mark.parametrize('kind', ['clean', 'dirty', 'unmerged', 'main', 'open', 'failed-check', 'locked'])
-def test_act_worktree_cleanup_safeguards(sandbox, kind):
-    root, directory = archive_test_repository(sandbox, 'main' if kind == 'main' else 'linked')
+def test_act_worktree_cleanup_safeguards(sandbox, kind, subdirectory):
+    location = 'main' if kind == 'main' else 'linked'
+    root, directory = archive_test_repository(sandbox, location + ('-subdirectory' if subdirectory else ''))
     repo = sandbox[0] / 'repo'
     profile = act_profile(sandbox)
     path = source(sandbox, directory=directory, loops=[])
@@ -1339,12 +1341,15 @@ def test_open_ask_retries_without_reading_answers(sandbox, behavior):
 @pytest.mark.parametrize('mode,protection',
     [('watch-only', kind) for kind in ('recorded-files', 'pending-item', 'open', 'recent')] +
     [('act', kind) for kind in ('recorded-files', 'pending-item', 'failed-write', 'changed-source', 'open', 'recent')])
-@pytest.mark.parametrize('nested', [False, True])
+@pytest.mark.parametrize('layout', ['same-directory', 'nested', 'siblings'])
 def test_shared_worktree_protection_is_independent_of_handoff_order(
-        sandbox, order, mode, protection, nested):
+        sandbox, order, mode, protection, layout):
     root, directory = archive_test_repository(sandbox, 'linked')
-    protected_dir = root / 'docs' if nested else root
+    protected_dir = root if layout == 'same-directory' else root / 'docs'
     protected_dir.mkdir(exist_ok=True)
+    if layout == 'siblings':
+        directory = root / 'other'
+        directory.mkdir()
     protected_name, clean_name = ('a-protected', 'z-clean') if order == 'protected-first' else ('z-protected', 'a-clean')
     source(sandbox, name=clean_name, directory=directory, loops=[])
     protected = source(sandbox, name=protected_name, directory=protected_dir,
@@ -1585,3 +1590,36 @@ def test_undo_excludes_pending_slot_work(sandbox):
     result = undo_run(sandbox, run, profile)
     assert all(r['kind'] == 'handoff' for r in result['items'])
     assert not any(r['operation'] == 'reverse' for r in calls(sandbox))
+
+
+@pytest.mark.parametrize('mode', ['watch-only', 'act'])
+@pytest.mark.parametrize('subjects', ['sole-subdirectory', 'sibling-subdirectories'])
+def test_subdirectory_handoffs_remove_the_containing_worktree_once(sandbox, mode, subjects):
+    root, directory = archive_test_repository(sandbox, 'linked-subdirectory')
+    paths = [source(sandbox, directory=directory, loops=[])]
+    if subjects == 'sibling-subdirectories':
+        sibling = root / 'other'
+        sibling.mkdir()
+        paths.append(source(sandbox, name='sibling', directory=sibling, loops=[]))
+    profile = act_profile(sandbox)
+    config = json.loads(sandbox[2].read_text())
+    config['sweep']['mode'] = mode
+    sandbox[2].write_text(json.dumps(config))
+    before = outside_report_snapshot(sandbox)
+    _, data = report(sandbox, '--user-profile', str(profile))
+    removed = [r for section in data['directories'].values() for r in section['worktrees_removed']]
+    assert removed and all(r['path'] == str(root) for r in removed)
+    if mode == 'watch-only':
+        assert outside_report_snapshot(sandbox) == before
+        assert all(r['outcome'] == 'dry run' for r in removed)
+    else:
+        assert len(removed) == 1 and removed[0]['outcome'] == 'removed'
+        assert removed[0]['checks']['plain_removal'] is True
+        assert not root.exists()
+        assert all(not path.exists() for path in paths)
+        archived = [r for section in data['directories'].values() for r in section['handoffs_archived']]
+        assert {r['path'] for r in archived} == {str(p) for p in paths}
+        assert not any(section['worktrees_kept'] or section['handoffs_kept'] for section in data['directories'].values())
+        branches = subprocess.run(['git', '-C', str(sandbox[0] / 'repo'), 'branch', '--list', 'feature'],
+                                  capture_output=True, text=True, check=True)
+        assert not branches.stdout

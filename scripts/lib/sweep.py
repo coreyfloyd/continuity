@@ -363,10 +363,12 @@ def worktree_protection(discovery, report, checks, act=False):
 
 def worktree_plan(candidate, protected):
     """Read-only eligibility checks, repeated immediately before plain removal."""
-    directory = candidate['directory']
-    root = handoff.repository_root(directory)
-    if not root:
+    # repository_root identifies the shared repository, not this checkout.
+    # A subdirectory subject must resolve to its containing linked worktree.
+    code, root, _ = git_read(candidate['directory'], 'rev-parse', '--show-toplevel')
+    if code or not root:
         return None
+    directory = handoff.canonical_subject(root)
     code, output, error = git_read(directory, 'worktree', 'list', '--porcelain')
     if code:
         return {'path': directory, 'outcome': 'kept', 'reason': error or 'worktree lookup failed'}
@@ -374,7 +376,7 @@ def worktree_plan(candidate, protected):
                     for line in block.splitlines()) for block in output.split('\n\n')]
     match = next((e for e in entries if e.get('worktree') == directory), None)
     if not match or directory == entries[0].get('worktree'):
-        return None  # never propose removing the main checkout or a subdirectory
+        return None  # never propose removing the main checkout
     row = {'path': directory, 'branch': match.get('branch', '').removeprefix('refs/heads/'),
            'commit': match.get('HEAD'), 'outcome': 'dry run'}
     reason = None
@@ -766,17 +768,19 @@ def execute_act(report, discovery, plan, ask, reader, config, path, history=None
         for candidate in discovery['candidates']:
             if candidate['directory'] != directory or not candidate['abandoned']:
                 continue
-            if directory in attempted_paths:
+            if any(Path(directory) == Path(root) or Path(root) in Path(directory).parents
+                   for root in attempted_paths):
                 continue
             proposed = worktree_plan(candidate, protected)
             if not proposed:
                 continue
-            attempted_paths.add(directory)
+            worktree = proposed['path']
+            attempted_paths.add(worktree)
             if proposed['outcome'] != 'dry run':
                 if not any(r['path'] == proposed['path'] for r in section['worktrees_kept']):
                     section['worktrees_kept'].append(proposed)
                     temporary = {'asks_raised': []}
-                    add_ask(temporary, candidate, 'Keep worktree ' + directory + ': ' + proposed['reason'],
+                    add_ask(temporary, candidate, 'Keep worktree ' + worktree + ': ' + proposed['reason'],
                             ['review worktree', 'leave it'], proposed['reason'], ask)
                     failure = temporary['asks_raised'][0]
                     failure['directory'] = directory
@@ -787,22 +791,22 @@ def execute_act(report, discovery, plan, ask, reader, config, path, history=None
             row = proposed
             try:
                 related = [c for c in discovery['candidates']
-                           if Path(directory) == Path(c['directory']) or Path(directory) in Path(c['directory']).parents]
+                           if Path(worktree) == Path(c['directory']) or Path(worktree) in Path(c['directory']).parents]
                 for source in related:
                     check_handoff_source(source)
                 # Resolve the main checkout before removing this linked checkout.
-                _, output, _ = git_read(directory, 'worktree', 'list', '--porcelain')
+                _, output, _ = git_read(worktree, 'worktree', 'list', '--porcelain')
                 main = output.splitlines()[0].removeprefix('worktree ')
                 row.update(outcome='uncertain', reason='plain worktree removal pending')
                 section['worktrees_removed'].append(row)
                 save()
                 for source in related:
                     check_handoff_source(source)
-                code, _, error = git_read(main, 'worktree', 'remove', directory)
+                code, _, error = git_read(main, 'worktree', 'remove', worktree)
                 row['checks']['plain_removal'] = code == 0
                 if code:
                     raise ValueError(error or 'plain worktree removal failed')
-                removed_paths.add(directory)
+                removed_paths.add(worktree)
                 row.update(outcome='removed', reason='clean branch contained in pushed trunk')
                 # Compare-and-delete preserves a concurrently moved branch.
                 code, _, error = git_read(main, 'update-ref', '-d',
@@ -817,7 +821,7 @@ def execute_act(report, discovery, plan, ask, reader, config, path, history=None
                     section['worktrees_removed'].remove(row)
                 section['worktrees_kept'].append(row)
                 temporary = {'asks_raised': []}
-                add_ask(temporary, candidate, 'Keep worktree ' + directory + ': ' + str(exc),
+                add_ask(temporary, candidate, 'Keep worktree ' + worktree + ': ' + str(exc),
                         ['review worktree', 'leave it'], str(exc), ask)
                 failure = temporary['asks_raised'][0]
                 failure['directory'] = directory
