@@ -1,15 +1,17 @@
 ---
 name: sweep
-description: Sweep abandoned sessions in a directory or across the machine, applying filing rules and writing a watch-only sweep report. Safe for unattended runs.
+description: Sweep abandoned sessions in a directory or across the machine, applying filing rules and writing a sweep report. Safe for unattended runs.
 ---
 
 # Sweep
 
 Use the same procedure in Claude Code and Codex. Resolve the package root from
 this skill's actual directory (`../..`); the shared command is
-`scripts/lib/sweep.py`. This release supports watch-only mode: never run a record
-write, a slot write, an ask command, an archive move, or worktree removal. The
-only write is its sweep report. Never write a handoff for the sweep itself.
+`scripts/lib/sweep.py`. Configuration defaults to watch-only, whose only write is its report. The user
+may enable act mode in continuity configuration. In act mode the command owns
+record writes, asks and archive moves through the executable binding protocol
+in [INTERFACE.md](../../INTERFACE.md#12-sweep-act-binding-protocol). Never execute
+those writes separately from the engine. Neither mode removes worktrees. Never write a handoff for the sweep itself.
 
 Take the requested directory or `all` as scope. If none is given, use the
 working directory. Read the user checklist profile at `$CHECKLIST_USER_PROFILE`,
@@ -57,8 +59,8 @@ For an untyped legacy item going to a slot under R4, set `destination` to
 `"lessons"` or `"knowledge"`. That choice supplies its type for validation;
 the original item and identity stay unchanged. Other rules need no added type.
 
-Use the profile's read-only `record_read` skill for R1 already-recorded checks,
-R2 ticket status, and R5 matching searches. A failed, unbound, unsupported or
+Use the profile's read-only `record_read` skill for R1 already-recorded checks
+and R2 ticket status, and the record binding for R5 matching searches. A failed, unbound, unsupported or
 malformed read is unknown: supply `read_status: "failed"` and the error. Never
 write as part of those reads. For multiple plausible matches, choose R3 with
 choices naming the candidates; one matching open ticket becomes R2. Give R5
@@ -95,3 +97,9 @@ describe the same run. A dry-run archive or worktree removal is a proposal,
 never a completed operation. With no work it still writes a report.
 
 Scheduling belongs to the user. See [the command contract and scheduling example](../../docs/sweep.md).
+
+In act mode review actual outcomes and errors in the report. Do not retry a
+write manually after a timeout or missing receipt: the engine queries its
+identity before retrying. Keep pending judgments in the handoff; never fabricate
+a successful record read. Configure an executable adapter for a skill binding
+before using act mode. The tripwire may retain excess items for a later run.

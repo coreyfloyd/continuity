@@ -1,6 +1,6 @@
 # Sweep command
 
-Sweep finds abandoned sessions and writes one watch-only sweep report. Invoke
+Sweep finds abandoned sessions and writes one sweep report. Invoke
 `/continuity:sweep <directory-or-all>` in Claude Code, or ask Codex to use the
 `sweep` skill with that scope. Both use the same skill and standard-library
 command. A directory includes every handoff for its repository, across sibling
@@ -12,7 +12,7 @@ A session is abandoned only when its newest handoff or transcript write is
 strictly older than the idle threshold. Both Claude Code transcripts and Codex
 active and archived rollouts count. A transcript store that cannot be inspected
 prevents filing for that run and is reported. Malformed handoffs are reported
-with their paths and reasons and left in place. No check executes a binding.
+with their paths and reasons and left in place. Discovery executes no binding.
 
 ## Configuration
 
@@ -33,8 +33,8 @@ Add a `sweep` object to the existing continuity configuration file resolved by
 }
 ```
 
-`mode` defaults to `watch-only`; this release refuses `act` without making
-changes. `idle_days` is a non-negative finite number. `report_location` is a
+`mode` defaults to `watch-only`; the user can switch it to `act` to execute
+filing through their bindings and move completed handoffs to the archive. `idle_days` is a non-negative finite number. `report_location` is a
 directory; absent, reports go to `sweep-reports` beside the resolved handoff
 store. A report location inside the handoff store is rejected. The handoff
 store itself follows `HANDOFF_STATE_DIR`, then `handoff_dir`, then the existing
@@ -44,8 +44,11 @@ default. No handoff migration is performed.
 to none. Nonempty command lists currently stop the command before any sweep,
 rather than silently ignoring protection. `new_ticket_limit` (a non-negative
 integer, default 10) and `archive_retention_days` (default null, retention off)
-are reserved for action execution. Watch-only creates no ticket and deletes
-nothing, regardless of these values.
+control creation capacity and reserve retention configuration respectively.
+Retention is not executed by this command. Watch-only creates no ticket and
+deletes nothing, regardless of these values. Act mode also never deletes a
+handoff or removes a worktree. `binding_timeout_seconds` defaults to 30; it
+must be a positive finite number.
 
 ## Command and judgment contract
 
@@ -81,7 +84,8 @@ candidate's path), copies `identity` unchanged, and supplies the checklist
 filing fields: `rule`, `destination`, `reason`, `choices`, `read_status`,
 `information_only`, `priority`, `priority_reason`, and `error` as applicable.
 The engine uses the checklist's filing validator and binding resolution,
-without executing the bindings. Untyped legacy items use the same fields for
+without executing the bindings in watch-only mode. Act mode additionally
+verifies reads and executes the [binding protocol](../INTERFACE.md#12-sweep-act-binding-protocol). Untyped legacy items use the same fields for
 every rule. For R4, `destination: "lessons"` or `"knowledge"` supplies the agent's
 classification to the validator using a temporary typed copy; the report keeps
 the original item and its identity. R4 with `destination: "ask"` routes pending
@@ -169,4 +173,28 @@ command directly instead:
 The driver's environment must resolve the same configuration and local handoff
 store as interactive use. No session, transcript, handoff, binding destination,
 or worktree is modified by either watch-only route. Review real-directory
-reports and their rule choices before enabling a future action-capable release.
+reports and their rule choices before switching configuration to act mode.
+
+## Act mode
+
+The same `inspect` and `run` commands work when configuration selects `act`.
+Inspect remains read-only. Run executes only successfully validated decisions;
+missing judgments and read failures keep their handoffs. Commands must implement
+the protocol in [INTERFACE.md](../INTERFACE.md#12-sweep-act-binding-protocol);
+existing interactive skill names need an executable adapter.
+
+Act reports list actual outcomes. `new_tickets` is **new this run**, with priority
+and reason; `comments_added` names matching tickets; `unfiled_items` names retained
+work and errors. `already_written` receipts resolve retries without another
+write. Unknown write results stay `uncertain` and keep the handoff. Record and
+ask identity queries run before retries, including after lost acknowledgements.
+The default new-ticket limit is 10 across the entire run; uncertain creations
+reserve a place. The tripwire asks for user review and leaves excess work unfiled.
+
+Asks carry the original item identity and producer, directory, linked ticket,
+and choices. An unbound or failed ask keeps its handoff. Uncommitted-files asks
+name the session, directory and files, and always keep their handoff. Archives
+are moves, preserve file bytes, and occur only after every item is filed or
+dropped and all asks succeeded. Worktree removal and configured open-session
+commands remain separate integration work; act does not remove worktrees or
+local branches. Open-session evidence still protects every listed session.

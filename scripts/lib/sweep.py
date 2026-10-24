@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Read-only sweep planning. Agent judgments enter as identity-bound decisions.
-
-The command never invokes write bindings, archives handoffs, or removes worktrees.
-Its only filesystem write is one report containing text and structured data.
-"""
+"""Identity-bound sweep planning and configured act execution; never removes worktrees."""
 from __future__ import annotations
 
 import argparse
@@ -18,6 +14,7 @@ import math
 import os
 from pathlib import Path
 import socket
+import shlex
 import subprocess
 import sys
 import uuid
@@ -54,16 +51,18 @@ def settings():
         raise ValueError('sweep configuration must be an object')
     result = dict(mode='watch-only', idle_days=2, open_session_checks=[],
                   new_ticket_limit=10, report_location=str(Path(handoff.state_dir()).parent / 'sweep-reports'),
-                  archive_retention_days=None)
+                  archive_retention_days=None, binding_timeout_seconds=30)
     result.update(config)
-    if result['mode'] != 'watch-only':
-        raise ValueError('this sweep supports watch-only mode only; act mode is not available yet')
-    for key in ('idle_days', 'new_ticket_limit', 'archive_retention_days'):
+    if result['mode'] not in ('watch-only', 'act'):
+        raise ValueError('sweep.mode must be watch-only or act')
+    for key in ('idle_days', 'new_ticket_limit', 'archive_retention_days', 'binding_timeout_seconds'):
         value = result[key]
         if key == 'archive_retention_days' and value is None:
             continue
         if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
             raise ValueError(f'sweep.{key} must be a non-negative finite number')
+    if result['binding_timeout_seconds'] <= 0:
+        raise ValueError('sweep.binding_timeout_seconds must be positive')
     if type(result['new_ticket_limit']) is not int:
         raise ValueError('sweep.new_ticket_limit must be an integer')
     if result['open_session_checks'] != []:
@@ -385,15 +384,270 @@ def build_report(discovery, decisions, plan, ask, checks, interactive, started):
     return report
 
 
+def binding_call(binding, request, timeout):
+    """Commands are argv strings, never shell programs; JSON travels on stdin."""
+    if binding is None:
+        raise ValueError('binding is unbound')
+    done = subprocess.run(shlex.split(binding['command']), input=json.dumps(request),
+                          capture_output=True, text=True, timeout=timeout)
+    if done.returncode:
+        raise ValueError(done.stderr.strip() or f'binding exited {done.returncode}')
+    response = json.loads(done.stdout)
+    if not isinstance(response, dict):
+        raise ValueError('binding response must be a JSON object')
+    return response
+
+
+def execute_act(report, discovery, plan, ask, reader, config, path):
+    """Execute only binding writes, asks and archive moves; journal in the report.
+
+    Identity queries precede every attempted write, even without an earlier report.
+    Bindings must enforce identity uniqueness atomically, including delayed writes.
+    """
+    report['mode'] = 'act'
+    for section in report['directories'].values():
+        section['unfiled_items'] = []
+    bindings = {step['slot']: step.get('binding') for step in plan if 'slot' in step}
+    bindings['ask'] = ask
+    record = bindings.get('record')
+    timeout = config['binding_timeout_seconds']
+    created = 0
+    tripwires = {}
+
+    def save():
+        report['ended_at'] = datetime.now(timezone.utc).isoformat()
+        with path.open('w') as handle:
+            handle.write(render_report(report))
+            handle.flush()
+            os.fsync(handle.fileno())
+
+    def request(row, operation):
+        return dict(operation=operation, identity=row['identity'],
+                    session_id=row['identity']['session_id'],
+                    directory=row['directory'], text=row['identity']['text'],
+                    source_handoff=row['source_handoff'])
+
+    def query(row, binding, operation):
+        payload = request(row, operation)
+        payload['destination'] = row.get('destination')
+        return binding_call(binding, payload, timeout)
+
+    def write(row, binding, operation):
+        # Persist intent before starting a process: a crash or a lost reply is
+        # recoverable through the destination's durable identity index.
+        row.update(outcome='uncertain', operation=operation)
+        save()
+        payload = request(row, operation)
+        payload.update(destination=row.get('destination'), rule=row['rule'])
+        if operation == 'file_slot':
+            payload['slot'] = bindings[row['binding']]
+        if operation == 'create_ticket':
+            payload.update(priority=row['priority'], priority_reason=row['priority_reason'])
+        if operation == 'ask':
+            payload.update(row['ask'])
+        try:
+            result = binding_call(binding, payload, timeout)
+            if result.get('status') == 'pending' and operation == 'file_slot':
+                row.update(outcome='pending', reason=result.get('reason') or 'slot left item pending')
+            elif result.get('status') == 'failed':
+                row.update(outcome='failed', error=result.get('error') or 'binding rejected write')
+            elif (result.get('status') == 'written' and isinstance(result.get('receipt'), str)
+                  and result['receipt'].strip() and isinstance(result.get('destination'), str)
+                  and result['destination'].strip()):
+                row.update(outcome='written', receipt=result['receipt'], destination=result['destination'])
+            else:
+                row['error'] = 'missing or malformed write acknowledgement'
+        except (subprocess.TimeoutExpired, ValueError, OSError) as exc:
+            # A process error may follow a successful remote write too.
+            row['error'] = str(exc)
+        save()
+        return row['outcome'] == 'written'
+
+    def exists(row, binding):
+        result = query(row, binding, 'identity_exists')
+        if type(result.get('exists')) is not bool:
+            raise ValueError('identity_exists requires a boolean exists')
+        if result['exists']:
+            if not all(isinstance(result.get(k), str) and result[k].strip()
+                       for k in ('receipt', 'destination')):
+                raise ValueError('existing identity requires receipt and destination')
+            row.update(outcome='written', receipt=result['receipt'], destination=result['destination'],
+                       already_written=True)
+        return result['exists']
+
+    def send_ask(row):
+        row.update(binding='ask', destination='ask')
+        if ask is None:
+            row['outcome'] = 'unbound'
+            return
+        try:
+            if not exists(row, ask):
+                write(row, ask, 'ask')
+        except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+            row.update(outcome='failed', error='ask identity read failed: ' + str(exc))
+
+    for directory, section in report['directories'].items():
+        # Rebuild category arrays from actual outcomes rather than proposals.
+        synthetic_asks = [row for row in section['asks_raised'] if row not in section['filing_outcomes']]
+        for key in ('asks_raised', 'new_tickets', 'comments_added', 'documents_changed',
+                    'items_dropped', 'worktrees_removed', 'handoffs_archived', 'handoffs_kept'):
+            section[key] = []
+        section['unfiled_items'] = []
+        for row in section['filing_outcomes']:
+            row['directory'] = directory
+            rule = row['rule']
+            try:
+                eligible = row['outcome'] in ('dry run', 'unbound')
+                if eligible and rule == 'R2' and record and exists(row, record):
+                    continue
+                if rule == 'R5' and eligible and record is None:
+                    row.update(outcome='read failed', error='record binding is unbound; open-ticket search unavailable')
+                elif eligible and (rule == 'R2' or (rule == 'R1' and not row.get('information_only'))):
+                    result = query(row, reader, 'read_item')
+                    if type(result.get('present')) is not bool or type(result.get('open')) is not bool:
+                        raise ValueError('read_item requires boolean present and open')
+                    if rule == 'R1' and not result['present']:
+                        raise ValueError('R1 already-recorded claim was not confirmed')
+                    if rule == 'R2' and not result['open']:
+                        raise ValueError('R2 destination is not open')
+                if row['outcome'] not in ('dry run', 'unbound'):
+                    continue
+                if rule in ('R1', 'R6'):
+                    row['outcome'] = 'dropped'
+                elif row['binding'] == 'ask':
+                    send_ask(row)
+                elif rule == 'R4':
+                    slot = row['binding']
+                    if bindings.get(slot) and record:
+                        if not exists(row, record):
+                            write(row, record, 'file_slot')
+                    else:
+                        row['outcome'] = 'pending'
+                    if row['outcome'] == 'pending':
+                        row.update(binding='ask', destination='ask', ask=dict(
+                            text=row['identity']['text'], identity=row['identity'],
+                            session_id=row['identity']['session_id'], directory=directory,
+                            ticket=(row['item'].get('anchor') or {}).get('ticket'),
+                            choices=['save through ' + slot, 'leave it']))
+                        send_ask(row)
+                elif record is None:
+                    row['outcome'] = 'unbound'
+                elif rule != 'R2' and exists(row, record):
+                    pass
+                else:
+                    operation = {'R2': 'comment', 'R7': 'edit_document', 'R5': 'create_ticket'}[rule]
+                    if rule == 'R5':
+                        result = query(row, record, 'search_open')
+                        matches = result.get('matches')
+                        if (not isinstance(matches, list) or
+                                not all(isinstance(m, str) and m.strip() for m in matches) or
+                                len(matches) != len(set(matches))):
+                            raise ValueError('search_open requires distinct non-empty match references')
+                        row['matches'] = matches
+                        if len(matches) > 1:
+                            row.update(rule='R3', binding='ask', destination='ask', ask=dict(
+                                text=row['identity']['text'], identity=row['identity'],
+                                session_id=row['identity']['session_id'], directory=directory,
+                                ticket=(row['item'].get('anchor') or {}).get('ticket'),
+                                choices=['use ' + m for m in matches] + ['leave it']))
+                            send_ask(row)
+                            continue
+                        if matches:
+                            row.update(rule='R2', destination=matches[0])
+                            row.pop('priority', None)
+                            row.pop('priority_reason', None)
+                            operation = 'comment'
+                        elif created >= config['new_ticket_limit']:
+                            row.update(outcome='tripwire', reason='new-ticket limit reached')
+                            tripwires.setdefault(directory, row['source_handoff'])
+                            continue
+                    write(row, record, operation)
+                    if operation == 'create_ticket' and row['outcome'] in ('written', 'uncertain'):
+                        # Unknown acknowledgements reserve capacity too.
+                        created += 1
+            except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
+                row.update(outcome='read failed', error=str(exc))
+            finally:
+                if row.get('binding') == 'ask':
+                    section['asks_raised'].append(row)
+                elif row['outcome'] == 'dropped':
+                    section['items_dropped'].append(row)
+                elif row['outcome'] == 'written' and not row.get('already_written') and row['rule'] in ('R2', 'R5', 'R7'):
+                    section[{'R2': 'comments_added', 'R5': 'new_tickets', 'R7': 'documents_changed'}[row['rule']]].append(row)
+                if row['outcome'] not in ('written', 'dropped'):
+                    section['unfiled_items'].append(row)
+                save()
+        for row in synthetic_asks:
+            section['asks_raised'].append(row)
+            row['directory'] = directory
+            # Open sessions are observational in this slice. Their ask lifecycle
+            # belongs to open-session integration; never act on their handoffs.
+            if any(s['path'] == row['source_handoff'] for s in section['open_sessions']):
+                row['outcome'] = 'pending open-session integration'
+            else:
+                send_ask(row)
+            save()
+        for candidate in discovery['candidates']:
+            if candidate['directory'] != directory or not candidate['abandoned']:
+                continue
+            if candidate['session_id'] in report['open_session_checks'][0]['session_ids']:
+                continue
+            source = candidate['path']
+            outcomes = [r for r in section['filing_outcomes'] if r['source_handoff'] == source]
+            asks = [r for r in section['asks_raised'] if r['source_handoff'] == source]
+            archived = (not candidate['handoff'].get('uncommitted_files') and
+                        all(r['outcome'] in ('written', 'dropped') for r in outcomes) and
+                        all(r['outcome'] == 'written' for r in asks))
+            row = dict(path=source, outcome='kept', reason='unfiled items, asks, or uncommitted files')
+            if archived:
+                try:
+                    original = Path(source)
+                    if original.is_symlink() or json.loads(original.read_text()) != candidate['handoff']:
+                        raise ValueError('handoff changed since discovery')
+                    target = original.parent / 'archive'
+                    if target.is_symlink():
+                        raise ValueError('archive is a symbolic link')
+                    target.mkdir(exist_ok=True)
+                    target = target / original.name
+                    if target.exists() or target.is_symlink():
+                        target = target.with_name(report['run_id'] + '-' + original.name)
+                    row.update(destination=str(target), outcome='uncertain', reason='archive move pending')
+                    section['handoffs_archived'].append(row)
+                    save()
+                    original.rename(target)
+                    row.update(outcome='archived', reason='every item filed or dropped')
+                except (ValueError, OSError) as exc:
+                    row.update(outcome='kept', error=str(exc))
+                    if row in section['handoffs_archived']:
+                        section['handoffs_archived'].remove(row)
+                    section['handoffs_kept'].append(row)
+            else:
+                section['handoffs_kept'].append(row)
+            save()
+    if tripwires:
+        directory, source = next(iter(tripwires.items()))
+        candidate = next(c for c in discovery['candidates'] if c['path'] == source)
+        temporary = {'asks_raised': []}
+        add_ask(temporary, candidate, 'New-ticket limit reached in ' + ', '.join(sorted(tripwires)),
+                ['review unfiled items', 'raise limit'], 'tripwire', ask)
+        row = temporary['asks_raised'][0]
+        row['directory'] = directory
+        report['directories'][directory]['asks_raised'].append(row)
+        send_ask(row)
+    save()
+
+
 def render_report(report):
-    lines = ['# Sweep report', '', 'Watch-only: every action below is proposed; no action executed.', '',
+    lines = ['# Sweep report', '', ('Watch-only: every action below is proposed; no action executed.' if report['mode'] == 'watch-only'
+              else 'Act: outcomes and receipts describe executed actions. New this run lists created tickets.'), '',
              *[f'{key}: {report[key]}' for key in ('run_id', 'host', 'started_at', 'ended_at', 'scope', 'mode', 'interactive', 'open_session_checks')]]
     if report['nothing_to_do']:
         lines.extend(['', 'Nothing to do.'])
     for directory, section in sorted(report['directories'].items()):
         lines.extend(['', '## ' + directory])
         for key, title in (*SECTIONS, ('filing_outcomes', 'Every filing outcome'),
-                           ('worktrees_kept', 'Worktrees kept'), ('handoffs_kept', 'Handoffs kept')):
+                           ('worktrees_kept', 'Worktrees kept'), ('handoffs_kept', 'Handoffs kept'),
+                           *((('unfiled_items', 'Unfiled items'),) if report['mode'] == 'act' else ())):
             lines.extend(['', '### ' + title])
             lines.extend(['- ' + json.dumps(row, ensure_ascii=False, sort_keys=True) for row in section[key]] or ['None.'])
     if report['errors']:
@@ -423,7 +677,13 @@ def main(argv=None):
                 print(json.dumps(discovery, indent=2))
                 return 0
             rows = read_decisions(args.decisions, discovery)
-            profiles = [checklist.load_profile(args.user_profile)] if args.user_profile else []
+            profile_path = args.user_profile
+            if profile_path is None:
+                profile_path = Path(os.environ.get('CHECKLIST_USER_PROFILE') or
+                    str(Path(os.environ.get('XDG_CONFIG_HOME', os.path.expanduser('~/.config'))) / 'checklist/profile.md'))
+                if not profile_path.exists():
+                    profile_path = None
+            profiles = [checklist.load_profile(profile_path)] if profile_path else []
             plan = checklist.compose(profiles)
             ask = checklist.ask_binding(profiles[0]) if profiles else None
             report = build_report(discovery, rows, plan, ask, checks, args.interactive, started)
@@ -435,6 +695,9 @@ def main(argv=None):
             path = destination / (report['run_id'] + '.md')
             with path.open('x') as handle:
                 handle.write(render_report(report))
+            if config['mode'] == 'act':
+                execute_act(report, discovery, plan, ask,
+                            checklist.record_read_binding(profiles[0]) if profiles else None, config, path)
             print(path)
         return 0
     except RuntimeError as exc:

@@ -310,7 +310,7 @@ tool-specific home directory.
 | `pickup` | Resume after a cold start. Its engine is `scripts/pickup.py`. |
 | `checklist` | Wrap through the spine plus profile steps. |
 | `handoff-prompt` | A copy-pasteable prompt that hands a slice of work to another session. |
-| `sweep` | Watch-only sweep report for abandoned sessions; see [sweep contract](docs/sweep.md). |
+| `sweep` | Sweep report and configured filing for abandoned sessions; see [sweep contract](docs/sweep.md). |
 | `wip` | In-flight work, blockers, and pending approvals for the current session. |
 | `improve-harness` | Route a lesson to the user's rules, skills, agent definitions, or memory. |
 | `slim-harness` | Review one instruction source with the user, resolve conflicts, and leave edits uncommitted. |
@@ -451,3 +451,75 @@ reads stdin, prints a deterministic verdict, and never executes a skill or conta
 the record. It validates response structure; the calling agent must also check
 that the response covers the requested references and reflects the requested
 session. A structural verdict cannot establish record accuracy or completeness.
+
+## 12. Sweep act binding protocol
+
+The shared sweep command defaults to watch-only. A user enables execution with
+`sweep.mode: "act"` in continuity configuration. `--user-profile` overrides
+`CHECKLIST_USER_PROFILE`, then `$XDG_CONFIG_HOME/checklist/profile.md` (default
+`~/.config/checklist/profile.md`). Only that user profile supplies bindings.
+See [sweep usage](docs/sweep.md) for discovery and identity-bound decisions.
+
+In act mode, binding commands are executable argument strings parsed with shell
+quoting rules, **without a shell**. A slash skill name needs a user-owned command
+adapter before it can serve this protocol. Commands receive one JSON object on
+stdin and print one JSON object on stdout; diagnostics go to stderr. No package
+code contacts a particular record service. `sweep.binding_timeout_seconds` is a
+positive finite number, default 30. Watch-only never executes these commands.
+
+Every request contains `operation`, `identity`, `session_id`, `directory`,
+`text`, and `source_handoff`. `identity` is exactly the producing `session_id`,
+`produced_at`, and `text` from inspection; it never contains an array index.
+The top-level `session_id` is the producer, while `source_handoff` identifies
+the current carrier. Read queries also contain `destination` (possibly null).
+Every write additionally contains `rule` and `destination`.
+
+| Operation | User binding | Additional input | Success output |
+|---|---|---|---|
+| `read_item` | `record_read.command` | named `destination` | `{"present":true,"open":true}`; both values must be booleans |
+| `search_open` | `bindings.record.command` | item text and context above | `{"matches":["work:17"]}`; distinct nonempty open-ticket references, empty only after a successful search |
+| `identity_exists` | record or ask command, matching the intended write | unchanged item identity | `{"exists":false}`, or `{"exists":true,"receipt":"ack","destination":"work:17"}` |
+| `create_ticket` | record command | `priority`, `priority_reason` | write acknowledgement below |
+| `comment` | record command | destination ticket | write acknowledgement below; inherits the target's priority |
+| `edit_document` | record command | destination document | write acknowledgement below |
+| `file_slot` | record command | destination `lessons` or `knowledge`, plus `slot` containing that profile binding | write acknowledgement, or `{"status":"pending","reason":"needs user"}` |
+| `ask` | ask command | `ticket` or null and nonempty `choices` | write acknowledgement below |
+
+The record adapter passes `file_slot` work to the named slot and acknowledges
+only saved work. Pending slot work becomes an ask; an unbound slot or record
+adapter also routes that item to the ask binding. The sweep itself never starts
+a slot command outside the record adapter. An ask is never a ticket.
+
+A successful write prints `{"status":"written","receipt":"ack","destination":"work:17"}`
+with nonempty string receipt and destination. A known rejection prints
+`{"status":"failed","error":"reason"}` and must mean **no write occurred**.
+A timeout, nonzero exit, missing or malformed acknowledgement is `uncertain`:
+the process might have completed its write. A failed, unsupported, unbound or
+malformed read is `read failed`, never absence. R1 already-recorded drops require
+`present:true`; R2 requires `open:true`. Information-only R1 needs no record read.
+
+The engine queries `identity_exists` before each write, including every retry
+and a successor carrying the same item. Existence must be durable and cover
+all writes performed by that binding, not just currently open tickets.
+Bindings **must atomically deduplicate writes by identity**, including concurrent
+or delayed completion after a timeout. An existence query failure blocks the
+write. An existing identity returns its original receipt and destination and
+is reported as `already_written`; it is not counted as new this run. The report
+journals uncertain intent before invoking a write, and flushes each result.
+No handoff is rewritten to track outcomes.
+
+Before creating a ticket, `search_open` always runs, regardless of supplied
+agent judgments. One match changes R5 to R2 and names the match in the report;
+multiple matches become an R3 ask whose choices list the references. No match
+permits creation with priority and reason. The per-run limit counts confirmed
+creations and reserves capacity for uncertain creations. On reaching it,
+unfiled items stay in their handoffs and the ask identifies affected directories.
+The limit is global across directory sections, not reset per directory.
+
+Act execution changes only its report, record and ask destinations through
+their bindings, and archive moves. It never removes a worktree or local branch.
+An archive is a byte-preserving move after all items were written or dropped,
+with no uncommitted files or unsuccessful asks. Existing archive names are
+preserved; a collision receives a run-id prefix. Source changes detected before
+the move keep the handoff. Reports retain each rule, identity, destination,
+outcome, receipt and error for consumers and later reversal support.
