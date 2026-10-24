@@ -192,7 +192,10 @@ workflow. See [the profile contract](INTERFACE.md#6-checklist-engine-scriptslibc
 and [glossary](docs/glossary.md) for the full shape and allowed anchors.
 
 Without a profile, `record`, `knowledge`, and `persist` are unbound; their
-items stay as open loops. `lessons` defaults to `improve-harness`. A profile
+items go through the filing rules before wrap; unbound destinations warn and
+retain their items. `lessons` defaults to `improve-harness`. A user profile may
+bind `"ask": {"command": "/ask-step"}` for user decisions and approvals. This
+command is separate from the four slots and never files asks as tickets. A profile
 cannot remove a spine step. Only `own-worktree` may follow the handoff.
 
 ## Verify the installation

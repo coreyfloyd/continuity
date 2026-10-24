@@ -208,7 +208,8 @@ composes and checks it. It writes no handoff and runs no skill.
 |---|---|
 | `plan [--user-profile P] [--repository-profile P ...] [--handoff H] [--unattended] [--session-id ID]` | Compose the spine with the profiles and route a resumed handoff's carried items to their slots. Writes a start marker to the session's ledger. |
 | `settle ... --handoff H --receipts R` | Remove the loops a binding acknowledged. Never rewrites the source handoff. |
-| `wrap-check ... --written-handoff H [--record-at T] [--unattended]` | Fail, with the reason, when the handoff is invalid, or when `record` is bound and its latest write is older than the session's last change. |
+| `file ... --handoff H --filing F` | Apply explicit filing outcomes to remaining loops and unrecorded session items; return a handoff payload with a filing report. Executes no binding. |
+| `wrap-check ... --written-handoff H [--record-at T] [--unattended]` | Fail, with the reason, when the handoff is invalid, a bound item is still carried, a read/write failed, or `record` is bound and its latest write is older than the session's last change. |
 | `report ... --results R [--summary F \| --no-summary WHY] [--unattended]` | Check a run's step results; the report starts with the session summary. |
 | `wrap-cadence` | Read a hook payload on stdin and print `none`, `checkpoint`, `unattended-checklist`, or `checklist`. |
 | `actor-guard`, `is-completion-command` | Hook helpers. The first prints a deny decision; the second exits 0 when the command completes an unattended slate. |
@@ -216,7 +217,8 @@ composes and checks it. It writes no handoff and runs no skill.
 **The spine** has five steps in this order: `record`, `knowledge`, `lessons`, `persist`,
 `handoff`. The first four are slots. `lessons` is bound to `/improve-harness`, consuming
 `lesson` items. Unbound slots are carried: the items they would consume stay in the handoff
-as open loops. `handoff` is not a slot and is the last spine step; only a profile step
+until the filing pass. Missing destinations warn and retain their items;
+bound write failures fail wrap. `handoff` is not a slot and is the last spine step; only a profile step
 `own-worktree` may follow it.
 
 **A profile** is JSON, or Markdown with one fenced block tagged `checklist-profile`:
@@ -225,6 +227,7 @@ as open loops. `handoff` is not a slot and is the last spine step; only a profil
 {
   "name": "example",
   "record_read": {"command": "/read-work"},
+  "ask": {"command": "/ask-step"},
   "bindings": {"record": {"command": "/record-step", "consumes": ["progress", "decision"]}},
   "steps": [{"id": "tidy", "after": "persist", "instructions": "..."}]
 }
@@ -251,6 +254,35 @@ error naming `record_read`. The `plan` result includes `record_read` as that obj
 or `null` when unbound; it adds no spine step. The composer never executes it.
 The binding and validator contract below is identical for Claude Code and Codex.
 
+**Ask binding and filing outcomes.** A user profile may declare
+`"ask": {"command": "/ask-step"}`: exactly one non-empty command, separate
+from slots and steps. Repository profiles cannot bind it. `plan` returns `ask`
+(or null) and `rerun_all_steps: true`; an attended run after an unattended run
+executes every step again and asks the user, without reusing pending results.
+
+The agent applies the filing rules in order R1, R3, R4, R7, R2, R5, R6 (see
+`skills/checklist/SKILL.md`). It runs bindings, then supplies `file` an array of
+outcomes with `index`, `rule`, `status`. Indexes refer to remaining open loops
+followed by unrecorded `session_items`. Status is `filed`, `dropped`, `pending`,
+`failed`, or `read failed`. Filed outcomes require `destination`; dropped
+outcomes require `reason`. Failed outcomes carry `error`. Read-dependent R1,
+R2 and R5 require `read_status: "ok"`, otherwise the item is retained as
+`read failed`. Information-only R1 uses `information_only: true`. R5 also
+requires `priority` and `priority_reason`. R4 routes pending slot items through
+ask with `destination: "ask"`. Every ask requires non-empty `choices`.
+
+The ask command receives `text`, source `session_id`, `directory`, linked
+`ticket` or null, and `choices`. Asks never become tickets. `file` returns the
+payload with a `filing` object holding `items`, `warnings`, `failures`, and
+`asks` grouped by directory. Each item includes the original item, its rule,
+its binding and outcome; asks include their command payload. Keep this report
+in the checkpoint payload and pass the written handoff to `report --handoff H`.
+Without an ask binding, retain the handoff and list its asks under their
+directory for the sweep report. Failed writes also retain items and report
+errors. A completed filing sets `resume.next_action` to `Session finished.`;
+retained items are named there. The wrap check fails on bound carried items,
+but warns and passes for unbound destinations. Checkpoint behavior is unchanged.
+
 **Unattended mode** is optional and absent by default. A user who launches sessions and
 leaves them to execute approved work describes that mode in the `unattended` section:
 
@@ -262,7 +294,8 @@ leaves them to execute approved work describes that mode in the `unattended` sec
 
 While the state module reports `afk`, `wrap-cadence` answers `checkpoint`. After the
 completion command succeeds it answers `unattended-checklist` until a passing
-`wrap-check --unattended`. Without the section every interactive session is `checklist`.
+`wrap-check --unattended`, or an explicit attended `plan` starts all steps
+afresh after an unfinished unattended wrap. Without the section every interactive session is `checklist`.
 
 ## 7. Skills
 

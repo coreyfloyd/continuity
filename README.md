@@ -61,11 +61,13 @@ then runs the five-step **spine** in order:
 
 Suppose your user profile binds `record` to the command that updates your tickets
 and documents. That command consumes its acknowledged progress and decisions;
-anything it has not acknowledged remains an open loop. Profiles bind the first
+anything it has not acknowledged goes through the filing rules before wrap. Profiles bind the first
 four steps, called **slots**, and can add steps without removing the spine.
-Lessons defaults to `improve-harness`; unbound slots carry their items rather
-than failing. The checklist engine composes and checks the plan; the skill runs
-it. Wrap fails if the handoff is invalid or a bound record is stale. A profile's
+Lessons defaults to `improve-harness`. Before writing the handoff, apply the
+filing rules: file or drop each remaining item, and send user decisions to the
+profile's one `ask` command. An unbound destination warns and retains its item. The checklist engine composes and checks the plan; the skill runs
+it. Wrap fails on an invalid handoff, a stale bound record, a failed bound
+write, or an item still carried for a bound destination. A profile's
 `own-worktree` cleanup can run only after the handoff check succeeds.
 
 ### Pick up in the other tool or worktree
@@ -277,12 +279,15 @@ executes it; the engine does not run bindings.
 plan JSON
 ├── profiles[]                         # supplied profile paths in composition order
 ├── unattended                         # whether the caller passed --unattended
-├── when_answer_needed                 # only unattended: carry pending answers and continue
+├── when_answer_needed                 # only unattended: continue, then file user decisions as asks
+├── ask                                # user command for asks, or null; never a slot
+├── rerun_all_steps                    # true; no pending results reused from an earlier run
+├── record_read                        # user command for reading the record, or null
 └── steps[]                            # execution order, including additions at their anchors
     ├── id, title                      # step identity; spine title or optional added title
     ├── slot                           # only record, knowledge, lessons, persist
     ├── binding                        # null if unbound, else command, consumes[], optional instructions
-    ├── carries[]                      # only unbound slots: item types left in the handoff
+    ├── carries[]                      # only unbound slots: item types for the filing pass
     ├── carried_items[]                 # slot inputs selected by binding.consumes
     │   └── index, item                # original open-loop index and intact producer's item
     └── after, instructions, profile   # added steps: anchor, work to run, originating profile name
@@ -292,11 +297,13 @@ The spine is `record` (reconcile the record), `knowledge` (capture knowledge),
 `lessons` (fold in lessons), `persist`, then `handoff` (write and validate).
 The first four are slots; `handoff` has only `id` and `title`. With no profile,
 record, knowledge, and persist are unbound; lessons binds `/improve-harness`
-and consumes `lesson`. Unbound slots carry items without failing. Profile steps
+and consumes `lesson`. Unbound destinations retain items with a warning. Profile steps
 may run `before-spine` or after `record`, `knowledge`, `lessons`, or `persist`;
 only `own-worktree` may follow `handoff`. Additions retain declaration order
 within profile order. Carried open loops go to bindings consuming their types;
-untyped and unacknowledged loops remain continuation context.
+untyped and unacknowledged loops also pass through the filing rules. A
+finished handoff says `Session finished.`; when destinations are unbound,
+its next action names the retained items. Checkpoints may still carry unfiled items.
 
 ### Checklist report input
 
@@ -314,7 +321,10 @@ results JSON array                    # one result for every planned step, in ex
 ```
 
 Pending steps write nothing. A pending or failed step does not omit later
-results; unattended, the handoff step must still report `run`.
+results; unattended, the handoff step must still report `run`. Pass the written
+handoff with `--handoff` so the report includes each filing outcome, its rule,
+destination or drop reason, and any warnings or errors. Asks are grouped under
+their directory when no ask binding can save them; keep their handoff.
 
 ### Session summary
 
@@ -332,7 +342,9 @@ report command output                 # JSON on stdout, checked by the reporting
 ├── summary                           # unedited file text, or null
 ├── summary_unavailable               # reason when no summary was composed
 ├── report                            # ok after validation
-└── pending[]                         # identities of pending steps
+├── pending[]                         # identities of pending steps
+├── filing                            # item outcomes, asks by directory, warnings and failures
+└── warnings[]                        # unbound destinations and retained item names
 ```
 
 If none was composed, pass `--no-summary` with the record's reason; an older

@@ -3,7 +3,7 @@
 
 This module does not execute skills or write handoffs. The skill runs the plan,
 collects explicit saved-item receipts, and sends the settled payload to checkpoint.
-Handoff items are opaque apart from their type; provenance is passed through intact.
+Filing judgments come from the skill; source items and provenance pass through intact.
 """
 from __future__ import annotations
 
@@ -31,7 +31,8 @@ CARRIES = {"record": ["progress", "commitment", "decision", "artifact"], "knowle
 # How a step ended, as the run reports it. `carried` is an unbound slot.
 STATUSES = ("run", "carried", "pending", "failed")
 UNATTENDED_RULE = ("Nobody is present to answer: a step that needs the user's answer reports "
-                   "pending with the answer it needs, writes nothing, and the checklist continues.")
+                   "pending with the answer it needs, writes nothing, and the checklist continues. "
+                   "Before the handoff, apply the filing rules; user decisions go to the ask binding.")
 
 
 def _spine_steps_named(value: Any) -> list[str]:
@@ -94,6 +95,17 @@ def record_read_binding(profile: Mapping[str, Any]) -> dict[str, str] | None:
     return dict(binding)
 
 
+def ask_binding(profile: Mapping[str, Any]) -> dict[str, str] | None:
+    """One user command for asks, separate from the spine and its slots."""
+    if "ask" not in profile:
+        return None
+    binding = profile["ask"]
+    if (not isinstance(binding, Mapping) or set(binding) != {"command"}
+            or not isinstance(binding["command"], str) or not binding["command"].strip()):
+        raise ValueError(f"{profile.get('name', 'profile')}: ask requires only a non-empty command")
+    return dict(binding)
+
+
 def compose(profiles: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Merge user then repository additions; no profile can alter the spine."""
     bindings: dict[str, Any] = {
@@ -110,13 +122,14 @@ def compose(profiles: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
         name = profile.get("name")
         if not isinstance(name, str) or not name.strip():
             raise ValueError("profile requires a name")
-        unknown = sorted(set(profile) - {"name", "bindings", "steps", "record_read"})
+        unknown = sorted(set(profile) - {"name", "bindings", "steps", "record_read", "ask"})
         if unknown:
             steps = _removed_spine_steps(profile, unknown)
             if steps:
                 raise ValueError(f"{name}: cannot remove or skip spine step {', '.join(steps)}")
             raise ValueError(f"{name}: unknown profile field {', '.join(unknown)}")
         record_read_binding(profile)
+        ask_binding(profile)
         declared = profile.get("bindings", {})
         if not isinstance(declared, Mapping):
             raise ValueError(f"{name}: bindings must be an object")
@@ -206,6 +219,129 @@ def settle(plan: Sequence[Mapping[str, Any]], handoff: Mapping[str, Any],
     return result
 
 
+def filing_binding(rule: str, item: Mapping[str, Any], row: Mapping[str, Any]) -> str | None:
+    """Resolve the destination binding after the agent chooses the first matching rule."""
+    if rule in ("R1", "R6"):
+        return None
+    if rule == "R3" or (rule == "R4" and row.get("destination") == "ask"):
+        return "ask"
+    if rule == "R4":
+        if item.get("type") not in ("lesson", "knowledge"):
+            raise ValueError("R4 requires a lesson or knowledge item")
+        return "lessons" if item["type"] == "lesson" else "knowledge"
+    return "record"
+
+
+def file_items(plan: Sequence[Mapping[str, Any]], handoff: Mapping[str, Any],
+               outcomes: Sequence[Mapping[str, Any]], ask: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """Bookkeep explicit filing outcomes; never execute commands or infer saved writes.
+
+    The skill supplies one row per remaining loop and unrecorded current item.
+    Failed reads and writes keep the source item intact. This is a wrap operation;
+    checkpoint and the earlier saved-slot receipt protocol remain unchanged.
+    """
+    loops = handoff.get("resume", {}).get("open_loops", [])
+    current = handoff.get("session_items", [])
+    if (not isinstance(loops, list) or not isinstance(current, list)
+            or not all(isinstance(item, Mapping) for item in [*loops, *current])):
+        raise ValueError("filing items must be arrays of objects")
+    loops = [*loops, *(item for item in current if item.get("recorded") is not True)]
+    if (not isinstance(outcomes, list) or not all(isinstance(row, Mapping) for row in outcomes)
+            or any(type(row.get("index")) is not int for row in outcomes)
+            or sorted(row["index"] for row in outcomes) != list(range(len(loops)))):
+        raise ValueError("filing requires exactly one outcome for every item")
+    bindings = {step["slot"]: step.get("binding") for step in plan if "slot" in step}
+    bindings["ask"] = ask
+    result = copy.deepcopy(dict(handoff))
+    report: dict[str, Any] = {"items": [], "warnings": [], "failures": [], "asks": {}}
+    kept = []
+    for row in sorted(outcomes, key=lambda row: row["index"]):
+        item = loops[row["index"]]
+        rule, status = row.get("rule"), row.get("status")
+        if rule not in ("R1", "R3", "R4", "R7", "R2", "R5", "R6"):
+            raise ValueError(f"filing: unknown rule {rule!r}")
+        if status not in ("filed", "dropped", "pending", "failed", "read failed"):
+            raise ValueError(f"filing: unknown status {status!r}")
+        binding = filing_binding(rule, item, row)
+        entry = {**copy.deepcopy(dict(row)), "item": copy.deepcopy(item), "binding": binding}
+        label = item.get("context", str(item))
+        error = row.get("error") or "missing, unsupported, or malformed record read"
+        # Information-only R1 does not depend on a record read. Other R1,
+        # R2 and R5 require explicit evidence that the read succeeded.
+        needs_read = rule in ("R2", "R5") or (rule == "R1" and not row.get("information_only"))
+        if status == "read failed" or (needs_read and row.get("read_status") != "ok"):
+            entry.update(status="read failed", error=error)
+            report["failures"].append(f"{label}: read failed: {error}")
+            kept.append(copy.deepcopy(item))
+        elif binding is None:
+            if status != "dropped" or not isinstance(row.get("reason"), str) or not row["reason"].strip():
+                raise ValueError(f"{label}: {rule} requires dropped with a reason")
+        else:
+            if binding == "ask":
+                choices = row.get("choices")
+                if not isinstance(choices, list) or not choices or not all(isinstance(c, str) and c.strip() for c in choices):
+                    raise ValueError(f"{label}: an ask requires the user's choices")
+                subject = handoff.get("subject", {})
+                entry["ask"] = {"text": label, "session_id": item.get("session_id") or subject.get("session_id"),
+                                "directory": subject.get("working_directory"),
+                                "ticket": (item.get("anchor") or {}).get("ticket"), "choices": choices}
+                report["asks"].setdefault(entry["ask"]["directory"] or "unknown directory", []).append(entry["ask"])
+            if bindings[binding] is None:
+                entry["status"] = "unbound"
+                report["warnings"].append(f"{label}: missing {binding} binding; kept in handoff")
+                kept.append(copy.deepcopy(item))
+            elif status != "filed":
+                entry["error"] = row.get("error") or "no successful write receipt"
+                report["failures"].append(f"{label}: {binding} write failed: {entry['error']}")
+                kept.append(copy.deepcopy(item))
+            elif not isinstance(row.get("destination"), str) or not row["destination"].strip():
+                raise ValueError(f"{label}: a filed item requires its destination or receipt")
+            elif rule == "R5" and (not row.get("priority") or not row.get("priority_reason")):
+                raise ValueError(f"{label}: a new ticket requires priority and priority_reason")
+        report["items"].append(entry)
+    result.setdefault("resume", {})["open_loops"] = kept
+    result["resume"]["next_action"] = ("Session finished." if not kept else
+        "Unfiled items: " + "; ".join(item.get("context", str(item)) for item in kept))
+    result.pop("session_items", None)
+    result["filing"] = report
+    return result
+
+
+def filing_check(plan: Sequence[Mapping[str, Any]], data: Mapping[str, Any],
+                 ask: Mapping[str, str] | None = None) -> tuple[list[str], list[str]]:
+    """Validate filing failures and reject bound items still carried after a wrap."""
+    report = data.get("filing", {})
+    if not isinstance(report, Mapping):
+        return ["filing report must be an object"], []
+    failures = list(report.get("failures", []))
+    warnings = list(report.get("warnings", []))
+    bindings = {step["slot"]: step.get("binding") for step in plan if "slot" in step}
+    bindings["ask"] = ask
+    loops = data.get("resume", {}).get("open_loops", [])
+    for row in report.get("items", []):
+        item = row.get("item")
+        if row.get("status") in ("unbound", "pending", "failed", "read failed") and item not in loops:
+            failures.append(f"{item.get('context', str(item))}: retained item missing from handoff")
+    if "filing" in data and not loops and data.get("resume", {}).get("next_action") != "Session finished.":
+        failures.append("resume.next_action must say Session finished. when filing is complete")
+    for item in loops:
+        if not isinstance(item, Mapping):
+            continue  # The handoff linter names this error.
+        entry = next((row for row in report.get("items", []) if row.get("item") == item), None)
+        label = item.get("context", str(item))
+        binding = entry.get("binding") if entry else (
+            "ask" if item.get("type") == "decision" else
+            "lessons" if item.get("type") == "lesson" else
+            "knowledge" if item.get("type") == "knowledge" else "record")
+        if entry and entry.get("status") == "read failed":
+            failures.append(f"{label}: read failed: {entry.get('error')}")
+        elif binding is None or bindings.get(binding) is not None:
+            failures.append(f"{label}: still carried with bound {binding or 'drop'} destination")
+        else:
+            warnings.append(f"{label}: missing {binding} binding; kept in handoff")
+    return list(dict.fromkeys(failures)), list(dict.fromkeys(warnings))
+
+
 def _load_handoff_module() -> Any:
     spec = importlib.util.spec_from_file_location("handoff", Path(__file__).with_name("handoff.py"))
     module = importlib.util.module_from_spec(spec)
@@ -283,7 +419,7 @@ def completed_by() -> set[str]:
 
 
 # Commands that run the checklist or write a handoff; only an interactive session may.
-WRAP_COMMAND = re.compile(r"checklist\.py['\"]?\s+(?:plan|settle|wrap-check|report)\b"
+WRAP_COMMAND = re.compile(r"checklist\.py['\"]?\s+(?:plan|settle|file|wrap-check|report)\b"
                           r"|checkpoint\.sh\b|handoff\.py['\"]?\s+checkpoint\b")
 
 
@@ -435,7 +571,7 @@ def last_change(session_id: str) -> str | None:
 
 
 def wrap_check(plan: Sequence[Mapping[str, Any]], handoff_path: Path,
-               record_at: str | None = None) -> list[str]:
+               record_at: str | None = None, ask: Mapping[str, str] | None = None) -> list[str]:
     """Return the reasons wrap fails; an empty list means wrap may report success.
 
     The handoff must pass its validity check. Only a bound `record` slot adds a
@@ -450,6 +586,9 @@ def wrap_check(plan: Sequence[Mapping[str, Any]], handoff_path: Path,
     except (OSError, ValueError, TypeError) as error:
         return [f"handoff invalid: not valid JSON: {error}"]
     failures = [f"handoff invalid: {problem}" for problem in problems]
+    data = handoff.read_json(str(handoff_path)) if not problems else {}
+    filing_failures, _ = filing_check(plan, data, ask)
+    failures.extend(filing_failures)
     record = next(step for step in plan if step.get("slot") == "record")
     if record.get("binding") is None:
         return failures
@@ -480,12 +619,13 @@ def _handoff_session(path: Path) -> str | None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("plan", "settle", "wrap-check", "report", "wrap-cadence", "actor-guard",
+    parser.add_argument("operation", choices=("plan", "settle", "file", "wrap-check", "report", "wrap-cadence", "actor-guard",
                                                       "is-completion-command"))
     parser.add_argument("--user-profile", type=Path)
     parser.add_argument("--repository-profile", type=Path, action="append", default=[])
     parser.add_argument("--handoff", type=Path)
     parser.add_argument("--receipts", type=Path)
+    parser.add_argument("--filing", type=Path, help="file: explicit outcome for each remaining item")
     parser.add_argument("--written-handoff", type=Path, help="wrap-check: the handoff step 5 wrote")
     parser.add_argument("--record-at", help="wrap-check: time of the record's latest write or passing check")
     parser.add_argument("--unattended", action="store_true",
@@ -517,17 +657,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         paths = ([args.user_profile] if args.user_profile else []) + args.repository_profile
         profiles = [load_profile(path) for path in paths]
         for path, profile in zip(args.repository_profile, profiles[1:] if args.user_profile else profiles):
+            if "ask" in profile:
+                raise ValueError(f"{path}: repository profiles cannot bind ask")
             if "record_read" in profile:
                 raise ValueError(f"{path}: repository profiles cannot bind record_read")
             if profile.get("bindings"):
                 raise ValueError(f"{path}: repository profiles only add steps; cannot bind {', '.join(profile['bindings'])}")
         plan = compose(profiles)
+        ask = ask_binding(profiles[0]) if args.user_profile else None
         handoff = json.loads(args.handoff.read_text()) if args.handoff else {}
         if not isinstance(handoff, dict):
             raise ValueError("handoff must be an object")
         if args.operation == "plan":
             session_id = args.session_id or _load_handoff_module().ambient_session_id()
             if session_id:
+                if not args.unattended:
+                    # An explicit attended plan starts every step afresh even if
+                    # the earlier unattended wrap failed and left its marker.
+                    _unattended_marker(session_id).unlink(missing_ok=True)
                 mark_start(session_id)
             else:
                 print("checklist: no session id; the wrap check will count wrap-up changes", file=sys.stderr)
@@ -535,18 +682,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if "slot" in step:
                     step["carried_items"] = slot_inputs(plan, step["slot"], handoff)
             output = {"profiles": [str(path) for path in paths], "unattended": args.unattended, "steps": plan,
-                      "record_read": record_read_binding(profiles[0]) if args.user_profile else None}
+                      "record_read": record_read_binding(profiles[0]) if args.user_profile else None,
+                      "ask": ask, "rerun_all_steps": True}
             if args.unattended:
                 output["when_answer_needed"] = UNATTENDED_RULE
+        elif args.operation == "file":
+            if not args.handoff or not args.filing:
+                raise ValueError("file requires --handoff and --filing")
+            output = file_items(plan, handoff, json.loads(args.filing.read_text()), ask)
         elif args.operation == "wrap-check":
             if not args.written_handoff:
                 raise ValueError("wrap-check requires --written-handoff")
-            failures = wrap_check(plan, args.written_handoff, args.record_at)
+            failures = wrap_check(plan, args.written_handoff, args.record_at, ask)
             session_id = _handoff_session(args.written_handoff)
             marker = _unattended_marker(session_id) if session_id else None
             if marker is not None and marker.exists() and not args.unattended:
                 failures.append("this session's slate completed unattended; "
                                 "run the checklist with --unattended on plan, report, and wrap-check")
+            data = json.loads(args.written_handoff.read_text()) if args.written_handoff.exists() and not failures else {}
+            _, warnings = filing_check(plan, data, ask)
+            for warning in warnings:
+                print(f"checklist: warning: {warning}", file=sys.stderr)
             for failure in failures:
                 print(f"checklist: wrap failed: {failure}", file=sys.stderr)
             if failures:
@@ -566,8 +722,14 @@ def main(argv: Sequence[str] | None = None) -> int:
                 print(f"checklist: report invalid: {problem}", file=sys.stderr)
             if problems:
                 return 1
+            filing_failures, warnings = filing_check(plan, handoff, ask)
+            for problem in filing_failures:
+                print(f"checklist: report invalid: {problem}", file=sys.stderr)
+            if filing_failures:
+                return 1
             # The report starts with the session summary.
-            output = {**summary, "report": "ok", "pending": [r["id"] for r in results if r["status"] == "pending"]}
+            output = {**summary, "report": "ok", "pending": [r["id"] for r in results if r["status"] == "pending"],
+                      "filing": handoff.get("filing", {}), "warnings": warnings}
         else:
             if not args.handoff or not args.receipts:
                 raise ValueError("settle requires --handoff and --receipts")

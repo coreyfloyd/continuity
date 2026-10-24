@@ -222,6 +222,7 @@ class ChecklistTests(unittest.TestCase):
                 handle.write(json.dumps(row) + "\n")
         supplied = dict(self.handoff(), session_items=session_items)
         supplied["resume"]["headline"] = "wrap"
+        supplied["resume"]["open_loops"] = []
         checkpoint = subprocess.run([sys.executable, str(ROOT / "scripts/lib/handoff.py"), "checkpoint", "--cwd", directory, "--session-id", "wrap-session", "--trigger", "wrap"], input=json.dumps(supplied), text=True, capture_output=True, env=environment)
         command = [sys.executable, str(ENGINE), "wrap-check", *profile_args, "--written-handoff", str(target)]
         if record_at:
@@ -231,24 +232,194 @@ class ChecklistTests(unittest.TestCase):
     def item(self, kind):
         return {"type": kind, "context": kind + " now", "session_id": "wrap-session", "produced_at": "2026-10-06T12:00:00Z", "author": "user", "location": "https://example.test/now", "disposition": "keep"}
 
+    def filing_profile(self, ask=True, record=True):
+        profile = {"name": "filing", "bindings": {"lessons": None,
+                   "knowledge": {"command": "/knowledge", "consumes": ["knowledge"]}}}
+        if record:
+            profile["bindings"]["record"] = {"command": "/record", "consumes": ["progress"]}
+        if ask:
+            profile["ask"] = {"command": "/ask"}
+        return profile
+
+    def test_current_session_items_are_filed_before_checkpoint_can_reintroduce_them(self):
+        source = self.handoff()
+        source["resume"]["open_loops"] = []
+        source["session_items"] = [self.item("progress"), dict(self.item("knowledge"), recorded=True)]
+        result = self.engine.file_items(self.engine.compose([]), source,
+            [dict(index=0, rule="R6", status="dropped", reason="optional observation")])
+        self.assertEqual(result["resume"]["open_loops"], [])
+        self.assertNotIn("session_items", result)
+        self.assertEqual(result["filing"]["items"][0]["item"], self.item("progress"))
+
+    def test_written_handoff_rejects_a_filed_item_still_carried_and_failed_write(self):
+        profile = self.filing_profile()
+        plan = self.engine.compose([profile])
+        source = self.handoff()
+        source["resume"]["open_loops"] = [self.item("progress")]
+        filed = self.engine.file_items(plan, source,
+            [dict(index=0, rule="R7", status="filed", destination="document")])
+        filed["resume"]["open_loops"] = source["resume"]["open_loops"]
+        self.assertIn("still carried", " ".join(self.engine.filing_check(plan, filed)[0]))
+        failed = self.engine.file_items(plan, source,
+            [dict(index=0, rule="R7", status="failed", error="write denied")])
+        self.assertIn("write denied", " ".join(self.engine.filing_check(plan, failed)[0]))
+
+    def test_explicit_attended_plan_restarts_an_unfinished_unattended_wrap(self):
+        marker = self.engine._unattended_marker("wrap-session")
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        marker.write_text("{}")
+        self.start(self.state_dir.name)
+        self.assertFalse(marker.exists())
+
+    def test_drop_and_new_ticket_require_reason_and_successful_read(self):
+        source = self.handoff()
+        source["resume"]["open_loops"] = [self.item("progress")]
+        profile = self.filing_profile()
+        plan = self.engine.compose([profile])
+        for rule in ["R1", "R6"]:
+            row = dict(index=0, rule=rule, status="dropped", information_only=True)
+            with self.assertRaisesRegex(ValueError, "reason"):
+                self.engine.file_items(plan, source, [row])
+            self.assertEqual(self.engine.file_items(plan, source, [dict(row, reason="information only")])
+                             ["resume"]["open_loops"], [])
+        row = dict(index=0, rule="R5", status="filed", read_status="ok", destination="new ticket")
+        with self.assertRaisesRegex(ValueError, "priority"):
+            self.engine.file_items(plan, source, [row])
+        result = self.engine.file_items(plan, source, [dict(row, priority="normal", priority_reason="Unblocks planned work")])
+        self.assertEqual(result["resume"]["open_loops"], [])
+        for read in [None, "failed", "unsupported", "malformed"]:
+            result = self.engine.file_items(plan, source, [dict(row, read_status=read)])
+            self.assertEqual(result["filing"]["items"][0]["status"], "read failed")
+
+    def test_attended_plan_after_unattended_plan_runs_all_steps_again(self):
+        command = [sys.executable, str(ENGINE), "plan", "--session-id", "wrap-session"]
+        first = subprocess.run(command + ["--unattended"], text=True, capture_output=True)
+        second = subprocess.run(command, text=True, capture_output=True)
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        attended = json.loads(second.stdout)
+        self.assertTrue(attended["rerun_all_steps"])
+        self.assertEqual([step["id"] for step in attended["steps"]], list(self.engine.SPINE))
+        self.assertNotIn("when_answer_needed", attended)
+        self.assertTrue(all("status" not in step for step in attended["steps"]))
+
+    def test_ask_binding_is_user_only_and_not_a_slot(self):
+        profile = self.filing_profile()
+        plan = self.engine.compose([profile])
+        self.assertEqual([s["id"] for s in plan], list(self.engine.SPINE))
+        self.assertEqual(self.engine.ask_binding(profile), {"command": "/ask"})
+        for value in [None, {}, {"command": ""}, {"command": "/ask", "consumes": []}]:
+            with self.assertRaises(ValueError):
+                self.engine.compose([dict(profile, ask=value)])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "repo.json"
+            path.write_text(json.dumps(profile))
+            result = subprocess.run([sys.executable, str(ENGINE), "plan", "--repository-profile", str(path)],
+                                    text=True, capture_output=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("cannot bind ask", result.stderr)
+
+    def test_filing_outcomes_remove_only_successes_and_report_every_item(self):
+        profile = self.filing_profile()
+        plan = self.engine.compose([profile])
+        source = self.handoff()
+        source["subject"]["working_directory"] = "/work"
+        rows = [dict(index=i, rule=rule, status=status, reason="optional observation" if rule == "R6" else "saved",
+                     destination=destination, read_status="ok", choices=["approve", "decline"])
+                for i, (rule, status, destination) in enumerate([
+                    ("R2", "filed", "https://example.test/ticket"), ("R3", "filed", "ask receipt"),
+                    ("R7", "filed", "https://example.test/doc"), ("R4", "filed", "knowledge receipt"),
+                    ("R4", "pending", "ask"), ("R6", "dropped", "")])]
+        # Pending R4 routes to ask; only an acknowledged ask write removes it.
+        result = self.engine.file_items(plan, source, rows, self.engine.ask_binding(profile))
+        self.assertEqual(result["resume"]["open_loops"], [source["resume"]["open_loops"][4]])
+        self.assertEqual(len(result["filing"]["items"]), 6)
+        ask = result["filing"]["items"][1]["ask"]
+        self.assertEqual(ask["session_id"], "earlier-session")
+        self.assertEqual(ask["directory"], "/work")
+        self.assertEqual(ask["choices"], ["approve", "decline"])
+        self.assertEqual(result["filing"]["items"][4]["binding"], "ask")
+        complete = self.engine.file_items(plan, source, [dict(r, status="filed") if r["status"] == "pending" else r for r in rows], self.engine.ask_binding(profile))
+        self.assertEqual(complete["resume"]["open_loops"], [])
+        self.assertEqual(complete["resume"]["next_action"], "Session finished.")
+        self.assertEqual(source, self.handoff() | {"subject": source["subject"]})
+
+    def test_filing_preserves_failed_reads_and_never_treats_unknown_as_absence(self):
+        plan = self.engine.compose([self.filing_profile()])
+        source = self.handoff()
+        source["resume"]["open_loops"] = [self.item("progress")]
+        for rule in ["R1", "R2", "R5"]:
+            result = self.engine.file_items(plan, source, [dict(index=0, rule=rule, status="filed",
+                destination="ticket", read_status="failed", error="unsupported read")])
+            self.assertEqual(result["resume"]["open_loops"], source["resume"]["open_loops"])
+            self.assertEqual(result["filing"]["items"][0]["status"], "read failed")
+            self.assertIn("unsupported read", " ".join(result["filing"]["failures"]))
+        with self.assertRaisesRegex(ValueError, "every item"):
+            self.engine.file_items(plan, source, [])
+
+    def test_wrap_bound_carry_fails_unbound_warns_and_checkpoint_is_unchanged(self):
+        for bound in [False, True]:
+            with self.subTest(bound=bound), tempfile.TemporaryDirectory() as directory:
+                profile = Path(directory) / "profile.json"
+                profile.write_text(json.dumps(self.filing_profile(ask=False, record=bound)))
+                checkpoint, result, target = self.wrap(directory, [self.item("progress")],
+                    ["--user-profile", str(profile)], "2026-10-06T13:00:00Z")
+                self.assertEqual(checkpoint.returncode, 0, checkpoint.stderr)
+                self.assertEqual(result.returncode, int(bound), result.stderr)
+                self.assertIn("progress now", result.stderr)
+                self.assertIn("record", result.stderr)
+                self.assertTrue(json.loads(target.read_text())["resume"]["open_loops"])
+
+    def test_wrap_rejects_lost_unbound_ask_and_unfinished_next_action(self):
+        profile = self.filing_profile(ask=False)
+        plan = self.engine.compose([profile])
+        source = self.handoff()
+        source["resume"]["open_loops"] = [self.item("decision")]
+        result = self.engine.file_items(plan, source,
+            [dict(index=0, rule="R3", status="pending", choices=["approve", "decline"])])
+        result["resume"]["open_loops"] = []
+        self.assertIn("missing from handoff", " ".join(self.engine.filing_check(plan, result)[0]))
+        complete = self.engine.file_items(plan, source,
+            [dict(index=0, rule="R6", status="dropped", reason="optional observation")])
+        complete["resume"]["next_action"] = "Next session should do this"
+        self.assertIn("Session finished", " ".join(self.engine.filing_check(plan, complete)[0]))
+
+    def test_failed_ask_is_kept_and_unbound_ask_warns_under_directory(self):
+        source = self.handoff()
+        source["subject"]["working_directory"] = "/work"
+        source["resume"]["open_loops"] = [self.item("decision")]
+        for bound in [False, True]:
+            profile = self.filing_profile(ask=bound)
+            result = self.engine.file_items(self.engine.compose([profile]), source,
+                [dict(index=0, rule="R3", status="failed", error="write refused", choices=["approve", "decline"])],
+                self.engine.ask_binding(profile))
+            self.assertEqual(result["resume"]["open_loops"], source["resume"]["open_loops"])
+            report = result["filing"]
+            self.assertEqual(bool(report["failures"]), bound)
+            self.assertEqual(bool(report["warnings"]), not bound)
+            self.assertEqual(report["asks"]["/work"][0]["text"], "decision now")
+            if bound:
+                self.assertIn("write refused", " ".join(report["failures"]))
+            else:
+                self.assertIn("decision now", result["resume"]["next_action"])
+
     def test_no_profile_wrap_carries_unbound_items_and_runs_no_record_check(self):
         with tempfile.TemporaryDirectory() as directory:
-            items = [self.item(kind) for kind in ["progress", "commitment", "decision", "knowledge", "lesson"]]
+            items = [self.item(kind) for kind in ["progress", "commitment", "decision", "knowledge"]]
             stale = [{"kind": "file", "path": "/x", "checkout": "/", "session_id": "wrap-session", "ts": "2026-10-06T13:00:00Z"}]
             checkpoint, result, target = self.wrap(directory, items, ledger=stale)
             self.assertEqual(checkpoint.returncode, 0, checkpoint.stderr)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout), {"wrap": "ok", "record_check": "not run: record unbound"})
             loops = json.loads(target.read_text())["resume"]["open_loops"]
-            self.assertEqual(loops[:6], self.handoff()["resume"]["open_loops"])
-            self.assertEqual(loops[6:], items)
+            self.assertEqual(loops, items)
 
     def test_wrap_fails_when_the_handoff_is_invalid(self):
         with tempfile.TemporaryDirectory() as directory:
             checkpoint, result, _ = self.wrap(directory, [{"type": "decision", "context": "no author"}])
             self.assertNotEqual(checkpoint.returncode, 0)
             self.assertEqual(result.returncode, 1)
-            self.assertIn("wrap failed: handoff invalid: open_loops[6].session_id must be a non-empty string", result.stderr)
+            self.assertIn("wrap failed: handoff invalid: open_loops[0].session_id must be a non-empty string", result.stderr)
             missing = subprocess.run([sys.executable, str(ENGINE), "wrap-check", "--written-handoff", str(Path(directory) / "absent.json")], text=True, capture_output=True)
             self.assertEqual(missing.returncode, 1)
             self.assertIn("handoff invalid: no file at", missing.stderr)
@@ -461,7 +632,7 @@ class ChecklistTests(unittest.TestCase):
             result = subprocess.run([sys.executable, str(ENGINE), "report", *user, "--unattended", "--results", str(path), *unavailable], text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout), {"summary": None, "summary_unavailable": "session summary unavailable: HTTP 502",
-                                                         "report": "ok", "pending": ["knowledge"]})
+                                                         "report": "ok", "pending": ["knowledge"], "filing": {}, "warnings": []})
             path.write_text(json.dumps(wrote))
             result = subprocess.run([sys.executable, str(ENGINE), "report", *user, "--unattended", "--results", str(path), *unavailable], text=True, capture_output=True)
             self.assertEqual(result.returncode, 1)
