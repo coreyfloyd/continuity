@@ -95,7 +95,7 @@ def test_one_install_registers_six_hooks_and_guard_preserves_other_entries_and_u
     hooks=json.loads((codex/'hooks.json').read_text())['hooks']
     assert sum(len(g['hooks']) for groups in hooks.values() for g in groups)==8
     assert {p.name for p in (codex/'skills').iterdir() if p.name != '.system'} == {
-        'checklist','pickup','checkpoint','wip','handoff-prompt','improve-harness','slim-harness','setup'}
+        'checklist','pickup','checkpoint','wip','handoff-prompt','improve-harness','slim-harness','setup','sweep'}
     before=(codex/'hooks.json').read_text()
     assert cli(INSTALL,'--codex-home',codex).returncode==0
     assert (codex/'hooks.json').read_text()==before

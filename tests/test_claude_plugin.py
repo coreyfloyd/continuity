@@ -1,4 +1,4 @@
-"""The Claude Code plugin: one install adds the eight skills and the six hooks.
+"""The Claude Code plugin: one install adds the nine skills and the six hooks.
 
 The hook tests run every command `hooks/hooks.json` registers, the way Claude
 Code runs it (`bash -c` with `CLAUDE_PLUGIN_ROOT` exported), in a home with
@@ -23,7 +23,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HOOKS_FILE = os.path.join(ROOT, "hooks", "hooks.json")
 HANDOFF = os.path.join(ROOT, "scripts", "lib", "handoff.py")
 TRANSCRIPT_FIXTURE = os.path.join(ROOT, "tests", "fixtures", "pickup-session.jsonl")
-SKILLS = ["checklist", "checkpoint", "handoff-prompt", "improve-harness", "pickup", "setup", "slim-harness", "wip"]
+SKILLS = ["checklist", "checkpoint", "handoff-prompt", "improve-harness", "pickup", "setup", "slim-harness", "sweep", "wip"]
 CLAUDE = shutil.which("claude")
 needs_claude = pytest.mark.skipif(not CLAUDE, reason="the claude command is not installed")
 
@@ -428,7 +428,7 @@ def installed(tmp_path, home):
 @needs_claude
 def test_one_install_adds_the_six_skills_and_six_hooks(home, installed):
     details = claude_cli(home, "details", "continuity")
-    assert "Skills (8)  " + ", ".join(SKILLS) in details
+    assert "Skills (9)  " + ", ".join(SKILLS) in details
     assert "Hooks (5)  SessionStart, PreCompact, UserPromptSubmit, PostToolUse, Stop" in details
     assert len(registrations(os.path.join(installed, "hooks", "hooks.json"))) == 6
 
