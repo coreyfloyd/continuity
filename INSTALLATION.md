@@ -308,3 +308,8 @@ Run setup while present to answer its questions. Unattended setup stops without
 writes. Setup changes neither shared configuration nor repository profiles.
 The user profile and user-owned read skill remain yours when continuity is
 updated or uninstalled.
+
+To try setup without touching your real profile, set `XDG_CONFIG_HOME` to an
+empty folder, unset `CHECKLIST_USER_PROFILE`, and start Claude Code with
+`--setting-sources project --plugin-dir <checkout>`. Keep your own `HOME`: a
+fresh one on macOS cannot store the Claude Code login.
