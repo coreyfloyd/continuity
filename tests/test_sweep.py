@@ -732,6 +732,8 @@ elif op == 'search_open':
 elif op == 'read_item':
     print(json.dumps({'present': behavior.get('present', False), 'open': True}))
 else:
+    if behavior.get('dirty_file'):
+        pathlib.Path(behavior['dirty_file']).write_bytes(pathlib.Path(request['source_handoff']).read_bytes())
     if behavior.get('require_journal'):
         reports = list((root / 'reports').glob('*.md'))
         current = max(reports, key=lambda p: p.stat().st_mtime_ns).read_text()
@@ -994,3 +996,92 @@ def test_act_generated_asks_journal_intent_before_binding(sandbox):
     _, data = report(sandbox, '--user-profile', str(profile))
     row = data['directories'][str(sandbox[0])]['asks_raised'][0]
     assert row['outcome'] == 'written'
+
+
+
+def archive_test_repository(sandbox, location):
+    repo, bare, linked = [sandbox[0] / name for name in ('repo', 'origin.git', 'linked')]
+
+    def git(*args):
+        return subprocess.run(['git', *map(str, args)], check=True, capture_output=True, text=True)
+
+    git('init', '--bare', '-q', bare)
+    git('init', '-qb', 'main', repo)
+    (repo / 'changed.txt').write_bytes(FIXTURE.read_bytes())
+    git('-C', repo, 'add', 'changed.txt')
+    git('-C', repo, '-c', 'user.name=Test', '-c', 'user.email=test@example.test',
+        'commit', '-qm', 'base')
+    git('-C', repo, 'remote', 'add', 'origin', bare)
+    git('-C', repo, 'push', '-q', 'origin', 'main')
+    if location.startswith('linked'):
+        git('-C', repo, 'worktree', 'add', '-qb', 'feature', linked)
+        root = linked
+    else:
+        root = repo
+    directory = root / 'docs' if location.endswith('subdirectory') else root
+    directory.mkdir(exist_ok=True)
+    return root, directory
+
+
+@pytest.mark.parametrize('mode', ['watch-only', 'act'])
+@pytest.mark.parametrize('location', ['main', 'main-subdirectory', 'linked', 'linked-subdirectory'])
+@pytest.mark.parametrize('dirty_kind', ['tracked', 'untracked'])
+def test_archive_requires_observed_clean_worktree_despite_delivered_ask(sandbox, mode, location, dirty_kind):
+    root, directory = archive_test_repository(sandbox, location)
+    path = source(sandbox, directory=directory, loops=[])
+    original = path.read_bytes()
+    changed = root / ('changed.txt' if dirty_kind == 'tracked' else 'untracked.txt')
+    changed.write_bytes(FIXTURE.read_bytes() + b'\n')
+    profile = act_profile(sandbox)
+    config = json.loads(sandbox[2].read_text())
+    config['sweep']['mode'] = mode
+    sandbox[2].write_text(json.dumps(config))
+
+    _, data = report(sandbox, '--user-profile', str(profile))
+
+    section = data['directories'][str(directory)]
+    assert not section['handoffs_archived']
+    assert section['handoffs_kept'][0]['path'] == str(path)
+    assert path.read_bytes() == original
+    assert changed.read_bytes() == FIXTURE.read_bytes() + b'\n'
+    assert (root / '.git').exists()
+    if mode == 'act' and location == 'linked':
+        assert section['asks_raised'][0]['outcome'] == 'written'
+
+
+def test_archive_rechecks_clean_worktree_after_binding(sandbox):
+    root, directory = archive_test_repository(sandbox, 'linked')
+    path = source(sandbox, directory=directory)
+    profile = act_profile(sandbox, {'dirty_file': str(root / 'untracked.txt')})
+    args = decisions(sandbox, [{'rule': 'R3', 'destination': 'ask', 'choices': ['approve', 'decline']}])
+
+    _, data = report(sandbox, *args, '--user-profile', str(profile))
+
+    section = data['directories'][str(directory)]
+    assert section['filing_outcomes'][0]['outcome'] == 'written'
+    assert (root / 'untracked.txt').exists()
+    assert not section['handoffs_archived']
+    assert path.exists()
+
+
+def test_archive_keeps_unreadable_worktree_status(sandbox):
+    _, directory = archive_test_repository(sandbox, 'main')
+    path = source(sandbox, directory=directory, loops=[])
+    profile = act_profile(sandbox)
+    real_git = subprocess.run(['which', 'git'], check=True, text=True, capture_output=True).stdout.strip()
+    binary = sandbox[0] / 'bin'
+    binary.mkdir()
+    shim = binary / 'git'
+    shim.write_text('#!' + sys.executable + '\nimport os, sys\n'
+                    'if "status" in sys.argv[1:]:\n'
+                    '    print("worktree status unavailable", file=sys.stderr); sys.exit(1)\n'
+                    f'os.execv({real_git!r}, [{real_git!r}, *sys.argv[1:]])\n')
+    shim.chmod(0o755)
+    sandbox[3]['PATH'] = str(binary) + os.pathsep + sandbox[3]['PATH']
+
+    _, data = report(sandbox, '--user-profile', str(profile))
+
+    section = data['directories'][str(directory)]
+    assert not section['handoffs_archived']
+    assert path.exists()
+    assert 'worktree status unavailable' in section['handoffs_kept'][0]['reason']

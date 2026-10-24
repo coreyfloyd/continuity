@@ -307,6 +307,20 @@ def worktree_plan(candidate, protected):
     return row
 
 
+def archive_worktree_check(candidate):
+    """Archive needs a clean repository even when no removal is proposed."""
+    directory = candidate['directory']
+    previous = candidate.get('archive_worktree_check') or {}
+    root = (handoff.repository_root(directory) or previous.get('path') or
+            candidate['handoff'].get('git', {}).get('repository_root'))
+    if not root:
+        return None
+    code, output, error = git_read(directory, 'status', '--porcelain', '--untracked-files=all')
+    return {'path': root, 'clean': code == 0 and not output,
+            'reason': (error or 'worktree status read failed') if code else
+                      ('uncommitted or untracked changes' if output else 'worktree is clean')}
+
+
 def add_ask(section, candidate, text, choices, reason, ask):
     identity = {'session_id': candidate['session_id'],
                 'produced_at': datetime.fromtimestamp(candidate['activity_at'], timezone.utc).isoformat(),
@@ -372,11 +386,15 @@ def build_report(discovery, decisions, plan, ask, checks, interactive, started):
                 section['worktrees_kept'].append(worktree)
                 add_ask(section, candidate, 'Keep worktree ' + worktree['path'] + ': ' + worktree['reason'],
                         ['review worktree', 'leave it'], worktree['reason'], ask)
-        archive = not dirty and all(row['outcome'] == 'dry run' for row in outcomes)
+        clean_check = archive_worktree_check(candidate)
+        candidate['archive_worktree_check'] = clean_check
+        archive = (not dirty and (clean_check is None or clean_check['clean']) and
+                   all(row['outcome'] == 'dry run' for row in outcomes))
         if worktree and worktree['outcome'] == 'kept' and ask is None:
             archive = False
         key = 'handoffs_archived' if archive else 'handoffs_kept'
         section[key].append({'path': candidate['path'], 'outcome': 'dry run' if archive else 'kept',
+            'worktree_check': clean_check,
             'destination': str(Path(candidate['path']).parent / 'archive' / Path(candidate['path']).name),
             'reason': 'all items would be filed or dropped' if archive else 'unfiled items, unbound ask, or uncommitted files'})
     report['nothing_to_do'] = not report['directories'] and not report['errors']
@@ -595,10 +613,18 @@ def execute_act(report, discovery, plan, ask, reader, config, path):
             source = candidate['path']
             outcomes = [r for r in section['filing_outcomes'] if r['source_handoff'] == source]
             asks = [r for r in section['asks_raised'] if r['source_handoff'] == source]
-            archived = (not candidate['handoff'].get('uncommitted_files') and
+            initial_check = candidate.get('archive_worktree_check')
+            live_check = archive_worktree_check(candidate)
+            clean = all(check is None or check['clean'] for check in (initial_check, live_check))
+            archived = (clean and not candidate['handoff'].get('uncommitted_files') and
                         all(r['outcome'] in ('written', 'dropped') for r in outcomes) and
                         all(r['outcome'] == 'written' for r in asks))
-            row = dict(path=source, outcome='kept', reason='unfiled items, asks, or uncommitted files')
+            row = dict(path=source, outcome='kept', worktree_check=live_check,
+                       reason='unfiled items, asks, or uncommitted files')
+            if not clean:
+                failed_check = next(check for check in (initial_check, live_check)
+                                    if check is not None and not check['clean'])
+                row['reason'] = 'worktree is not confirmed clean: ' + failed_check['reason']
             if archived:
                 try:
                     original = Path(source)

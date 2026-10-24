@@ -195,6 +195,9 @@ Asks carry the original item identity and producer, directory, linked ticket,
 and choices. An unbound or failed ask keeps its handoff. Uncommitted-files asks
 name the session, directory and files, and always keep their handoff. Archives
 are moves, preserve file bytes, and occur only after every item is filed or
-dropped and all asks succeeded. Worktree removal and configured open-session
+dropped and all asks succeeded. A delivered ask does not clear dirty work.
+Repository status must be clean both at planning and after bindings finish,
+including main checkouts and handoffs naming subdirectories; failed status
+reads keep the source. Worktree removal and configured open-session
 commands remain separate integration work; act does not remove worktrees or
 local branches. Open-session evidence still protects every listed session.

@@ -519,7 +519,9 @@ The limit is global across directory sections, not reset per directory.
 Act execution changes only its report, record and ask destinations through
 their bindings, and archive moves. It never removes a worktree or local branch.
 An archive is a byte-preserving move after all items were written or dropped,
-with no uncommitted files or unsuccessful asks. Existing archive names are
-preserved; a collision receives a run-id prefix. Source changes detected before
+with no recorded or observed uncommitted files or unsuccessful asks.
+Repository status is checked at planning and again after bindings; a dirty
+or unreadable status keeps the source even after a successful ask write.
+Existing archive names are preserved; a collision receives a run-id prefix. Source changes detected before
 the move keep the handoff. Reports retain each rule, identity, destination,
 outcome, receipt and error for consumers and later reversal support.
