@@ -712,8 +712,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             record = next(step for step in plan if step.get("slot") == "record")
             output = {"wrap": "ok", "record_check": "passed" if record["binding"] else "not run: record unbound"}
         elif args.operation == "report":
-            if not args.results:
-                raise ValueError("report requires --results")
+            if not args.results or not args.handoff:
+                raise ValueError("report requires --results and --handoff")
+            handoff_problems, _ = _load_handoff_module().lint_data(handoff)
+            if handoff_problems:
+                raise ValueError("report handoff invalid: " + "; ".join(handoff_problems))
             results = json.loads(args.results.read_text())
             summary, problems = session_summary(
                 plan, args.summary.read_text() if args.summary else None, args.no_summary)

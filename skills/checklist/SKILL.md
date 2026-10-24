@@ -308,6 +308,8 @@ python3 <checklist-module> report --user-profile <user-profile> \
   --summary <summary-file> --handoff <written-handoff> [--unattended]
 ```
 
+`--handoff` is required and must name the valid handoff checkpoint wrote;
+report refuses an omitted, unreadable, malformed, or invalid handoff.
 `--summary` is the file the record binding wrote. When it could not compose
 one, pass `--no-summary <reason>` with its reason instead. When its output has
 no session summary at all (a binding that predates session summaries), pass

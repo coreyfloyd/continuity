@@ -605,6 +605,47 @@ class ChecklistTests(unittest.TestCase):
         self.assertFalse(attended["unattended"])
         self.assertNotIn("when_answer_needed", attended)
 
+    def test_completion_entry_points_require_a_written_handoff_in_both_modes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            results = root / "results.json"
+            results.write_text(json.dumps([{"id": step["id"], "status": "run", "writes": []}
+                                           for step in self.engine.compose([])]))
+            receipts = root / "receipts.json"
+            receipts.write_text("{}")
+            malformed = root / "malformed.json"
+            malformed.write_text("{")
+            empty = root / "empty.json"
+            empty.write_text("{}")
+            for mode in [[], ["--unattended"]]:
+                for operation, extra in [("report", ["--results", str(results)]), ("wrap-check", []),
+                                         ("settle", ["--receipts", str(receipts)]), ("file", ["--filing", str(receipts)])]:
+                    with self.subTest(mode=mode, operation=operation, handoff="omitted"):
+                        result = subprocess.run([sys.executable, str(ENGINE), operation, *mode, *extra],
+                                                text=True, capture_output=True)
+                        self.assertEqual(result.returncode, 1, result.stdout)
+                        self.assertIn("requires", result.stderr)
+                        self.assertEqual(result.stdout, "")
+                for path in [root / "absent.json", malformed, empty]:
+                    for operation, flag, extra in [("report", "--handoff", ["--results", str(results)]),
+                                                   ("wrap-check", "--written-handoff", [])]:
+                        with self.subTest(mode=mode, operation=operation, handoff=path.name):
+                            result = subprocess.run([sys.executable, str(ENGINE), operation, *mode,
+                                                     flag, str(path), *extra], text=True, capture_output=True)
+                            self.assertEqual(result.returncode, 1, result.stdout)
+                            self.assertEqual(result.stdout, "")
+                # Planning a new session intentionally has no resumed handoff.
+                planned = subprocess.run([sys.executable, str(ENGINE), "plan", *mode, "--session-id", "wrap-session"],
+                                         text=True, capture_output=True)
+                self.assertEqual(planned.returncode, 0, planned.stderr)
+                self.assertNotIn("report", json.loads(planned.stdout))
+                self.assertNotIn("wrap", json.loads(planned.stdout))
+                # Settling source input is not a completion check, even with no loops.
+                settled = subprocess.run([sys.executable, str(ENGINE), "settle", *mode, "--handoff", str(empty),
+                                          "--receipts", str(receipts)], text=True, capture_output=True)
+                self.assertEqual(settled.returncode, 0, settled.stderr)
+                self.assertEqual(json.loads(settled.stdout), {})
+
     def test_pending_step_writes_nothing_and_the_run_continues(self):
         plan = self.engine.compose([self.engine.load_profile(PROFILES / "user.md")])
         results = [{"id": step["id"], "status": "run", "writes": []} for step in plan]
@@ -628,7 +669,8 @@ class ChecklistTests(unittest.TestCase):
             path = Path(directory) / "results.json"
             path.write_text(json.dumps(results))
             user = ["--user-profile", str(PROFILES / "user.md")]
-            unavailable = ["--no-summary", "session summary unavailable: HTTP 502"]
+            _, _, written = self.wrap(directory, [])
+            unavailable = ["--no-summary", "session summary unavailable: HTTP 502", "--handoff", str(written)]
             result = subprocess.run([sys.executable, str(ENGINE), "report", *user, "--unattended", "--results", str(path), *unavailable], text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(json.loads(result.stdout), {"summary": None, "summary_unavailable": "session summary unavailable: HTTP 502",
@@ -649,8 +691,10 @@ class ChecklistTests(unittest.TestCase):
             path.write_text(json.dumps(results))
             summary.write_text(text)
 
+            _, _, written = self.wrap(directory, [])
+
             def report(*extra, profile=user):
-                return subprocess.run([sys.executable, str(ENGINE), "report", *profile, "--results", str(path), *extra],
+                return subprocess.run([sys.executable, str(ENGINE), "report", *profile, "--results", str(path), "--handoff", str(written), *extra],
                                       text=True, capture_output=True)
 
             result = report("--summary", str(summary))

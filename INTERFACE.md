@@ -210,7 +210,7 @@ composes and checks it. It writes no handoff and runs no skill.
 | `settle ... --handoff H --receipts R` | Remove the loops a binding acknowledged. Never rewrites the source handoff. |
 | `file ... --handoff H --filing F` | Apply explicit filing outcomes to remaining loops and unrecorded session items; return a handoff payload with a filing report. Executes no binding. |
 | `wrap-check ... --written-handoff H [--record-at T] [--unattended]` | Fail, with the reason, when the handoff is invalid, a bound item is still carried, a read/write failed, or `record` is bound and its latest write is older than the session's last change. |
-| `report ... --results R [--summary F \| --no-summary WHY] [--unattended]` | Check a run's step results; the report starts with the session summary. |
+| `report ... --results R --handoff H [--summary F \| --no-summary WHY] [--unattended]` | Require a valid written handoff and check its filing outcomes and the run's step results; the report starts with the session summary. |
 | `wrap-cadence` | Read a hook payload on stdin and print `none`, `checkpoint`, `unattended-checklist`, or `checklist`. |
 | `actor-guard`, `is-completion-command` | Hook helpers. The first prints a deny decision; the second exits 0 when the command completes an unattended slate. |
 
