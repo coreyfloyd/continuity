@@ -541,3 +541,39 @@ modification/change times. These must still match before the move, including
 a final check after the report is flushed; an equal-JSON rewrite is a change
 and keeps the handoff. Reports retain each rule, identity, destination,
 outcome, receipt and error for consumers and later reversal support.
+
+
+### Reversing a sweep run
+
+Act writes also include `run_id`. Adapters persist the originating run id with
+identity and receipt; a later `identity_exists` response for an uncertain write
+must include that original `run_id`. Identity reuse must never change ownership.
+The act report includes `undo_items` containing only this run's attempted record
+writes and archive moves; already-recorded identities and asks are excluded.
+A known failed write is excluded from reversal; an uncertain write requires a
+successful ownership lookup before a reverse request can be sent.
+
+`reverse` uses `bindings.record.command`, with the original identity,
+`session_id`, `directory`, `text`, `source_handoff`, `destination`, `receipt`,
+`run_id`, and `write_operation` (`create_ticket`, `comment`, `edit_document`, or
+`file_slot`). The adapter retains the original write and any document preimage
+under its receipt. It must **atomically check and reverse**: if the target has
+changed after the run (including later comments or edits on a created ticket,
+or a later edit to a document), return `{"status":"conflict","reason":"..."}`
+without changing anything. For unchanged targets, close a created ticket as not
+planned, remove the run's comment, or revert exactly the run's document/slot
+edit, and return `{"status":"reversed"}`. Never close an existing ticket.
+When reversal is unavailable, return `{"status":"failed","reason":"..."}`.
+An unbound command, timeout, process failure, unsupported operation or malformed
+reply is also failed and reported. The adapter must deduplicate reversals by
+`run_id` and `receipt` and acknowledge an already reversed write as `reversed`;
+this handles a crash or lost reply after the remote change. Checking for newer
+work in a separate query is insufficient because it would race with reversal.
+
+Only user-started `undo --run-id <id> --user-started` invokes this protocol.
+Undo never invokes the ask binding or the original write operation. Its durable
+report retries only failed rows and retains reversed/conflict rows. Archive
+restoration is exclusive and checks the recorded snapshot; a newer handoff at
+the source path stays untouched. Worktree and local branch removal cannot be
+undone. Optional retention is a separate operation, off by default, deleting
+only strictly old regular archive handoffs; see [usage](docs/sweep.md#undo-and-retention).

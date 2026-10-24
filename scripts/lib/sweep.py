@@ -544,6 +544,7 @@ def execute_act(report, discovery, plan, ask, reader, config, path, history=None
     """
     history = {} if history is None else history
     report['mode'] = 'act'
+    report['undo_items'] = []
     for section in report['directories'].values():
         section['unfiled_items'] = []
     bindings = {step['slot']: step.get('binding') for step in plan if 'slot' in step}
@@ -555,10 +556,15 @@ def execute_act(report, discovery, plan, ask, reader, config, path, history=None
 
     def save():
         report['ended_at'] = datetime.now(timezone.utc).isoformat()
-        with path.open('w') as handle:
-            handle.write(render_report(report))
-            handle.flush()
-            os.fsync(handle.fileno())
+        temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
+        try:
+            with temporary.open('x') as handle:
+                handle.write(render_report(report))
+                handle.flush()
+                os.fsync(handle.fileno())
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def request(row, operation):
         return dict(operation=operation, identity=row['identity'],
@@ -575,9 +581,15 @@ def execute_act(report, discovery, plan, ask, reader, config, path, history=None
         # Persist intent before starting a process: a crash or a lost reply is
         # recoverable through the destination's durable identity index.
         row.update(outcome='uncertain', operation=operation)
+        intent = None
+        if operation != 'ask':
+            intent = dict(kind='record', write_operation=operation,
+                          run_id=report['run_id'], **request(row, 'reverse'))
+            intent.update(destination=row.get('destination'), write_outcome='uncertain')
+            report['undo_items'].append(intent)
         save()
         payload = request(row, operation)
-        payload.update(destination=row.get('destination'), rule=row['rule'])
+        payload.update(destination=row.get('destination'), rule=row['rule'], run_id=report['run_id'])
         if operation == 'file_slot':
             payload['slot'] = bindings[row['binding']]
         if operation == 'create_ticket':
@@ -599,6 +611,11 @@ def execute_act(report, discovery, plan, ask, reader, config, path, history=None
         except (subprocess.TimeoutExpired, ValueError, OSError) as exc:
             # A process error may follow a successful remote write too.
             row['error'] = str(exc)
+        if intent is not None:
+            intent.update(write_outcome=row['outcome'])
+            for key in ('receipt', 'destination'):
+                if key in row:
+                    intent[key] = row[key]
         save()
         return row['outcome'] == 'written'
 
@@ -841,6 +858,8 @@ def execute_act(report, discovery, plan, ask, reader, config, path, history=None
                     if target.exists() or target.is_symlink():
                         target = target.with_name(report['run_id'] + '-' + original.name)
                     row.update(destination=str(target), outcome='uncertain', reason='archive move pending')
+                    report['undo_items'].append(dict(kind='handoff', path=source,
+                        archive=str(target), snapshot=candidate['source_snapshot']))
                     section['handoffs_archived'].append(row)
                     save()
                     check_handoff_source(candidate)
@@ -886,17 +905,186 @@ def render_report(report):
     return '\n'.join(lines)
 
 
+def save_operation(path, report):
+    """Atomically replace the durable operation journal after every outcome."""
+    temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
+    try:
+        with temporary.open('x') as handle:
+            handle.write('# Sweep ' + report['mode'] + ' report\n\n' +
+                         report.get('note', '') + '\n\n```json\n' +
+                         json.dumps(report, indent=2) + '\n```\n')
+            handle.flush()
+            os.fsync(handle.fileno())
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def read_report(path):
+    if path.is_symlink():
+        raise ValueError('report is a symbolic link')
+    return json.loads(path.read_text().split('```json\n', 1)[1].rsplit('\n```', 1)[0])
+
+
+def report_directory(config):
+    destination = Path(config['report_location']).expanduser().resolve()
+    store = Path(handoff.state_dir()).resolve()
+    if destination == store or store in destination.parents:
+        raise ValueError('report location must be outside the handoff store')
+    return destination
+
+
+def execute_undo(config, run_id, record):
+    if not run_id or any(c not in '0123456789abcdef' for c in run_id):
+        raise ValueError('run id must be a hexadecimal sweep run id')
+    destination = report_directory(config)
+    original = read_report(destination / (run_id + '.md'))
+    if original.get('mode') != 'act' or original.get('run_id') != run_id:
+        raise ValueError('undo requires an act run')
+    if 'undo_items' not in original:
+        raise ValueError('run has no reversal journal')
+    path = destination / (run_id + '.undo.md')
+    report = read_report(path) if path.exists() else dict(
+        mode='undo', run_id=run_id, items=[dict(row, outcome='failed')
+            for row in original['undo_items'] if row['kind'] == 'handoff'
+            or row.get('write_outcome') in ('written', 'uncertain')],
+        note='Worktree removal and local branch deletion cannot be reversed. '
+             'Asks remain delivered. Conflicts are preserved; only failed items retry.')
+    save_operation(path, report)
+    store = Path(handoff.state_dir()).resolve()
+    archive = store / 'archive'
+    for row in report['items']:
+        if row['outcome'] != 'failed':
+            continue
+        try:
+            if row['kind'] == 'handoff':
+                source, target = Path(row['archive']), Path(row['path'])
+                if (archive.is_symlink() or source.parent != archive or target.parent != store
+                        or source.is_symlink() or target.is_symlink()):
+                    raise ValueError('restore paths must be regular handoffs in this store and archive')
+                if target.exists():
+                    # Recover a crash between the non-overwriting link and unlink.
+                    restored = False
+                    if not source.exists():
+                        _, current = read_handoff_source(target)
+                        restored = all(current[k] == v for k, v in row['snapshot'].items()
+                                       if k != 'st_ctime_ns')
+                    if restored:
+                        row.update(outcome='reversed')
+                    elif source.exists() and os.path.samefile(source, target):
+                        source.unlink()
+                        row.update(outcome='reversed')
+                    else:
+                        row.update(outcome='conflict', reason='original path is occupied; archived handoff preserved')
+                elif not source.exists():
+                    raise ValueError('archived handoff is missing (possibly removed by retention)')
+                else:
+                    _, current = read_handoff_source(source)
+                    if any(current[k] != v for k, v in row['snapshot'].items() if k != 'st_ctime_ns'):
+                        row.update(outcome='conflict', reason='archived handoff changed')
+                    else:
+                        # link is exclusive: a newly written handoff is never overwritten.
+                        os.link(source, target, follow_symlinks=False)
+                        source.unlink()
+                        row.update(outcome='reversed')
+            else:
+                if row.get('write_outcome') == 'uncertain' and not row.get('receipt'):
+                    result = binding_call(record, dict(row, operation='identity_exists'),
+                                          config['binding_timeout_seconds'])
+                    if result.get('exists') is not True or result.get('run_id') != run_id:
+                        raise ValueError('uncertain write ownership not confirmed for this run')
+                    if not all(isinstance(result.get(k), str) and result[k].strip()
+                               for k in ('receipt', 'destination')):
+                        raise ValueError('uncertain write needs receipt and destination')
+                    row.update(receipt=result['receipt'], destination=result['destination'])
+                    save_operation(path, report)
+                result = binding_call(record, dict(row, operation='reverse'),
+                                      config['binding_timeout_seconds'])
+                status = result.get('status')
+                if status not in ('reversed', 'conflict', 'failed'):
+                    raise ValueError('unsupported or malformed reversal acknowledgement')
+                row.update(outcome=status, reason=result.get('reason') or result.get('error') or status)
+        except FileExistsError:
+            row.update(outcome='conflict', reason='original path is occupied')
+        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+            row.update(outcome='failed', reason=str(exc))
+        save_operation(path, report)
+    return path
+
+
+def execute_retention(config, now, save=None):
+    report = dict(mode='retention', started_at=now.isoformat(),
+                  archive_retention_days=config['archive_retention_days'], items=[])
+    archive = Path(handoff.state_dir()).resolve() / 'archive'
+    days = config['archive_retention_days']
+    if days is None or not archive.exists():
+        if save:
+            save(report)
+        return report
+    if archive.is_symlink():
+        raise ValueError('archive is a symbolic link')
+    for path in sorted(archive.glob('*.json')):
+        if path.is_symlink() or not path.is_file():
+            continue
+        row = dict(path=str(path), outcome='kept')
+        report['items'].append(row)
+        try:
+            _, snapshot = read_handoff_source(path)
+            row['modified_at'] = snapshot['st_mtime_ns'] / 1e9
+            if now.timestamp() - row['modified_at'] > days * 86400:
+                row.update(outcome='failed', reason='deletion pending')
+                if save:
+                    save(report)
+                _, current = read_handoff_source(path)
+                if current != snapshot:
+                    raise ValueError('archived handoff changed during retention')
+                path.unlink()
+                row.update(outcome='deleted', reason='strictly older than configured age')
+            else:
+                row['reason'] = 'at or newer than age boundary'
+        except (OSError, ValueError) as exc:
+            row.update(outcome='failed', reason=str(exc))
+        if save:
+            save(report)
+    if save:
+        save(report)
+    return report
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('inspect', 'run'))
-    parser.add_argument('--scope', required=True, help='all or a directory')
+    parser.add_argument('command', choices=('inspect', 'run', 'undo', 'retention'))
+    parser.add_argument('--scope', help='all or a directory')
     parser.add_argument('--decisions', type=Path)
     parser.add_argument('--user-profile', type=Path)
     parser.add_argument('--open-sessions', type=Path, help='agent-supplied session_ids and method JSON')
     parser.add_argument('--interactive', action='store_true')
+    parser.add_argument('--run-id')
+    parser.add_argument('--user-started', action='store_true')
     args = parser.parse_args(argv)
     try:
         config = settings()
+        if args.command in ('undo', 'retention'):
+            with store_lock():
+                if args.command == 'undo':
+                    if not args.user_started:
+                        raise ValueError('undo must be explicitly user-started with --user-started')
+                    profile_path = args.user_profile or Path(os.environ.get('CHECKLIST_USER_PROFILE') or
+                        str(Path(os.environ.get('XDG_CONFIG_HOME', os.path.expanduser('~/.config'))) / 'checklist/profile.md'))
+                    profiles = [checklist.load_profile(profile_path)] if args.user_profile or profile_path.exists() else []
+                    plan = checklist.compose(profiles)
+                    record = next((step.get('binding') for step in plan if step.get('slot') == 'record'), None)
+                    path = execute_undo(config, args.run_id, record)
+                else:
+                    destination = report_directory(config)
+                    destination.mkdir(parents=True, exist_ok=True)
+                    path = destination / (uuid.uuid4().hex + '.retention.md')
+                    execute_retention(config, datetime.now(timezone.utc),
+                                      lambda report: save_operation(path, report))
+                print(path)
+            return 0
+        if args.scope is None:
+            raise ValueError('inspect and run require --scope')
         checks = read_open_sessions(args.open_sessions)
         if args.interactive and args.open_sessions is None and not config['open_session_checks']:
             raise ValueError('interactive sweep requires open-session inspection evidence, including an empty result')

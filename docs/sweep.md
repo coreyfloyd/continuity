@@ -58,8 +58,8 @@ exit nonzero if inspection fails. Tab titles alone are not session ids. Herdr
 is an optional example, never a package dependency. Other session managers can
 implement the same command contract. `new_ticket_limit` (a non-negative
 integer, default 10) and `archive_retention_days` (default null, retention off)
-control creation capacity and reserve retention configuration respectively.
-Retention is not executed by this command. Watch-only creates no ticket and
+control creation capacity and optional archive deletion respectively.
+Retention runs only through the separate `retention` command described below. Watch-only creates no ticket and
 deletes nothing, regardless of these values. Act mode never deletes a
 handoff; it can remove eligible linked worktrees and their local branches. `binding_timeout_seconds` defaults to 30; it
 must be a positive finite number.
@@ -245,3 +245,55 @@ succeeded; a concurrently moved branch is preserved and reported. Pushed trunk
 means the locally observed remote trunk ref; the sweep does not fetch. A check
 failure prevents all removals for that run. Open-session evidence protects every
 listed session.
+
+## Undo and retention
+
+Only an explicit user request starts undo, in either Claude Code or Codex:
+
+```bash
+python3 scripts/lib/sweep.py undo --run-id <act-run-id> --user-started --user-profile /example/profile.json
+python3 scripts/lib/sweep.py retention
+```
+
+These commands need no scope. Undo uses the original act report in the configured
+report directory and the current user profile's record binding. Retention is a
+separate, schedulable command and never runs implicitly during inspect, watch-only,
+act, or undo. Both acquire the same handoff-store lock as a sweep.
+
+Each act report durably journals its own record-write intents, operations,
+identities, receipts, destinations and archive paths with byte/file snapshots.
+Writes found through an existing identity belong to their original run and are
+excluded. Asks remain delivered. Undo restores only that run's archived handoffs
+and requests `reverse` through the record binding: close a created ticket as
+not planned, remove a comment, or restore a document's prior content. Slot writes
+also require reversal through that binding. The adapter must atomically verify
+that no newer work has changed the target before reversing it; an unsupported
+reversal is reported as failed. Uncertain writes require a successful identity
+lookup confirming the original run id, destination and receipt before reversal.
+
+An occupied original handoff path is a conflict; it is never overwritten. An
+archive changed since the act run is also preserved. Worktree removal and local
+branch deletion cannot be reversed by undo; their commits remain in the pushed
+trunk. Undo does not re-create those worktrees. It does not change ask activity
+records, delivered asks, remote branches, or unrelated record writes.
+
+Undo writes `<run-id>.undo.md` beside the original report. Its structured `items`
+list gives each record write and archive the outcome `reversed`, `conflict`, or
+`failed` and a reason when needed. Each outcome is flushed atomically; retries
+use the same reversal key (run id and receipt), so the adapter must return
+`reversed` for an already completed reversal even after a lost response.
+Running undo again retries only failed items. Conflicts and successful reversals
+are retained without another attempt. A missing archived file, including one
+removed by retention, is reported as failed. Original act reports are retained.
+
+Retention defaults to off: `archive_retention_days: null` deletes nothing.
+When configured, only regular `*.json` files directly in the resolved handoff
+store's `archive` directory are eligible. Age is measured from the archived
+file's modification time, preserved by the archive move; it is the handoff's
+age, not time since the sweep. Only ages **strictly greater** than the configured
+number of days are deleted; an exact age boundary is kept. Symbolic links,
+nested directories, non-JSON files and every live handoff are preserved. A
+symbolic-link archive is rejected. Each retention command writes one
+`<id>.retention.md` report listing kept/deleted/failed files and reasons, with
+intent saved before deletion. Retention removes the ability to restore deleted
+handoffs; it never deletes reports or changes record destinations.

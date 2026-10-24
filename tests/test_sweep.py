@@ -727,6 +727,16 @@ state = root / 'record.json'
 rows = json.loads(state.read_text()) if state.exists() else {}
 if op == 'identity_exists':
     print(json.dumps(dict(exists=identity in rows, **rows.get(identity, {}))))
+elif op == 'file_slot' and behavior.get('pending_slot'):
+    print(json.dumps({'status': 'pending', 'reason': 'needs approval'}))
+elif op == 'reverse':
+    status = behavior.get('reverse', 'reversed')
+    if status == 'lost':
+        print('lost'); sys.exit(0)
+    if status == 'reversed':
+        rows.pop(identity, None)
+        state.write_text(json.dumps(rows))
+    print(json.dumps({'status': status, 'reason': 'target changed' if status == 'conflict' else status}))
 elif op == 'search_open':
     print(json.dumps({'matches': behavior.get('matches', [])}))
 elif op == 'read_item':
@@ -760,7 +770,7 @@ else:
                    for key in ('filing_outcomes', 'asks_raised') for row in section[key]]
         if not any(row['identity'] == request['identity'] and row['outcome'] == 'uncertain' for row in journal):
             print(json.dumps({'status': 'failed', 'error': 'missing intent journal'})); sys.exit(0)
-    receipt = {'receipt': 'ack-' + str(len(rows)), 'destination': request.get('destination', 'ask')}
+    receipt = {'receipt': 'ack-' + str(len(rows)), 'destination': request.get('destination', 'ask'), 'run_id': request.get('run_id')}
     rows[identity] = receipt
     state.write_text(json.dumps(rows))
     if behavior.get('lost'):
@@ -1386,3 +1396,192 @@ def test_shared_eligible_worktree_is_removed_once_and_all_handoffs_archive(sandb
     assert {r['path'] for r in archived} == {str(p) for p in paths}
     assert all(r['outcome'] == 'archived' for r in archived)
     assert not any(s['handoffs_kept'] or s['worktrees_kept'] for s in data['directories'].values())
+
+
+def read_run(path):
+    return json.loads(Path(path).read_text().split('```json\n', 1)[1].rsplit('\n```', 1)[0])
+
+
+def undo_run(sandbox, run, profile):
+    result = command(sandbox, 'undo', '--run-id', run['run_id'], '--user-started',
+                     '--user-profile', str(profile))
+    return read_run(result.stdout.strip())
+
+
+@pytest.mark.parametrize('rule', ['R5', 'R2', 'R7', 'R4'])
+def test_undo_restores_only_run_archives_and_reverses_record_writes(sandbox, rule):
+    path = source(sandbox)
+    original = path.read_bytes()
+    profile = act_profile(sandbox)
+    if rule == 'R4':
+        data = json.loads(profile.read_text())
+        data['bindings']['knowledge'] = dict(data['bindings']['record'], consumes=['knowledge'])
+        profile.write_text(json.dumps(data))
+    entry = new_work() if rule == 'R5' else dict(rule=rule, destination='knowledge' if rule == 'R4' else 'work:1', read_status='ok')
+    args = decisions(sandbox, [entry])
+    _, run = report(sandbox, *args, '--user-profile', str(profile))
+    other = source(sandbox, name='unrelated')
+    before = outside_report_snapshot(sandbox)
+    result = undo_run(sandbox, run, profile)
+    assert {r['outcome'] for r in result['items']} == {'reversed'}
+    assert path.read_bytes() == original and other.exists()
+    reverse = [r for r in calls(sandbox) if r['operation'] == 'reverse']
+    assert len(reverse) == 1 and reverse[0]['receipt']
+    assert reverse[0]['run_id'] == run['run_id']
+    assert reverse[0]['write_operation'] == {'R5': 'create_ticket', 'R2': 'comment', 'R7': 'edit_document', 'R4': 'file_slot'}[rule]
+    after = outside_report_snapshot(sandbox)
+    assert {k for k in before.keys() | after.keys() if before.get(k) != after.get(k)} <= {
+        'handoffs/source.json', 'handoffs/archive/source.json', 'calls.jsonl', 'record.json'}
+    count = len(calls(sandbox))
+    assert undo_run(sandbox, run, profile)['items'] == result['items']
+    assert len(calls(sandbox)) == count
+
+
+@pytest.mark.parametrize('status', ['conflict', 'failed', 'unsupported', 'lost'])
+def test_undo_preserves_newer_work_and_retries_only_failures(sandbox, status):
+    path = source(sandbox)
+    profile = act_profile(sandbox)
+    args = decisions(sandbox, [new_work()])
+    _, run = report(sandbox, *args, '--user-profile', str(profile))
+    path.write_text('newer handoff')
+    (sandbox[0] / 'behavior.json').write_text(json.dumps({'reverse': status}))
+    first = undo_run(sandbox, run, profile)
+    assert path.read_text() == 'newer handoff'
+    assert [r['outcome'] for r in first['items']] == [
+        'conflict' if status == 'conflict' else 'failed', 'conflict']
+    count = len(calls(sandbox))
+    (sandbox[0] / 'behavior.json').write_text('{}')
+    second = undo_run(sandbox, run, profile)
+    assert second['items'][0]['outcome'] == ('conflict' if status == 'conflict' else 'reversed')
+    assert len(calls(sandbox)) == count + (0 if status == 'conflict' else 1)
+    assert second['items'][1] == first['items'][1]
+
+
+def test_undo_requires_user_start_and_rejects_watch_report(sandbox):
+    _, run = report(sandbox)
+    command(sandbox, 'undo', '--run-id', run['run_id'], code=1)
+    command(sandbox, 'undo', '--run-id', run['run_id'], '--user-started', code=1)
+    assert len(list((sandbox[0] / 'reports').iterdir())) == 1
+
+
+@pytest.mark.parametrize('days', [None, 2])
+def test_retention_deletes_only_strictly_older_regular_archive_handoffs(sandbox, days, monkeypatch):
+    spec = importlib.util.spec_from_file_location('retention_sweep', ENGINE)
+    engine = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(engine)
+    monkeypatch.setenv('HANDOFF_STATE_DIR', str(sandbox[1]))
+    live = source(sandbox)
+    archive = sandbox[1] / 'archive'
+    archive.mkdir()
+    for name, age in [('old.json', 3), ('boundary.json', 2), ('recent.json', 1), ('notes.txt', 3)]:
+        target = archive / name
+        target.write_bytes(live.read_bytes())
+        os.utime(target, (2000000000 - age * 86400,) * 2)
+    (archive / 'linked.json').symlink_to(live)
+    nested = archive / 'nested'
+    nested.mkdir()
+    (nested / 'kept.json').write_bytes(live.read_bytes())
+    before = outside_report_snapshot(sandbox)
+    result = engine.execute_retention({'archive_retention_days': days},
+        engine.datetime.fromtimestamp(2000000000, engine.timezone.utc))
+    after = outside_report_snapshot(sandbox)
+    changed = {k for k in before.keys() | after.keys() if before.get(k) != after.get(k)}
+    assert changed == ({'handoffs/archive/old.json'} if days is not None else set())
+    assert [r['path'] for r in result['items'] if r['outcome'] == 'deleted'] == (
+        [str(archive / 'old.json')] if days is not None else [])
+
+
+def test_retention_cli_reports_changes_and_does_not_run_during_watch(sandbox):
+    path = source(sandbox)
+    archive = sandbox[1] / 'archive'
+    archive.mkdir()
+    target = archive / 'old.json'
+    target.write_bytes(path.read_bytes())
+    os.utime(target, (1, 1))
+    cfg = json.loads(sandbox[2].read_text())
+    cfg['sweep']['archive_retention_days'] = 2
+    sandbox[2].write_text(json.dumps(cfg))
+    before = outside_report_snapshot(sandbox)
+    report(sandbox)
+    assert outside_report_snapshot(sandbox) == before
+    done = command(sandbox, 'retention')
+    result = read_run(done.stdout.strip())
+    assert result['items'][0]['outcome'] == 'deleted'
+    assert not target.exists() and path.exists()
+
+
+@pytest.mark.parametrize('behavior', [{'lost': True}, {'fail': 'create_ticket'}])
+def test_undo_recovers_uncertain_writes_and_skips_rejected_writes(sandbox, behavior):
+    path = source(sandbox)
+    profile = act_profile(sandbox, behavior)
+    args = decisions(sandbox, [new_work()])
+    _, run = report(sandbox, *args, '--user-profile', str(profile))
+    (sandbox[0] / 'behavior.json').write_text('{}')
+    result = undo_run(sandbox, run, profile)
+    if behavior.get('lost'):
+        assert result['items'][0]['outcome'] == 'reversed'
+        assert calls(sandbox)[-2]['operation'] == 'identity_exists'
+        assert calls(sandbox)[-1]['operation'] == 'reverse'
+    else:
+        assert result['items'] == []
+    assert path.exists()
+
+
+def test_undo_does_not_reverse_preexisting_identity_or_asks(sandbox):
+    item = json.loads(FIXTURE.read_text())['resume']['open_loops'][0]
+    source(sandbox, loops=[item])
+    profile = act_profile(sandbox)
+    args = decisions(sandbox, [new_work()])
+    report(sandbox, *args, '--user-profile', str(profile))
+    source(sandbox, name='successor', loops=[item])
+    source(sandbox, name='ask', loops=[dict(item, context=item['context'] + '?')])
+    rows = json.loads(command(sandbox, 'inspect', '--scope', 'all').stdout)
+    choices = sandbox[0] / 'decisions.json'
+    choices.write_text(json.dumps([dict(handoff=c['path'], identity=i['identity'],
+        **(dict(rule='R3', destination='ask', choices=['keep', 'leave']) if c['session_id'] == 'ask' else new_work()))
+        for c in rows['candidates'] for i in c['items']]))
+    _, run = report(sandbox, '--decisions', str(choices), '--user-profile', str(profile))
+    result = undo_run(sandbox, run, profile)
+    assert all(r['kind'] == 'handoff' for r in result['items'])
+    assert not any(r['operation'] == 'reverse' for r in calls(sandbox))
+
+
+def test_undo_recovers_completed_restore_after_lost_report_save(sandbox):
+    path = source(sandbox)
+    profile = act_profile(sandbox)
+    args = decisions(sandbox, [{'rule': 'R6', 'reason': 'No stated outcome'}])
+    _, run = report(sandbox, *args, '--user-profile', str(profile))
+    (sandbox[1] / 'archive' / path.name).rename(path)
+    result = undo_run(sandbox, run, profile)
+    assert result['items'][0]['outcome'] == 'reversed'
+
+
+@pytest.mark.parametrize('change', ['edit', 'symlink'])
+def test_undo_rejects_changed_archive(sandbox, change):
+    path = source(sandbox)
+    profile = act_profile(sandbox)
+    args = decisions(sandbox, [{'rule': 'R6', 'reason': 'No stated outcome'}])
+    _, run = report(sandbox, *args, '--user-profile', str(profile))
+    archive = sandbox[1] / 'archive' / path.name
+    if change == 'edit':
+        archive.write_text('newer archived content')
+    else:
+        archive.unlink()
+        archive.symlink_to(profile)
+    before = outside_report_snapshot(sandbox)
+    result = undo_run(sandbox, run, profile)
+    assert result['items'][0]['outcome'] in ('conflict', 'failed')
+    assert outside_report_snapshot(sandbox) == before
+
+
+def test_undo_excludes_pending_slot_work(sandbox):
+    source(sandbox)
+    profile = act_profile(sandbox, {'pending_slot': True})
+    data = json.loads(profile.read_text())
+    data['bindings']['knowledge'] = dict(data['bindings']['record'], consumes=['knowledge'])
+    profile.write_text(json.dumps(data))
+    args = decisions(sandbox, [{'rule': 'R4', 'destination': 'knowledge'}])
+    _, run = report(sandbox, *args, '--user-profile', str(profile))
+    result = undo_run(sandbox, run, profile)
+    assert all(r['kind'] == 'handoff' for r in result['items'])
+    assert not any(r['operation'] == 'reverse' for r in calls(sandbox))

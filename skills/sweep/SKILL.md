@@ -111,3 +111,28 @@ write manually after a timeout or missing receipt: the engine queries its
 identity before retrying. Keep pending judgments in the handoff; never fabricate
 a successful record read. Configure an executable adapter for a skill binding
 before using act mode. The tripwire may retain excess items for a later run.
+
+
+## User-started undo and configured retention
+
+Run undo only when the user explicitly asks to reverse a named act run. Never
+start it during an unattended sweep or infer it from an ask answer. Use the
+original run id and the same user profile resolution as run:
+
+```bash
+python3 <package>/scripts/lib/sweep.py undo --run-id <run-id> --user-started --user-profile <profile-file>
+```
+
+Read the printed undo report. Present every reversed, conflict and failed item;
+report that worktree removal and local branch deletion cannot be undone. Do not
+restore an archive or reverse a record write manually. Re-running retries only
+failed items; conflicts and successful reversals stay unchanged. Asks remain
+delivered. Missing or unsupported record reversal must be reported, never
+replaced with an invented success.
+
+Optional retention runs separately with `python3 <package>/scripts/lib/sweep.py
+retention`. It deletes nothing while `archive_retention_days` is unset. When
+configured, it deletes only regular archive JSON handoffs whose modification
+age is strictly greater than that number of days. Never run retention implicitly
+as part of watch-only or undo. Read its report and report deletions and failures.
+See [undo and retention](../../docs/sweep.md#undo-and-retention) for boundaries.
