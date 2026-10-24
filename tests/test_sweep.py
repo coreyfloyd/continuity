@@ -54,11 +54,64 @@ def command(sandbox, *args, code=0):
 
 
 def report(sandbox, *args):
+    # This test driver stands in for the agent; the engine never executes stubs.
+    args = list(args)
+    if json.loads(sandbox[2].read_text())['sweep'].get('mode') == 'act' and '--decisions' not in args:
+        empty = sandbox[0] / 'empty-decisions.json'
+        empty.write_text('[]')
+        args.extend(['--decisions', str(empty)])
     result = command(sandbox, 'run', '--scope', 'all', *args)
-    path = Path(result.stdout.strip())
-    content = path.read_text()
-    data = json.loads(content.split('```json\n', 1)[1].rsplit('\n```', 1)[0])
-    return content, data
+    if result.stdout.startswith('{'):
+        payload = json.loads(result.stdout)
+        path = Path(payload['report'])
+        run = read_run(path)
+        behavior_path = sandbox[0] / 'behavior.json'
+        behavior = json.loads(behavior_path.read_text()) if behavior_path.exists() else {}
+        if behavior.get('dirty_file'):
+            Path(behavior['dirty_file']).write_text('changed by agent fixture')
+        if behavior.get('rewrite_source'):
+            for work in run['work']:
+                target = Path(work['source_handoff'])
+                raw = target.read_bytes()
+                how = behavior['rewrite_source']
+                if how == 'replacement':
+                    target.unlink()
+                if how in ('formatting', 'key-order'):
+                    target.write_text(json.dumps(json.loads(raw), indent=2, sort_keys=True))
+                elif how == 'new-content':
+                    data = json.loads(raw)
+                    data['resume']['next_action'] = 'New continuation'
+                    target.write_text(json.dumps(data))
+                else:
+                    target.write_bytes(raw)
+        for _ in range(3):
+            rows = [dict(write_id=w['write_id'], status='failed' if behavior.get('fail') == w['operation'] else 'written',
+                         receipt='fixture-' + w['write_id'], destination=w.get('destination') or 'record:created',
+                         error='fixture rejection') for w in run['work'] if w['outcome'] == 'intent']
+            results = sandbox[0] / 'agent-results.json'
+            results.write_text(json.dumps(rows))
+            command(sandbox, 'complete', '--run-id', run['run_id'], '--results', str(results))
+            run = read_run(path)
+            if run['phase'] == 'completed':
+                break
+        assert run['phase'] == 'completed'
+    else:
+        path = Path(result.stdout.strip())
+    return path.read_text(), read_run(path)
+
+
+def act_profile(sandbox, behavior=None):
+    config = json.loads(sandbox[2].read_text())
+    config['sweep']['mode'] = 'act'
+    config['sweep']['binding_timeout_seconds'] = 0.5
+    sandbox[2].write_text(json.dumps(config))
+    (sandbox[0] / 'behavior.json').write_text(json.dumps(behavior or {}))
+    return bound_profile(sandbox)
+
+
+def new_work():
+    return dict(rule='R5', destination='new ticket', read_status='ok',
+                priority='p2', priority_reason='Stated outcome')
 
 
 def decisions(sandbox, entries):
@@ -78,7 +131,7 @@ def bound_profile(sandbox):
     stub.write_text('printf called > "$0.called"\nexit 1\n')
     binding = {'command': 'sh ' + shlex.quote(str(stub))}
     profile = sandbox[0] / 'profile.json'
-    profile.write_text(json.dumps({'name': 'test', 'ask': binding,
+    profile.write_text(json.dumps({'name': 'test', 'ask': binding, 'record_read': binding,
         'bindings': {slot: dict(binding, consumes=[])
                      for slot in ('record', 'lessons', 'knowledge')}}))
     return profile
@@ -706,327 +759,6 @@ def test_active_sessions_protect_containing_worktree_without_merging_directories
     assert (linked / '.git').exists()
 
 
-def act_profile(sandbox, behavior=None):
-    """Executable protocol double; inputs are recorded for boundary assertions."""
-    stub = sandbox[0] / 'binding.py'
-    stub.write_text('''import json, pathlib, sys, time
-root = pathlib.Path(__file__).parent
-request = json.load(sys.stdin)
-with (root / 'calls.jsonl').open('a') as out:
-    out.write(json.dumps(request) + '\\n')
-behavior = json.loads((root / 'behavior.json').read_text())
-op = request['operation']
-if behavior.get('bad') == op:
-    print('unsupported'); sys.exit(0)
-if behavior.get('fail') == op:
-    if op in ('create_ticket', 'comment', 'edit_document', 'ask'):
-        print(json.dumps({'status': 'failed', 'error': 'binding failed'})); sys.exit(0)
-    print('binding failed', file=sys.stderr); sys.exit(1)
-identity = json.dumps(request['identity'], sort_keys=True)
-state = root / 'record.json'
-rows = json.loads(state.read_text()) if state.exists() else {}
-if op == 'identity_exists':
-    print(json.dumps(dict(exists=identity in rows, **rows.get(identity, {}))))
-elif op == 'file_slot' and behavior.get('pending_slot'):
-    print(json.dumps({'status': 'pending', 'reason': 'needs approval'}))
-elif op == 'reverse':
-    status = behavior.get('reverse', 'reversed')
-    if status == 'lost':
-        print('lost'); sys.exit(0)
-    if status == 'reversed':
-        rows.pop(identity, None)
-        state.write_text(json.dumps(rows))
-    print(json.dumps({'status': status, 'reason': 'target changed' if status == 'conflict' else status}))
-elif op == 'search_open':
-    print(json.dumps({'matches': behavior.get('matches', [])}))
-elif op == 'read_item':
-    print(json.dumps({'present': behavior.get('present', False), 'open': True}))
-else:
-    if behavior.get('dirty_file'):
-        pathlib.Path(behavior['dirty_file']).write_bytes(pathlib.Path(request['source_handoff']).read_bytes())
-    if behavior.get('rewrite_source'):
-        source = pathlib.Path(request['source_handoff'])
-        original = source.read_bytes()
-        data = json.loads(original)
-        mode = behavior['rewrite_source']
-        if mode == 'formatting':
-            source.write_text(json.dumps(data, indent=2))
-        elif mode == 'key-order':
-            source.write_text(json.dumps(dict(reversed(list(data.items())))))
-        elif mode == 'same-bytes':
-            source.write_bytes(original)
-        elif mode == 'replacement':
-            temporary = source.with_suffix('.replacement')
-            temporary.write_bytes(original)
-            temporary.replace(source)
-        elif mode == 'new-content':
-            data['resume']['next_action'] += ' updated'
-            source.write_text(json.dumps(data))
-    if behavior.get('require_journal'):
-        reports = list((root / 'reports').glob('*.md'))
-        current = max(reports, key=lambda p: p.stat().st_mtime_ns).read_text()
-        run = json.loads(current.split('```json\\n', 1)[1].rsplit('\\n```', 1)[0])
-        journal = [row for section in run['directories'].values()
-                   for key in ('filing_outcomes', 'asks_raised') for row in section[key]]
-        if not any(row['identity'] == request['identity'] and row['outcome'] == 'uncertain' for row in journal):
-            print(json.dumps({'status': 'failed', 'error': 'missing intent journal'})); sys.exit(0)
-    receipt = {'receipt': 'ack-' + str(len(rows)), 'destination': request.get('destination', 'ask'), 'run_id': request.get('run_id')}
-    rows[identity] = receipt
-    state.write_text(json.dumps(rows))
-    if behavior.get('lost'):
-        sys.exit(0)
-    if behavior.get('timeout'):
-        time.sleep(2)
-    print(json.dumps(dict(status='written', **receipt)))
-''')
-    (sandbox[0] / 'behavior.json').write_text(json.dumps(behavior or {}))
-    binding = {'command': shlex.join([sys.executable, str(stub)])}
-    profile = sandbox[0] / 'profile.json'
-    profile.write_text(json.dumps({'name': 'act', 'ask': binding, 'record_read': binding,
-        'bindings': {'record': dict(binding, consumes=[]), 'lessons': None}}))
-    config = json.loads(sandbox[2].read_text())
-    config['sweep'].update(mode='act', binding_timeout_seconds=0.2)
-    sandbox[2].write_text(json.dumps(config))
-    return profile
-
-
-def calls(sandbox):
-    path = sandbox[0] / 'calls.jsonl'
-    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
-
-
-def new_work():
-    return {'rule': 'R5', 'destination': 'record', 'read_status': 'ok',
-            'priority': 'p2', 'priority_reason': 'Required outcome'}
-
-
-def test_act_writes_archives_and_changes_only_allowed_surfaces(sandbox):
-    path = source(sandbox)
-    original = path.read_bytes()
-    profile = act_profile(sandbox)
-    args = decisions(sandbox, [new_work()])
-    before = outside_report_snapshot(sandbox)
-    text, data = report(sandbox, *args, '--user-profile', str(profile))
-    section = data['directories'][str(sandbox[0])]
-    assert data['mode'] == 'act'
-    assert section['new_tickets'][0]['outcome'] == 'written'
-    assert section['new_tickets'][0]['priority'] == 'p2'
-    assert 'New this run' in text
-    assert not path.exists()
-    assert (sandbox[1] / 'archive' / path.name).read_bytes() == original
-    assert not section['worktrees_removed']
-    assert [r['operation'] for r in calls(sandbox)] == ['identity_exists', 'search_open', 'create_ticket']
-    assert all(r['identity'] == section['filing_outcomes'][0]['identity'] for r in calls(sandbox))
-    after = outside_report_snapshot(sandbox)
-    permitted = {'handoffs', 'handoffs/source.json', 'handoffs/archive', 'handoffs/archive/source.json',
-                 'calls.jsonl', 'record.json'}
-    assert {key for key in before.keys() | after.keys() if before.get(key) != after.get(key)} <= permitted
-
-
-@pytest.mark.parametrize('behavior,outcome', [({'lost': True}, 'uncertain'),
-    ({'timeout': True}, 'uncertain'), ({'fail': 'create_ticket'}, 'failed')])
-def test_act_unknown_or_failed_write_retained_and_resolved_before_retry(sandbox, behavior, outcome):
-    path = source(sandbox)
-    profile = act_profile(sandbox, behavior)
-    args = decisions(sandbox, [new_work()])
-    _, first = report(sandbox, *args, '--user-profile', str(profile))
-    assert first['directories'][str(sandbox[0])]['filing_outcomes'][0]['outcome'] == outcome
-    assert path.exists()
-    (sandbox[0] / 'behavior.json').write_text('{}')
-    _, second = report(sandbox, *args, '--user-profile', str(profile))
-    assert not path.exists()
-    writes = [r for r in calls(sandbox) if r['operation'] == 'create_ticket']
-    assert len(writes) == (2 if outcome == 'failed' else 1)
-    assert second['directories'][str(sandbox[0])]['filing_outcomes'][0]['outcome'] == 'written'
-
-
-@pytest.mark.parametrize('matches,operation', [(['work:1'], 'comment'), (['work:1', 'work:2'], 'ask')])
-def test_act_search_redirects_matches_to_comment_or_ask(sandbox, matches, operation):
-    source(sandbox)
-    profile = act_profile(sandbox, {'matches': matches})
-    args = decisions(sandbox, [new_work()])
-    _, data = report(sandbox, *args, '--user-profile', str(profile))
-    section = data['directories'][str(sandbox[0])]
-    assert not section['new_tickets']
-    row = (section['comments_added'] if operation == 'comment' else section['asks_raised'])[0]
-    assert row['matches'] == matches
-    assert operation in [r['operation'] for r in calls(sandbox)]
-    if operation == 'comment':
-        assert 'priority' not in [r for r in calls(sandbox) if r['operation'] == 'comment'][0]
-    else:
-        assert all(match in str(row['ask']['choices']) for match in matches)
-
-
-@pytest.mark.parametrize('rule', ['R1', 'R2', 'R5'])
-@pytest.mark.parametrize('failure', ['bad', 'fail', 'unbound'])
-def test_act_failed_reads_never_drop_or_create(sandbox, rule, failure):
-    path = source(sandbox)
-    op = 'search_open' if rule == 'R5' else 'read_item'
-    profile = act_profile(sandbox, {failure: op})
-    if failure == 'unbound':
-        data = json.loads(profile.read_text())
-        data.pop('record_read')
-        if rule == 'R5':
-            data['bindings']['record'] = None
-        profile.write_text(json.dumps(data))
-    entry = dict(new_work(), rule=rule, reason='Already recorded')
-    args = decisions(sandbox, [entry])
-    _, data = report(sandbox, *args, '--user-profile', str(profile))
-    row = data['directories'][str(sandbox[0])]['filing_outcomes'][0]
-    assert row['outcome'] == 'read failed' and row['error']
-    assert path.exists()
-    assert not any(r['operation'] in ('create_ticket', 'comment') for r in calls(sandbox))
-
-
-def test_act_tripwire_raises_one_ask_and_keeps_unfiled_sources(sandbox):
-    captured = json.loads(FIXTURE.read_text())['resume']['open_loops']
-    path = source(sandbox, loops=captured[:3])
-    profile = act_profile(sandbox)
-    config = json.loads(sandbox[2].read_text())
-    config['sweep']['new_ticket_limit'] = 1
-    sandbox[2].write_text(json.dumps(config))
-    args = decisions(sandbox, [new_work()])
-    _, data = report(sandbox, *args, '--user-profile', str(profile))
-    section = data['directories'][str(sandbox[0])]
-    assert len(section['new_tickets']) == 1
-    assert len(section['asks_raised']) == 1
-    assert len(section['unfiled_items']) == 2
-    assert str(sandbox[0]) in section['asks_raised'][0]['ask']['text']
-    assert path.exists()
-
-
-@pytest.mark.parametrize('bound', [True, False])
-def test_act_dirty_handoff_asks_and_repeated_runs_do_not_write_twice(sandbox, bound):
-    path = source(sandbox)
-    data = json.loads(path.read_text())
-    data['uncommitted_files'] = [str(sandbox[0] / 'changed.txt')]
-    path.write_text(json.dumps(data))
-    os.utime(path, (time.time() - 5 * 86400,) * 2)
-    profile = act_profile(sandbox)
-    if not bound:
-        data = json.loads(profile.read_text())
-        data.pop('ask')
-        profile.write_text(json.dumps(data))
-    args = decisions(sandbox, [new_work()])
-    for _ in range(2):
-        _, data = report(sandbox, *args, '--user-profile', str(profile))
-    section = data['directories'][str(sandbox[0])]
-    assert path.exists()
-    ask = section['asks_raised'][0]
-    assert all(value in ask['ask']['text'] for value in ('source', str(sandbox[0]), 'changed.txt'))
-    assert ask['outcome'] == ('written' if bound else 'unbound')
-    assert len([r for r in calls(sandbox) if r['operation'] == 'create_ticket']) == 1
-    assert len([r for r in calls(sandbox) if r['operation'] == 'ask']) == int(bound)
-
-
-def test_act_slot_items_use_record_boundary(sandbox):
-    item = json.loads(FIXTURE.read_text())['resume']['open_loops'][2]
-    source(sandbox, loops=[dict(item, type='knowledge')])
-    profile = act_profile(sandbox)
-    data = json.loads(profile.read_text())
-    data['bindings']['knowledge'] = dict(data['bindings']['record'], consumes=['knowledge'])
-    profile.write_text(json.dumps(data))
-    args = decisions(sandbox, [{'rule': 'R4', 'destination': 'knowledge'}])
-    _, data = report(sandbox, *args, '--user-profile', str(profile))
-    row = data['directories'][str(sandbox[0])]['filing_outcomes'][0]
-    assert row['outcome'] == 'written'
-    operation = [r for r in calls(sandbox) if r['operation'] == 'file_slot']
-    assert len(operation) == 1 and operation[0]['slot']['consumes'] == ['knowledge']
-    assert not [r for r in calls(sandbox) if r['operation'] == 'ask']
-
-
-def test_act_tripwire_is_global_and_one_ask_names_all_affected_directories(sandbox):
-    captured = json.loads(FIXTURE.read_text())['resume']['open_loops']
-    for index, name in enumerate(('a', 'b', 'c')):
-        source(sandbox, name=name, directory=sandbox[0] / name, loops=[captured[index]])
-    profile = act_profile(sandbox)
-    config = json.loads(sandbox[2].read_text())
-    config['sweep']['new_ticket_limit'] = 0
-    sandbox[2].write_text(json.dumps(config))
-    args = decisions(sandbox, [new_work()])
-    _, data = report(sandbox, *args, '--user-profile', str(profile))
-    asks = [r for r in calls(sandbox) if r['operation'] == 'ask']
-    assert len(asks) == 1
-    assert all(str(sandbox[0] / name) in asks[0]['text'] for name in ('a', 'b', 'c'))
-    assert sum(len(s['unfiled_items']) for s in data['directories'].values()) == 3
-
-
-@pytest.mark.parametrize('rule', ['R3', 'R7', 'R2'])
-def test_act_other_writes_carry_identity_and_receipts(sandbox, rule):
-    path = source(sandbox)
-    profile = act_profile(sandbox)
-    args = decisions(sandbox, [{'rule': rule, 'destination': 'work:1',
-        'choices': ['approve', 'decline'], 'read_status': 'ok'}])
-    _, data = report(sandbox, *args, '--user-profile', str(profile))
-    row = data['directories'][str(sandbox[0])]['filing_outcomes'][0]
-    assert row['outcome'] == 'written' and row['receipt']
-    assert not path.exists()
-    writes = [r for r in calls(sandbox) if r['operation'] in ('ask', 'comment', 'edit_document')]
-    assert len(writes) == 1 and writes[0]['identity'] == row['identity']
-
-
-def test_act_carried_successor_reuses_identity_and_preserves_archive_collision(sandbox):
-    captured = json.loads(FIXTURE.read_text())['resume']['open_loops'][0]
-    first = source(sandbox, loops=[captured])
-    second = source(sandbox, name='successor', loops=[captured])
-    archive = sandbox[1] / 'archive'
-    archive.mkdir()
-    (archive / first.name).write_text('existing archive')
-    profile = act_profile(sandbox)
-    args = decisions(sandbox, [new_work()])
-    _, data = report(sandbox, *args, '--user-profile', str(profile))
-    assert not first.exists() and not second.exists()
-    assert (archive / first.name).read_text() == 'existing archive'
-    assert len([r for r in calls(sandbox) if r['operation'] == 'create_ticket']) == 1
-    assert len(data['directories'][str(sandbox[0])]['handoffs_archived']) == 2
-
-
-@pytest.mark.parametrize('behavior', [{'fail': 'ask'}, {'lost': True}, {'bad': 'identity_exists'}])
-def test_act_failed_or_uncertain_ask_keeps_handoff(sandbox, behavior):
-    path = source(sandbox)
-    profile = act_profile(sandbox, behavior)
-    args = decisions(sandbox, [{'rule': 'R3', 'destination': 'ask', 'choices': ['approve', 'decline']}])
-    _, data = report(sandbox, *args, '--user-profile', str(profile))
-    row = data['directories'][str(sandbox[0])]['asks_raised'][0]
-    assert row['outcome'] in ('failed', 'uncertain')
-    assert path.exists()
-    assert not data['directories'][str(sandbox[0])]['handoffs_archived']
-
-
-def test_act_r2_cannot_skip_read_with_information_only_flag(sandbox):
-    path = source(sandbox)
-    profile = act_profile(sandbox, {'bad': 'read_item'})
-    args = decisions(sandbox, [{'rule': 'R2', 'destination': 'work:1',
-                               'read_status': 'ok', 'information_only': True}])
-    _, data = report(sandbox, *args, '--user-profile', str(profile))
-    row = data['directories'][str(sandbox[0])]['filing_outcomes'][0]
-    assert row['outcome'] == 'read failed' and path.exists()
-    assert not any(r['operation'] == 'comment' for r in calls(sandbox))
-
-
-def test_act_multiple_match_ask_preserves_linked_ticket(sandbox):
-    item = json.loads(FIXTURE.read_text())['resume']['open_loops'][0]
-    source(sandbox, loops=[item])
-    profile = act_profile(sandbox, {'matches': ['work:1', 'work:2']})
-    args = decisions(sandbox, [new_work()])
-    report(sandbox, *args, '--user-profile', str(profile))
-    ask, = [r for r in calls(sandbox) if r['operation'] == 'ask']
-    assert ask['ticket'] == item['anchor']['ticket']
-
-
-def test_act_generated_asks_journal_intent_before_binding(sandbox):
-    path = source(sandbox, loops=[])
-    data = json.loads(path.read_text())
-    data['uncommitted_files'] = [str(sandbox[0] / 'changed.txt')]
-    path.write_text(json.dumps(data))
-    os.utime(path, (time.time() - 5 * 86400,) * 2)
-    profile = act_profile(sandbox, {'require_journal': True})
-    _, data = report(sandbox, '--user-profile', str(profile))
-    row = data['directories'][str(sandbox[0])]['asks_raised'][0]
-    assert row['outcome'] == 'written'
-
-
-
 def archive_test_repository(sandbox, location):
     repo, bare, linked = [sandbox[0] / name for name in ('repo', 'origin.git', 'linked')]
 
@@ -1115,7 +847,6 @@ def test_archive_keeps_unreadable_worktree_status(sandbox):
     assert 'worktree status unavailable' in section['handoffs_kept'][0]['reason']
 
 
-
 @pytest.mark.parametrize('rewrite', ['formatting', 'key-order', 'same-bytes', 'replacement', 'new-content'])
 def test_archive_keeps_any_source_rewritten_after_discovery(sandbox, rewrite):
     path = source(sandbox)
@@ -1174,7 +905,7 @@ def test_archive_other_retention_conditions_remain_independent(sandbox, guard):
     assert path.read_bytes() == before
     assert not any(section['handoffs_archived'] for section in data['directories'].values())
     if guard in ('recent-session', 'pending-item'):
-        assert not calls(sandbox)
+        assert not (sandbox[0] / 'binding.sh.called').exists()
 
 
 def configure_checks(sandbox, commands):
@@ -1220,15 +951,14 @@ def test_open_idle_ask_once_until_activity_changes(sandbox, interactive):
     _, data = report(sandbox, *args)
     row, = data['directories'][str(sandbox[0])]['asks_raised']
     assert row['ask']['choices'] == ['wrap it', 'leave it', 'close it']
-    assert row['outcome'] == ('present directly to user' if interactive else 'written')
+    assert row['outcome'] == 'written'
     _, data = report(sandbox, *args)
     assert not data['directories'][str(sandbox[0])]['asks_raised']
     activity = path.stat().st_mtime + 60
     os.utime(path, (activity, activity))
     _, data = report(sandbox, *args)
     assert len(data['directories'][str(sandbox[0])]['asks_raised']) == 1
-    writes = [r for r in calls(sandbox) if r['operation'] == 'ask']
-    assert len(writes) == (0 if interactive else 2)
+    assert not (sandbox[0] / 'binding.sh.called').exists()
     assert path.exists()
 
 
@@ -1298,7 +1028,7 @@ def test_unrunnable_check_keeps_handoffs_and_reports_command(sandbox, failure):
     _, data = report(sandbox, '--user-profile', str(profile))
     assert path.exists() and cmd in json.dumps(data['errors'])
     assert data['directories'][str(sandbox[0])]['handoffs_kept']
-    assert not calls(sandbox)
+    assert not (sandbox[0] / 'binding.sh.called').exists()
 
 
 @pytest.mark.parametrize('provider', ['claude', 'codex'])
@@ -1320,21 +1050,7 @@ def test_transcript_activity_rearms_open_session_ask(sandbox, provider):
     os.utime(transcript, (activity + 60, activity + 60))
     _, data = report(sandbox, '--user-profile', str(profile))
     assert len(data['directories'][str(sandbox[0])]['asks_raised']) == 1
-    assert len([c for c in calls(sandbox) if c['operation'] == 'ask']) == 2
-
-
-@pytest.mark.parametrize('behavior', [{'lost': True}, {'fail': 'ask'}])
-def test_open_ask_retries_without_reading_answers(sandbox, behavior):
-    source(sandbox, loops=[])
-    profile = act_profile(sandbox, behavior)
-    configure_checks(sandbox, [check_command(sandbox, 'open', 'print("source")')])
-    report(sandbox, '--user-profile', str(profile))
-    (sandbox[0] / 'behavior.json').write_text('{}')
-    _, data = report(sandbox, '--user-profile', str(profile))
-    assert data['directories'][str(sandbox[0])]['asks_raised'][0]['outcome'] == 'written'
-    _, data = report(sandbox, '--user-profile', str(profile))
-    assert not data['directories'][str(sandbox[0])]['asks_raised']
-    assert {c['operation'] for c in calls(sandbox)} == {'identity_exists', 'ask'}
+    assert not (sandbox[0] / 'binding.sh.called').exists()
 
 
 @pytest.mark.parametrize('order', ['protected-first', 'clean-first'])
@@ -1407,68 +1123,6 @@ def read_run(path):
     return json.loads(Path(path).read_text().split('```json\n', 1)[1].rsplit('\n```', 1)[0])
 
 
-def undo_run(sandbox, run, profile):
-    result = command(sandbox, 'undo', '--run-id', run['run_id'], '--user-started',
-                     '--user-profile', str(profile))
-    return read_run(result.stdout.strip())
-
-
-@pytest.mark.parametrize('rule', ['R5', 'R2', 'R7', 'R4'])
-def test_undo_restores_only_run_archives_and_reverses_record_writes(sandbox, rule):
-    path = source(sandbox)
-    original = path.read_bytes()
-    profile = act_profile(sandbox)
-    if rule == 'R4':
-        data = json.loads(profile.read_text())
-        data['bindings']['knowledge'] = dict(data['bindings']['record'], consumes=['knowledge'])
-        profile.write_text(json.dumps(data))
-    entry = new_work() if rule == 'R5' else dict(rule=rule, destination='knowledge' if rule == 'R4' else 'work:1', read_status='ok')
-    args = decisions(sandbox, [entry])
-    _, run = report(sandbox, *args, '--user-profile', str(profile))
-    other = source(sandbox, name='unrelated')
-    before = outside_report_snapshot(sandbox)
-    result = undo_run(sandbox, run, profile)
-    assert {r['outcome'] for r in result['items']} == {'reversed'}
-    assert path.read_bytes() == original and other.exists()
-    reverse = [r for r in calls(sandbox) if r['operation'] == 'reverse']
-    assert len(reverse) == 1 and reverse[0]['receipt']
-    assert reverse[0]['run_id'] == run['run_id']
-    assert reverse[0]['write_operation'] == {'R5': 'create_ticket', 'R2': 'comment', 'R7': 'edit_document', 'R4': 'file_slot'}[rule]
-    after = outside_report_snapshot(sandbox)
-    assert {k for k in before.keys() | after.keys() if before.get(k) != after.get(k)} <= {
-        'handoffs/source.json', 'handoffs/archive/source.json', 'calls.jsonl', 'record.json'}
-    count = len(calls(sandbox))
-    assert undo_run(sandbox, run, profile)['items'] == result['items']
-    assert len(calls(sandbox)) == count
-
-
-@pytest.mark.parametrize('status', ['conflict', 'failed', 'unsupported', 'lost'])
-def test_undo_preserves_newer_work_and_retries_only_failures(sandbox, status):
-    path = source(sandbox)
-    profile = act_profile(sandbox)
-    args = decisions(sandbox, [new_work()])
-    _, run = report(sandbox, *args, '--user-profile', str(profile))
-    path.write_text('newer handoff')
-    (sandbox[0] / 'behavior.json').write_text(json.dumps({'reverse': status}))
-    first = undo_run(sandbox, run, profile)
-    assert path.read_text() == 'newer handoff'
-    assert [r['outcome'] for r in first['items']] == [
-        'conflict' if status == 'conflict' else 'failed', 'conflict']
-    count = len(calls(sandbox))
-    (sandbox[0] / 'behavior.json').write_text('{}')
-    second = undo_run(sandbox, run, profile)
-    assert second['items'][0]['outcome'] == ('conflict' if status == 'conflict' else 'reversed')
-    assert len(calls(sandbox)) == count + (0 if status == 'conflict' else 1)
-    assert second['items'][1] == first['items'][1]
-
-
-def test_undo_requires_user_start_and_rejects_watch_report(sandbox):
-    _, run = report(sandbox)
-    command(sandbox, 'undo', '--run-id', run['run_id'], code=1)
-    command(sandbox, 'undo', '--run-id', run['run_id'], '--user-started', code=1)
-    assert len(list((sandbox[0] / 'reports').iterdir())) == 1
-
-
 @pytest.mark.parametrize('days', [None, 2])
 def test_retention_deletes_only_strictly_older_regular_archive_handoffs(sandbox, days, monkeypatch):
     spec = importlib.util.spec_from_file_location('retention_sweep', ENGINE)
@@ -1513,83 +1167,6 @@ def test_retention_cli_reports_changes_and_does_not_run_during_watch(sandbox):
     result = read_run(done.stdout.strip())
     assert result['items'][0]['outcome'] == 'deleted'
     assert not target.exists() and path.exists()
-
-
-@pytest.mark.parametrize('behavior', [{'lost': True}, {'fail': 'create_ticket'}])
-def test_undo_recovers_uncertain_writes_and_skips_rejected_writes(sandbox, behavior):
-    path = source(sandbox)
-    profile = act_profile(sandbox, behavior)
-    args = decisions(sandbox, [new_work()])
-    _, run = report(sandbox, *args, '--user-profile', str(profile))
-    (sandbox[0] / 'behavior.json').write_text('{}')
-    result = undo_run(sandbox, run, profile)
-    if behavior.get('lost'):
-        assert result['items'][0]['outcome'] == 'reversed'
-        assert calls(sandbox)[-2]['operation'] == 'identity_exists'
-        assert calls(sandbox)[-1]['operation'] == 'reverse'
-    else:
-        assert result['items'] == []
-    assert path.exists()
-
-
-def test_undo_does_not_reverse_preexisting_identity_or_asks(sandbox):
-    item = json.loads(FIXTURE.read_text())['resume']['open_loops'][0]
-    source(sandbox, loops=[item])
-    profile = act_profile(sandbox)
-    args = decisions(sandbox, [new_work()])
-    report(sandbox, *args, '--user-profile', str(profile))
-    source(sandbox, name='successor', loops=[item])
-    source(sandbox, name='ask', loops=[dict(item, context=item['context'] + '?')])
-    rows = json.loads(command(sandbox, 'inspect', '--scope', 'all').stdout)
-    choices = sandbox[0] / 'decisions.json'
-    choices.write_text(json.dumps([dict(handoff=c['path'], identity=i['identity'],
-        **(dict(rule='R3', destination='ask', choices=['keep', 'leave']) if c['session_id'] == 'ask' else new_work()))
-        for c in rows['candidates'] for i in c['items']]))
-    _, run = report(sandbox, '--decisions', str(choices), '--user-profile', str(profile))
-    result = undo_run(sandbox, run, profile)
-    assert all(r['kind'] == 'handoff' for r in result['items'])
-    assert not any(r['operation'] == 'reverse' for r in calls(sandbox))
-
-
-def test_undo_recovers_completed_restore_after_lost_report_save(sandbox):
-    path = source(sandbox)
-    profile = act_profile(sandbox)
-    args = decisions(sandbox, [{'rule': 'R6', 'reason': 'No stated outcome'}])
-    _, run = report(sandbox, *args, '--user-profile', str(profile))
-    (sandbox[1] / 'archive' / path.name).rename(path)
-    result = undo_run(sandbox, run, profile)
-    assert result['items'][0]['outcome'] == 'reversed'
-
-
-@pytest.mark.parametrize('change', ['edit', 'symlink'])
-def test_undo_rejects_changed_archive(sandbox, change):
-    path = source(sandbox)
-    profile = act_profile(sandbox)
-    args = decisions(sandbox, [{'rule': 'R6', 'reason': 'No stated outcome'}])
-    _, run = report(sandbox, *args, '--user-profile', str(profile))
-    archive = sandbox[1] / 'archive' / path.name
-    if change == 'edit':
-        archive.write_text('newer archived content')
-    else:
-        archive.unlink()
-        archive.symlink_to(profile)
-    before = outside_report_snapshot(sandbox)
-    result = undo_run(sandbox, run, profile)
-    assert result['items'][0]['outcome'] in ('conflict', 'failed')
-    assert outside_report_snapshot(sandbox) == before
-
-
-def test_undo_excludes_pending_slot_work(sandbox):
-    source(sandbox)
-    profile = act_profile(sandbox, {'pending_slot': True})
-    data = json.loads(profile.read_text())
-    data['bindings']['knowledge'] = dict(data['bindings']['record'], consumes=['knowledge'])
-    profile.write_text(json.dumps(data))
-    args = decisions(sandbox, [{'rule': 'R4', 'destination': 'knowledge'}])
-    _, run = report(sandbox, *args, '--user-profile', str(profile))
-    result = undo_run(sandbox, run, profile)
-    assert all(r['kind'] == 'handoff' for r in result['items'])
-    assert not any(r['operation'] == 'reverse' for r in calls(sandbox))
 
 
 @pytest.mark.parametrize('mode', ['watch-only', 'act'])

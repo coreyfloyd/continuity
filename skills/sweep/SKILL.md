@@ -8,11 +8,14 @@ description: Sweep abandoned sessions in a directory or across the machine, appl
 Use the same procedure in Claude Code and Codex. Resolve the package root from
 this skill's actual directory (`../..`); the shared command is
 `scripts/lib/sweep.py`. Configuration defaults to watch-only, whose only write is its report. The user
-may enable act mode in continuity configuration. In act mode the command owns
-record writes, asks and archive moves through the executable binding protocol
-in [INTERFACE.md](../../INTERFACE.md#12-sweep-act-binding-protocol). Never execute
-those writes separately from the engine. Act mode also removes eligible clean, merged
-linked worktrees and their local branches. Never write a handoff for the sweep itself.
+may enable act mode in continuity configuration. The driving agent performs
+every binding call through the profile, following each binding's `command` and
+`instructions`, the same way the checklist wrap does. The engine journals a
+plan and records your results; it never executes bindings. See
+[the plan/results contract](../../INTERFACE.md#12-sweep-plan-and-results-contract).
+After results are recorded it removes eligible clean, merged linked worktrees
+and their local branches and archives completed handoffs. Never write a handoff
+for the sweep itself.
 
 Take the requested directory or `all` as scope. If none is given, use the
 working directory. Read the user checklist profile at `$CHECKLIST_USER_PROFILE`,
@@ -40,7 +43,7 @@ wrapped by the sweep. The report's open idle sessions have the choices `wrap it`
 `leave it`, `close it`; present these directly to the user after writing the
 interactive report. With configured checks, `--interactive` uses their results;
 additional agent evidence is optional. Do not wait before completing the report.
-In act mode the engine records the activity at which each open-session ask was
+In act mode completion records the activity at which each open-session ask was
 raised or presented, and suppresses repeats until a newer handoff or transcript
 write. Watch-only proposes asks without recording them as raised. Never read
 ask answers or interpret them as permission to wrap or close a session.
@@ -98,19 +101,70 @@ pending and keep their handoffs. A concurrent sweep exits with `already running`
 and writes nothing. An item's planning or validation failure appears as `failed`
 with its rule, destination and error; its handoff is kept and the remaining items
 are still processed into the same report. Command-level errors are reported
-explicitly; do not treat them as an empty store. Read the report path printed on
-stdout. Report each ambiguous identity, missing binding, failed item, failed read,
-parse error, retained handoff and proposed action. Its text and embedded JSON
-describe the same run. A dry-run archive or worktree removal is a proposal,
-never a completed operation. With no work it still writes a report.
+explicitly; do not treat them as an empty store. Watch-only prints a report
+path; act mode prints JSON with `run_id`, `report`, `phase`, and `work`. Read the
+report. With no decisions the command gives a watch-only inventory even when
+act is configured. No archive or removal happens before completion.
 
-Scheduling belongs to the user. See [the command contract and scheduling example](../../docs/sweep.md).
+## Perform an act plan
 
-In act mode review actual outcomes and errors in the report. Do not retry a
-write manually after a timeout or missing receipt: the engine queries its
-identity before retrying. Keep pending judgments in the handoff; never fabricate
-a successful record read. Configure an executable adapter for a skill binding
-before using act mode. The tripwire may retain excess items for a later run.
+Use only the returned work entries with outcome `intent`. Each intent was
+journaled before return, with a stable `write_id`, operation, unchanged identity,
+producer, directory, source handoff, rule, destination and operation fields.
+Keep this run id and the work list through all results rounds.
+
+Before **each** write, including a retry, slot work, ask or successor carrying
+the same identity, ask its record or ask binding whether that identity was
+already written. Bindings must store the identity, original run id, receipt
+and destination with every write and prevent duplicate identities. If found,
+return `already_written` with that receipt and destination. If lookup fails,
+do not write; report failed with the lookup error. Do not infer absence from
+an unsupported lookup. For R5, the successful open-ticket search was performed
+before deciding: one match is R2 and several are an R3 ask. Never skip it.
+
+For absent identities, perform the operation through the profile's record,
+ask or named slot binding. Invoke skill commands as skills; follow inline
+instructions where supplied. No executable adapter is needed. Preserve the
+item identity, linked ticket, choices, priority and reason. A comment inherits
+the destination ticket's priority. An ask is never a ticket. For an interactive
+open-session intent with `delivery: "direct"`, present its choices to the user
+and record that presentation with a receipt; never infer permission to wrap or
+close from a reply.
+
+Write a caller-owned results JSON array, one result per write id:
+
+```json
+[{"write_id":"<copied-from-work>","status":"written","receipt":"<receipt>","destination":"<actual-destination>"}]
+```
+
+Use `written` only for confirmed writes, `already_written` for identities found
+before writing, `failed` with `error` only when no write occurred, or `uncertain`
+when a write may have happened. Lost replies, timeouts and malformed receipts
+are uncertain. For a slot leaving work pending without a write, use `failed`,
+`pending: true`, and its error; completion journals its ask. Missing results
+also become uncertain and keep the source. Never blindly retry an unknown
+write; the next attempt first looks up its identity.
+
+```bash
+python3 <package>/scripts/lib/sweep.py complete --run-id <run-id> --results <results-file>
+```
+
+Before completion, refresh interactive session inspection and pass the updated
+`--open-sessions <evidence-file>` when using agent evidence. Configured session
+checks rerun automatically. Worktree-retention and open-idle asks are deferred
+until these post-filing checks. For those asks in act mode, use only deferred
+intents, never inventory proposals.
+
+Read the returned JSON and report. If `phase` is `planned`, completion added
+asks after a slot, worktree or open-session check: perform only new `intent`
+entries, then
+complete the **same run** again. Stop when `phase` is `completed`. Failed,
+uncertain, unbound, ambiguous, read-failed and undecided items are retained.
+Report those outcomes, parse errors, actual archives/removals and tripwire
+excess items. Never describe proposals as executed work. A run with nothing
+to do still writes a report. Scheduling belongs to the user; scheduled act
+runs must invoke this skill through an agent driver (see
+[usage](../../docs/sweep.md)).
 
 
 ## User-started undo and configured retention
@@ -123,12 +177,31 @@ original run id and the same user profile resolution as run:
 python3 <package>/scripts/lib/sweep.py undo --run-id <run-id> --user-started --user-profile <profile-file>
 ```
 
-Read the printed undo report. Present every reversed, conflict and failed item;
-report that worktree removal and local branch deletion cannot be undone. Do not
-restore an archive or reverse a record write manually. Re-running retries only
-failed items; conflicts and successful reversals stay unchanged. Asks remain
-delivered. Missing or unsupported record reversal must be reported, never
-replaced with an invented success.
+Undo prints JSON with the journaled reversal work and proposed archive
+restorations; planning changes no destination or archive. For each work entry,
+check its target immediately before reversing it through the original record
+or slot binding. A ticket created by the run is closed as not planned; a
+comment is removed; a document or slot edit restores the saved preimage. Never
+close an existing ticket. Later comments or edits on a created ticket, or later
+document edits, mean `conflict`: preserve the target. The check is separate
+from reversal; a change between them is **not detected**. No atomic reversal
+adapter is required.
+
+Record one result per `write_id` with status `reversed`, `conflict` or `failed`,
+and an error/reason when needed. An unsupported reversal is failed; do not
+invent success. Use the original run id and receipt to recognize an already
+completed reversal after a lost reply.
+
+```bash
+python3 <package>/scripts/lib/sweep.py complete-undo --run-id <run-id> --results <results-file>
+```
+
+Completion records results and restores archives under the existing conflict
+rules. Present every reversal, conflict and failure. A newer handoff at the
+original path stays untouched. Worktree removal and local branch deletion
+cannot be undone; asks remain delivered. Rerunning undo retries only failed
+items; conflicts and successful reversals stay unchanged. Never restore an
+archive manually.
 
 Optional retention runs separately with `python3 <package>/scripts/lib/sweep.py
 retention`. It deletes nothing while `archive_retention_days` is unset. When

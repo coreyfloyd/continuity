@@ -345,7 +345,7 @@ def worktree_protection(discovery, report, checks, act=False):
     if act:
         for section in report['directories'].values():
             for row in section['filing_outcomes'] + section['asks_raised']:
-                if row['outcome'] not in ('written', 'dropped', 'present directly to user'):
+                if row['outcome'] not in ('written', 'already_written', 'dropped'):
                     retained.add(row['source_handoff'])
     protected = {}
     for candidate in discovery['candidates']:
@@ -524,235 +524,278 @@ def build_report(discovery, decisions, plan, ask, checks, interactive, started, 
     return report
 
 
-def binding_call(binding, request, timeout):
-    """Commands are argv strings, never shell programs; JSON travels on stdin."""
-    if binding is None:
-        raise ValueError('binding is unbound')
-    done = subprocess.run(shlex.split(binding['command']), input=json.dumps(request),
-                          capture_output=True, text=True, timeout=timeout)
-    if done.returncode:
-        raise ValueError(done.stderr.strip() or f'binding exited {done.returncode}')
-    response = json.loads(done.stdout)
-    if not isinstance(response, dict):
-        raise ValueError('binding response must be a JSON object')
-    return response
+def pending_path():
+    store = Path(handoff.state_dir()).resolve()
+    return store.parent / ('.' + store.name + '.sweep-pending.json')
 
 
-def execute_act(report, discovery, plan, ask, reader, config, path, history=None):
-    """Execute binding writes, asks, checked worktree removals and archive moves.
+def require_idle():
+    if pending_path().exists() or pending_path().is_symlink():
+        raise RuntimeError('sweep already running: incomplete plan; complete the reserved run first')
 
-    Identity queries precede every attempted write, even without an earlier report.
-    Bindings must enforce identity uniqueness atomically, including delayed writes.
-    """
-    history = {} if history is None else history
-    report['mode'] = 'act'
-    report['undo_items'] = []
-    for section in report['directories'].values():
-        section['unfiled_items'] = []
-    bindings = {step['slot']: step.get('binding') for step in plan if 'slot' in step}
-    bindings['ask'] = ask
-    record = bindings.get('record')
-    timeout = config['binding_timeout_seconds']
+
+def save_act(path, report):
+    report['ended_at'] = datetime.now(timezone.utc).isoformat()
+    save_operation(path, report)
+
+
+def add_intent(report, row, directory, operation):
+    row.update(directory=directory, operation=operation, outcome='intent',
+               run_id=report['run_id'], session_id=row['identity']['session_id'],
+               text=row['identity']['text'])
+    row['write_id'] = hashlib.sha256((report['run_id'] + ':' + str(len(report['work'])) + ':' +
+                                     identity_key(row['identity'])).encode()).hexdigest()
+    if operation == 'ask':
+        row.update(destination='ask', binding='ask')
+        row.update({key: row['ask'].get(key) for key in ('choices', 'ticket')})
+    elif operation == 'file_slot':
+        row['slot'] = row['binding']
+    report['work'].append(row)
+
+
+def slot_ask(row, directory, bound):
+    slot = row.get('slot') or row['binding']
+    return dict(row, binding='ask', destination='ask',
+                outcome='dry run' if bound else 'unbound',
+                ask=dict(text=row['identity']['text'], identity=row['identity'],
+                         session_id=row['identity']['session_id'], directory=directory,
+                         ticket=(row['item'].get('anchor') or {}).get('ticket'),
+                         choices=['save through ' + slot, 'leave it']))
+
+
+def plan_act(report, discovery, ask, config, path):
+    """Journal intents only. The driving agent performs all profile bindings."""
+    for candidate in discovery['candidates']:
+        candidate['planned_source'] = True
+    report.update(mode='act', phase='planned', work=[], undo_items=[],
+                  discovery=discovery, ask_bound=ask is not None)
     created = 0
     tripwires = {}
+    for directory, section in report['directories'].items():
+        section['unfiled_items'] = []
+        section['worktrees_removed'] = []
+        section['worktrees_kept'] = []
+        section['handoffs_archived'] = []
+        section['handoffs_kept'] = []
+        # These proposals depend on checks repeated after filing. Never expose
+        # them as deliverable intents until completion has refreshed the premise.
+        section['asks_raised'] = [row for row in section['asks_raised']
+                                  if not row.get('worktree') and not row.get('open_session')]
+        for index, row in enumerate(section['filing_outcomes']):
+            row['directory'] = directory
+            if row['rule'] == 'R4' and row['outcome'] == 'unbound' and row.get('binding') != 'ask':
+                row = slot_ask(row, directory, ask is not None)
+                section['filing_outcomes'][index] = row
+                section['asks_raised'].append(row)
+            if row['outcome'] != 'dry run':
+                continue
+            if row['rule'] in ('R1', 'R6'):
+                row['outcome'] = 'dropped'
+            elif row.get('binding') != 'ask':
+                operation = {'R2': 'comment', 'R5': 'create_ticket', 'R7': 'edit_document',
+                             'R4': 'file_slot'}[row['rule']]
+                if operation == 'create_ticket':
+                    if created >= config['new_ticket_limit']:
+                        row.update(outcome='tripwire', reason='new-ticket limit reached')
+                        tripwires[directory] = row['source_handoff']
+                        continue
+                    created += 1
+                add_intent(report, row, directory, operation)
+        for row in section['asks_raised']:
+            if row['outcome'] == 'dry run':
+                add_intent(report, row, directory, 'ask')
+    if tripwires:
+        directory, source = next(iter(tripwires.items()))
+        candidate = next(c for c in discovery['candidates'] if c['path'] == source)
+        section = report['directories'][directory]
+        add_ask(section, candidate, 'New-ticket limit reached in ' + ', '.join(sorted(tripwires)),
+                ['review unfiled items', 'raise limit'], 'tripwire', ask)
+        row = section['asks_raised'][-1]
+        if ask:
+            add_intent(report, row, directory, 'ask')
+    for section in report['directories'].values():
+        section['unfiled_items'] = [row for row in section['filing_outcomes'] if row['outcome'] != 'dropped']
+    save_act(path, report)
+    # The store-scoped reservation survives process exit and report-location changes.
+    # Store lock serializes publication of the report and its reservation.
+    reserve(path, report)
+
+
+def reserve(path, report):
+    with pending_path().open('x') as handle:
+        json.dump(dict(run_id=report['run_id'], report=str(path), mode=report['mode']), handle)
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def load_results(path, work, statuses):
+    rows = json.loads(path.read_text())
+    if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+        raise ValueError('results must be an array of objects')
+    known = {row['write_id'] for row in work}
+    result = {}
+    for row in rows:
+        key = row.get('write_id')
+        if key not in known or key in result:
+            raise ValueError('unknown or duplicate write id')
+        if row.get('status') not in statuses:
+            raise ValueError('unsupported result status')
+        if row['status'] in ('written', 'already_written') and not all(
+                isinstance(row.get(k), str) and row[k].strip() for k in ('receipt', 'destination')):
+            raise ValueError('confirmed writes require receipt and destination')
+        if row['status'] == 'failed' and not (row.get('error') or row.get('reason')):
+            raise ValueError('failed results require an error')
+        result[key] = row
+    return result
+
+
+def rehydrate(report):
+    """Restore shared outcome rows after a JSON round trip."""
+    work = {row['write_id']: row for row in report['work']}
+    for section in report['directories'].values():
+        for key, rows in section.items():
+            section[key] = [work.get(row.get('write_id'), row) for row in rows]
+
+
+def complete_act(config, run_id, results_path, evidence=None):
+    reservation = json.loads(pending_path().read_text())
+    if reservation['run_id'] != run_id or reservation['mode'] != 'act':
+        raise ValueError('run id does not own the incomplete act plan')
+    path = Path(reservation['report'])
+    report = read_report(path)
+    if report['phase'] == 'completed':
+        pending_path().unlink()
+        return path, report
+    rehydrate(report)
+    results = load_results(results_path, report['work'],
+                           ('written', 'already_written', 'failed', 'uncertain'))
+    for row in list(report['work']):
+        if row['outcome'] != 'intent':
+            continue
+        result = results.get(row['write_id'], dict(status='uncertain', error='missing result'))
+        row.update(outcome=result['status'])
+        for key in ('receipt', 'destination', 'error'):
+            if key in result:
+                row[key] = result[key]
+        if row['outcome'] == 'written' and row['operation'] not in ('ask',):
+            report['undo_items'].append(dict(row, kind='record',
+                write_operation=row['operation'], write_outcome='written'))
+        if row['operation'] == 'file_slot' and row['outcome'] == 'failed' and result.get('pending') is True:
+            section = report['directories'][row['directory']]
+            followup = slot_ask(row, row['directory'], report['ask_bound'])
+            followup.pop('write_id', None)
+            section['filing_outcomes'] = [followup if old is row else old for old in section['filing_outcomes']]
+            section['asks_raised'].append(followup)
+            if report['ask_bound']:
+                add_intent(report, followup, row['directory'], 'ask')
+        save_act(path, report)
+    discovery = report['discovery']
+    if evidence is not None:
+        discovery['open_session_evidence'] = evidence
+    checks = open_session_checks(config, discovery.get('open_session_evidence',
+                                                       read_open_sessions(None)))
+    report['open_session_checks'] = [checks]
+    current = discover('all', config, datetime.now(timezone.utc))
+    discovery_failed = any(error.get('blocks_sweep') for error in current['errors'])
+    for error in current['errors']:
+        if error not in report['errors']:
+            report['errors'].append(error)
+    originals = {c['path']: c for c in discovery['candidates']}
+    for candidate in current['candidates']:
+        if candidate['path'] not in originals:
+            candidate['worktree_retention_reason'] = 'handoff was not in this run plan: ' + candidate['path']
+            discovery['candidates'].append(candidate)
+        elif not candidate['abandoned']:
+            originals[candidate['path']]['abandoned'] = False
+    for candidate in discovery['candidates']:
+        if discovery_failed or checks['failed'] or candidate['session_id'] in checks['session_ids']:
+            candidate['abandoned'] = False
+    history_config = dict(config, report_location=str(path.parent))
+    history = read_ask_history(history_config)
+    for section in report['directories'].values():
+        for key in ('new_tickets', 'comments_added', 'documents_changed', 'items_dropped'):
+            section[key] = []
+        section['unfiled_items'] = []
+        section['handoffs_kept'] = []
+        for row in section['filing_outcomes']:
+            if row['outcome'] == 'dropped':
+                section['items_dropped'].append(row)
+            elif row['outcome'] == 'written' and row['rule'] in ('R2', 'R5', 'R7'):
+                section[{'R2': 'comments_added', 'R5': 'new_tickets', 'R7': 'documents_changed'}[row['rule']]].append(row)
+            elif row['outcome'] not in ('written', 'already_written'):
+                section['unfiled_items'].append(row)
+        for row in section['asks_raised']:
+            if row.get('open_session') and row['outcome'] in ('written', 'already_written'):
+                history[row['identity']['session_id']] = row['activity_at']
+    if history:
+        save_ask_history(history_config, history)
+    for candidate in discovery['candidates']:
+        if candidate.get('planned_source') and not candidate['abandoned']:
+            section = report['directories'].get(candidate['directory'])
+            if section is not None:
+                section['handoffs_kept'].append(dict(path=candidate['path'], outcome='kept',
+                    reason='session became active, open, or abandonment check failed'))
+    for check in checks['results']:
+        if check['outcome'] == 'failed' and check not in report['errors']:
+            report['errors'].append(dict(check, reason='open-session check failed; no session counts as abandoned'))
+    ask = True if report['ask_bound'] else None
 
     def save():
-        report['ended_at'] = datetime.now(timezone.utc).isoformat()
-        temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
-        try:
-            with temporary.open('x') as handle:
-                handle.write(render_report(report))
-                handle.flush()
-                os.fsync(handle.fileno())
-            temporary.replace(path)
-        finally:
-            temporary.unlink(missing_ok=True)
-
-    def request(row, operation):
-        return dict(operation=operation, identity=row['identity'],
-                    session_id=row['identity']['session_id'],
-                    directory=row['directory'], text=row['identity']['text'],
-                    source_handoff=row['source_handoff'])
-
-    def query(row, binding, operation):
-        payload = request(row, operation)
-        payload['destination'] = row.get('destination')
-        return binding_call(binding, payload, timeout)
-
-    def write(row, binding, operation):
-        # Persist intent before starting a process: a crash or a lost reply is
-        # recoverable through the destination's durable identity index.
-        row.update(outcome='uncertain', operation=operation)
-        intent = None
-        if operation != 'ask':
-            intent = dict(kind='record', write_operation=operation,
-                          run_id=report['run_id'], **request(row, 'reverse'))
-            intent.update(destination=row.get('destination'), write_outcome='uncertain')
-            report['undo_items'].append(intent)
-        save()
-        payload = request(row, operation)
-        payload.update(destination=row.get('destination'), rule=row['rule'], run_id=report['run_id'])
-        if operation == 'file_slot':
-            payload['slot'] = bindings[row['binding']]
-        if operation == 'create_ticket':
-            payload.update(priority=row['priority'], priority_reason=row['priority_reason'])
-        if operation == 'ask':
-            payload.update(row['ask'])
-        try:
-            result = binding_call(binding, payload, timeout)
-            if result.get('status') == 'pending' and operation == 'file_slot':
-                row.update(outcome='pending', reason=result.get('reason') or 'slot left item pending')
-            elif result.get('status') == 'failed':
-                row.update(outcome='failed', error=result.get('error') or 'binding rejected write')
-            elif (result.get('status') == 'written' and isinstance(result.get('receipt'), str)
-                  and result['receipt'].strip() and isinstance(result.get('destination'), str)
-                  and result['destination'].strip()):
-                row.update(outcome='written', receipt=result['receipt'], destination=result['destination'])
-            else:
-                row['error'] = 'missing or malformed write acknowledgement'
-        except (subprocess.TimeoutExpired, ValueError, OSError) as exc:
-            # A process error may follow a successful remote write too.
-            row['error'] = str(exc)
-        if intent is not None:
-            intent.update(write_outcome=row['outcome'])
-            for key in ('receipt', 'destination'):
-                if key in row:
-                    intent[key] = row[key]
-        save()
-        return row['outcome'] == 'written'
-
-    def exists(row, binding):
-        result = query(row, binding, 'identity_exists')
-        if type(result.get('exists')) is not bool:
-            raise ValueError('identity_exists requires a boolean exists')
-        if result['exists']:
-            if not all(isinstance(result.get(k), str) and result[k].strip()
-                       for k in ('receipt', 'destination')):
-                raise ValueError('existing identity requires receipt and destination')
-            row.update(outcome='written', receipt=result['receipt'], destination=result['destination'],
-                       already_written=True)
-        return result['exists']
+        save_act(path, report)
 
     def send_ask(row):
-        row.update(binding='ask', destination='ask')
-        if ask is None:
-            row['outcome'] = 'unbound'
+        previous = next((old for old in report['work'] if old['operation'] == 'ask'
+                         and old['source_handoff'] == row['source_handoff']
+                         and old['identity'] == row['identity']), None)
+        if previous is not None:
+            section = report['directories'][row['directory']]
+            section['asks_raised'].remove(row)
             return
-        try:
-            if not exists(row, ask):
-                write(row, ask, 'ask')
-        except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
-            row.update(outcome='failed', error='ask identity read failed: ' + str(exc))
+        direct = row.get('open_session') and report['interactive']
+        if ask or direct:
+            add_intent(report, row, row['directory'], 'ask')
+            if direct:
+                row.update(delivery='direct', binding='direct')
+        else:
+            row.update(outcome='unbound', binding='ask', destination='ask')
 
-    for directory, section in report['directories'].items():
-        # Rebuild category arrays from actual outcomes rather than proposals.
-        synthetic_asks = [row for row in section['asks_raised']
-                          if row not in section['filing_outcomes'] and not row.get('worktree')]
-        for key in ('asks_raised', 'new_tickets', 'comments_added', 'documents_changed',
-                    'items_dropped', 'worktrees_removed', 'worktrees_kept', 'handoffs_archived'):
-            section[key] = []
-        section['handoffs_kept'] = [row for row in section['handoffs_kept']
-                                    if report['open_session_checks'][0].get('failed')]
-        section['unfiled_items'] = []
-        for row in section['filing_outcomes']:
-            row['directory'] = directory
-            rule = row['rule']
-            try:
-                eligible = row['outcome'] in ('dry run', 'unbound')
-                if eligible and rule == 'R2' and record and exists(row, record):
-                    continue
-                if rule == 'R5' and eligible and record is None:
-                    row.update(outcome='read failed', error='record binding is unbound; open-ticket search unavailable')
-                elif eligible and (rule == 'R2' or (rule == 'R1' and not row.get('information_only'))):
-                    result = query(row, reader, 'read_item')
-                    if type(result.get('present')) is not bool or type(result.get('open')) is not bool:
-                        raise ValueError('read_item requires boolean present and open')
-                    if rule == 'R1' and not result['present']:
-                        raise ValueError('R1 already-recorded claim was not confirmed')
-                    if rule == 'R2' and not result['open']:
-                        raise ValueError('R2 destination is not open')
-                if row['outcome'] not in ('dry run', 'unbound'):
-                    continue
-                if rule in ('R1', 'R6'):
-                    row['outcome'] = 'dropped'
-                elif row['binding'] == 'ask':
-                    send_ask(row)
-                elif rule == 'R4':
-                    slot = row['binding']
-                    if bindings.get(slot) and record:
-                        if not exists(row, record):
-                            write(row, record, 'file_slot')
-                    else:
-                        row['outcome'] = 'pending'
-                    if row['outcome'] == 'pending':
-                        row.update(binding='ask', destination='ask', ask=dict(
-                            text=row['identity']['text'], identity=row['identity'],
-                            session_id=row['identity']['session_id'], directory=directory,
-                            ticket=(row['item'].get('anchor') or {}).get('ticket'),
-                            choices=['save through ' + slot, 'leave it']))
-                        send_ask(row)
-                elif record is None:
-                    row['outcome'] = 'unbound'
-                elif rule != 'R2' and exists(row, record):
-                    pass
-                else:
-                    operation = {'R2': 'comment', 'R7': 'edit_document', 'R5': 'create_ticket'}[rule]
-                    if rule == 'R5':
-                        result = query(row, record, 'search_open')
-                        matches = result.get('matches')
-                        if (not isinstance(matches, list) or
-                                not all(isinstance(m, str) and m.strip() for m in matches) or
-                                len(matches) != len(set(matches))):
-                            raise ValueError('search_open requires distinct non-empty match references')
-                        row['matches'] = matches
-                        if len(matches) > 1:
-                            row.update(rule='R3', binding='ask', destination='ask', ask=dict(
-                                text=row['identity']['text'], identity=row['identity'],
-                                session_id=row['identity']['session_id'], directory=directory,
-                                ticket=(row['item'].get('anchor') or {}).get('ticket'),
-                                choices=['use ' + m for m in matches] + ['leave it']))
-                            send_ask(row)
-                            continue
-                        if matches:
-                            row.update(rule='R2', destination=matches[0])
-                            row.pop('priority', None)
-                            row.pop('priority_reason', None)
-                            operation = 'comment'
-                        elif created >= config['new_ticket_limit']:
-                            row.update(outcome='tripwire', reason='new-ticket limit reached')
-                            tripwires.setdefault(directory, row['source_handoff'])
-                            continue
-                    write(row, record, operation)
-                    if operation == 'create_ticket' and row['outcome'] in ('written', 'uncertain'):
-                        # Unknown acknowledgements reserve capacity too.
-                        created += 1
-            except (ValueError, OSError, subprocess.TimeoutExpired) as exc:
-                row.update(outcome='read failed', error=str(exc))
-            finally:
-                if row.get('binding') == 'ask':
-                    section['asks_raised'].append(row)
-                elif row['outcome'] == 'dropped':
-                    section['items_dropped'].append(row)
-                elif row['outcome'] == 'written' and not row.get('already_written') and row['rule'] in ('R2', 'R5', 'R7'):
-                    section[{'R2': 'comments_added', 'R5': 'new_tickets', 'R7': 'documents_changed'}[row['rule']]].append(row)
-                if row['outcome'] not in ('written', 'dropped'):
-                    section['unfiled_items'].append(row)
-                save()
-        for row in synthetic_asks:
-            section['asks_raised'].append(row)
-            row['directory'] = directory
-            if row.get('open_session') and report['interactive']:
-                row['outcome'] = 'present directly to user'
-            else:
-                send_ask(row)
-            save()
-            if row.get('open_session') and row['outcome'] in ('written', 'present directly to user'):
-                history[row['identity']['session_id']] = row['activity_at']
-                save_ask_history(config, history)
+    # Open-idle asks, like worktree-retention asks, use post-filing evidence.
+    # Seed configured checks from agent evidence, never their previous results.
+    for section in report['directories'].values():
+        section['open_sessions'] = []
+    asked_sessions = set()
+    for candidate in current['candidates']:
+        original = originals.get(candidate['path'])
+        if not original or not original.get('planned_source') or candidate['session_id'] not in checks['session_ids']:
+            continue
+        section = report['directories'].get(candidate['directory'])
+        if section is None:
+            continue
+        section['open_sessions'].append({key: candidate[key] for key in
+                                        ('session_id', 'idle_seconds', 'activity_at', 'path')})
+        if (not checks['failed'] and candidate['idle_seconds'] > config['idle_days'] * 86400
+                and history.get(candidate['session_id'], -1) < candidate['activity_at']
+                and candidate['session_id'] not in asked_sessions):
+            add_ask(section, candidate, 'Open idle session: ' + candidate['session_id'],
+                    ['wrap it', 'leave it', 'close it'], 'open session remains idle after filing', ask)
+            row = section['asks_raised'][-1]
+            row.update(open_session=True, activity_at=candidate['activity_at'], directory=candidate['directory'])
+            row['ask']['activity_at'] = candidate['activity_at']
+            send_ask(row)
+            asked_sessions.add(candidate['session_id'])
+    finish_act(report, discovery, ask, path, save, send_ask)
+    if report['phase'] == 'completed':
+        pending_path().unlink()
+    return path, report
+
+
+def finish_act(report, discovery, ask, path, save, send_ask):
     # All sections finish filing before a worktree can be removed. Include
     # sibling sources below the worktree root, not just exact directory peers.
     checks = report['open_session_checks'][0]
     for candidate in discovery['candidates']:
+        if any(Path(candidate['directory']) == Path(root) or Path(root) in Path(candidate['directory']).parents for root in report.get('removed_paths', [])):
+            continue
         try:
             check_handoff_source(candidate)
             initial = candidate.get('archive_worktree_check')
@@ -761,12 +804,18 @@ def execute_act(report, discovery, plan, ask, reader, config, path, history=None
                 candidate['worktree_retention_reason'] = 'related handoff has unconfirmed clean worktree: ' + candidate['path']
         except (ValueError, OSError) as exc:
             candidate['worktree_retention_reason'] = 'related handoff changed or unreadable: ' + candidate['path'] + ': ' + str(exc)
+            section = report['directories'].get(candidate['directory'])
+            if section is not None:
+                for row in section['handoffs_kept']:
+                    if row['path'] == candidate['path']:
+                        row['error'] = str(exc)
     protected = worktree_protection(discovery, report, checks, act=True)
-    removed_paths = set()
-    attempted_paths = set()
+    removed_paths = set(report.get('removed_paths', []))
+    attempted_paths = set(report.get('attempted_paths', []))
     for directory, section in report['directories'].items():
         for candidate in discovery['candidates']:
-            if candidate['directory'] != directory or not candidate['abandoned']:
+            if (candidate['directory'] != directory or not candidate['abandoned']
+                    or not candidate.get('planned_source')):
                 continue
             if any(Path(directory) == Path(root) or Path(root) in Path(directory).parents
                    for root in attempted_paths):
@@ -776,6 +825,7 @@ def execute_act(report, discovery, plan, ask, reader, config, path, history=None
                 continue
             worktree = proposed['path']
             attempted_paths.add(worktree)
+            report['attempted_paths'] = sorted(attempted_paths)
             if proposed['outcome'] != 'dry run':
                 if not any(r['path'] == proposed['path'] for r in section['worktrees_kept']):
                     section['worktrees_kept'].append(proposed)
@@ -807,6 +857,7 @@ def execute_act(report, discovery, plan, ask, reader, config, path, history=None
                 if code:
                     raise ValueError(error or 'plain worktree removal failed')
                 removed_paths.add(worktree)
+                report['removed_paths'] = sorted(removed_paths)
                 row.update(outcome='removed', reason='clean branch contained in pushed trunk')
                 # Compare-and-delete preserves a concurrently moved branch.
                 code, _, error = git_read(main, 'update-ref', '-d',
@@ -828,9 +879,13 @@ def execute_act(report, discovery, plan, ask, reader, config, path, history=None
                 section['asks_raised'].append(failure)
                 send_ask(failure)
                 save()
+    if any(row['outcome'] == 'intent' for row in report['work']):
+        save()
+        return
     for directory, section in report['directories'].items():
         for candidate in discovery['candidates']:
-            if candidate['directory'] != directory or not candidate['abandoned']:
+            if (candidate['directory'] != directory or not candidate['abandoned']
+                    or not candidate.get('planned_source')):
                 continue
             if candidate['session_id'] in report['open_session_checks'][0]['session_ids']:
                 continue
@@ -842,8 +897,8 @@ def execute_act(report, discovery, plan, ask, reader, config, path, history=None
                                               for root in removed_paths) else archive_worktree_check(candidate))
             clean = all(check is None or check['clean'] for check in (initial_check, live_check))
             archived = (clean and not candidate['handoff'].get('uncommitted_files') and
-                        all(r['outcome'] in ('written', 'dropped') for r in outcomes) and
-                        all(r['outcome'] == 'written' for r in asks))
+                        all(r['outcome'] in ('written', 'already_written', 'dropped') for r in outcomes) and
+                        all(r['outcome'] in ('written', 'already_written') for r in asks))
             row = dict(path=source, outcome='kept', worktree_check=live_check,
                        reason='unfiled items, asks, or uncommitted files')
             if not clean:
@@ -877,16 +932,7 @@ def execute_act(report, discovery, plan, ask, reader, config, path, history=None
             else:
                 section['handoffs_kept'].append(row)
             save()
-    if tripwires:
-        directory, source = next(iter(tripwires.items()))
-        candidate = next(c for c in discovery['candidates'] if c['path'] == source)
-        temporary = {'asks_raised': []}
-        add_ask(temporary, candidate, 'New-ticket limit reached in ' + ', '.join(sorted(tripwires)),
-                ['review unfiled items', 'raise limit'], 'tripwire', ask)
-        row = temporary['asks_raised'][0]
-        row['directory'] = directory
-        report['directories'][directory]['asks_raised'].append(row)
-        send_ask(row)
+    report['phase'] = 'completed'
     save()
 
 
@@ -914,7 +960,8 @@ def save_operation(path, report):
     temporary = path.with_name(path.name + '.' + uuid.uuid4().hex + '.tmp')
     try:
         with temporary.open('x') as handle:
-            handle.write('# Sweep ' + report['mode'] + ' report\n\n' +
+            handle.write(render_report(report) if report['mode'] == 'act' else
+                         '# Sweep ' + report['mode'] + ' report\n\n' +
                          report.get('note', '') + '\n\n```json\n' +
                          json.dumps(report, indent=2) + '\n```\n')
             handle.flush()
@@ -938,82 +985,105 @@ def report_directory(config):
     return destination
 
 
-def execute_undo(config, run_id, record):
+def run_path(config, run_id, suffix='.md'):
     if not run_id or any(c not in '0123456789abcdef' for c in run_id):
         raise ValueError('run id must be a hexadecimal sweep run id')
-    destination = report_directory(config)
-    original = read_report(destination / (run_id + '.md'))
-    if original.get('mode') != 'act' or original.get('run_id') != run_id:
-        raise ValueError('undo requires an act run')
-    if 'undo_items' not in original:
-        raise ValueError('run has no reversal journal')
-    path = destination / (run_id + '.undo.md')
+    return report_directory(config) / (run_id + suffix)
+
+
+def plan_undo(config, run_id):
+    if pending_path().exists():
+        reservation = json.loads(pending_path().read_text())
+        if reservation['run_id'] == run_id and reservation['mode'] == 'undo':
+            path = Path(reservation['report'])
+            return path, read_report(path)
+    require_idle()
+    original = read_report(run_path(config, run_id))
+    if original.get('mode') != 'act' or original.get('phase') != 'completed':
+        raise ValueError('undo requires a completed act run')
+    path = run_path(config, run_id, '.undo.md')
     report = read_report(path) if path.exists() else dict(
         mode='undo', run_id=run_id, items=[dict(row, outcome='failed')
-            for row in original['undo_items'] if row['kind'] == 'handoff'
-            or row.get('write_outcome') in ('written', 'uncertain')],
+            for row in original['undo_items']],
         note='Worktree removal and local branch deletion cannot be reversed. '
-             'Asks remain delivered. Conflicts are preserved; only failed items retry.')
+             'Asks remain delivered. Check each target immediately before reversal; '
+             'changes between the check and reversal are not detected. Only failed items retry.')
+    report.update(phase='planned', work=[], archive_restorations=[])
+    for index, row in enumerate(report['items']):
+        row.setdefault('write_id', hashlib.sha256((run_id + ':undo:' + str(index)).encode()).hexdigest())
+        if row['outcome'] == 'failed':
+            if row['kind'] == 'handoff':
+                report['archive_restorations'].append(row)
+            else:
+                report['work'].append(dict(row, operation='reverse'))
     save_operation(path, report)
+    reserve(path, report)
+    return path, report
+
+
+def complete_undo(config, run_id, results_path):
+    reservation = json.loads(pending_path().read_text())
+    if reservation['run_id'] != run_id or reservation['mode'] != 'undo':
+        raise ValueError('run id does not own the incomplete undo plan')
+    path = Path(reservation['report'])
+    report = read_report(path)
+    if report.get('phase') == 'completed':
+        pending_path().unlink()
+        return path, report
+    if report.get('phase') != 'planned':
+        raise ValueError('undo needs a plan before completion')
+    results = load_results(results_path, report['work'], ('reversed', 'conflict', 'failed'))
+    ids = {row['write_id'] for row in report['work']}
+    for row in report['items']:
+        if row['write_id'] not in ids or row['outcome'] != 'failed':
+            continue
+        result = results.get(row['write_id'], dict(status='failed', error='missing reversal result'))
+        row.update(outcome=result['status'], reason=result.get('reason') or result.get('error') or result['status'])
+        save_operation(path, report)
     store = Path(handoff.state_dir()).resolve()
     archive = store / 'archive'
     for row in report['items']:
-        if row['outcome'] != 'failed':
+        if row['kind'] != 'handoff' or row['outcome'] != 'failed':
             continue
         try:
-            if row['kind'] == 'handoff':
-                source, target = Path(row['archive']), Path(row['path'])
-                if (archive.is_symlink() or source.parent != archive or target.parent != store
-                        or source.is_symlink() or target.is_symlink()):
-                    raise ValueError('restore paths must be regular handoffs in this store and archive')
-                if target.exists():
-                    # Recover a crash between the non-overwriting link and unlink.
-                    restored = False
-                    if not source.exists():
-                        _, current = read_handoff_source(target)
-                        restored = all(current[k] == v for k, v in row['snapshot'].items()
-                                       if k != 'st_ctime_ns')
-                    if restored:
-                        row.update(outcome='reversed')
-                    elif source.exists() and os.path.samefile(source, target):
-                        source.unlink()
-                        row.update(outcome='reversed')
-                    else:
-                        row.update(outcome='conflict', reason='original path is occupied; archived handoff preserved')
-                elif not source.exists():
-                    raise ValueError('archived handoff is missing (possibly removed by retention)')
+            source, target = Path(row['archive']), Path(row['path'])
+            if (archive.is_symlink() or source.parent != archive or target.parent != store
+                    or source.is_symlink() or target.is_symlink()):
+                raise ValueError('restore paths must be regular handoffs in this store and archive')
+            if target.exists():
+                # Recover a crash between the non-overwriting link and unlink.
+                restored = False
+                if not source.exists():
+                    _, current = read_handoff_source(target)
+                    restored = all(current[k] == v for k, v in row['snapshot'].items()
+                                   if k != 'st_ctime_ns')
+                if restored:
+                    row.update(outcome='reversed')
+                elif source.exists() and os.path.samefile(source, target):
+                    source.unlink()
+                    row.update(outcome='reversed')
                 else:
-                    _, current = read_handoff_source(source)
-                    if any(current[k] != v for k, v in row['snapshot'].items() if k != 'st_ctime_ns'):
-                        row.update(outcome='conflict', reason='archived handoff changed')
-                    else:
-                        # link is exclusive: a newly written handoff is never overwritten.
-                        os.link(source, target, follow_symlinks=False)
-                        source.unlink()
-                        row.update(outcome='reversed')
+                    row.update(outcome='conflict', reason='original path is occupied; archived handoff preserved')
+            elif not source.exists():
+                raise ValueError('archived handoff is missing (possibly removed by retention)')
             else:
-                if row.get('write_outcome') == 'uncertain' and not row.get('receipt'):
-                    result = binding_call(record, dict(row, operation='identity_exists'),
-                                          config['binding_timeout_seconds'])
-                    if result.get('exists') is not True or result.get('run_id') != run_id:
-                        raise ValueError('uncertain write ownership not confirmed for this run')
-                    if not all(isinstance(result.get(k), str) and result[k].strip()
-                               for k in ('receipt', 'destination')):
-                        raise ValueError('uncertain write needs receipt and destination')
-                    row.update(receipt=result['receipt'], destination=result['destination'])
-                    save_operation(path, report)
-                result = binding_call(record, dict(row, operation='reverse'),
-                                      config['binding_timeout_seconds'])
-                status = result.get('status')
-                if status not in ('reversed', 'conflict', 'failed'):
-                    raise ValueError('unsupported or malformed reversal acknowledgement')
-                row.update(outcome=status, reason=result.get('reason') or result.get('error') or status)
+                _, current = read_handoff_source(source)
+                if any(current[k] != v for k, v in row['snapshot'].items() if k != 'st_ctime_ns'):
+                    row.update(outcome='conflict', reason='archived handoff changed')
+                else:
+                    # link is exclusive: a newly written handoff is never overwritten.
+                    os.link(source, target, follow_symlinks=False)
+                    source.unlink()
+                    row.update(outcome='reversed')
         except FileExistsError:
             row.update(outcome='conflict', reason='original path is occupied')
-        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        except (OSError, ValueError) as exc:
             row.update(outcome='failed', reason=str(exc))
         save_operation(path, report)
-    return path
+    report['phase'] = 'completed'
+    save_operation(path, report)
+    pending_path().unlink()
+    return path, report
 
 
 def execute_retention(config, now, save=None):
@@ -1057,48 +1127,60 @@ def execute_retention(config, now, save=None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('inspect', 'run', 'undo', 'retention'))
+    parser.add_argument('command', choices=('inspect', 'run', 'complete', 'undo', 'complete-undo', 'retention'))
     parser.add_argument('--scope', help='all or a directory')
     parser.add_argument('--decisions', type=Path)
     parser.add_argument('--user-profile', type=Path)
     parser.add_argument('--open-sessions', type=Path, help='agent-supplied session_ids and method JSON')
     parser.add_argument('--interactive', action='store_true')
     parser.add_argument('--run-id')
+    parser.add_argument('--results', type=Path)
     parser.add_argument('--user-started', action='store_true')
     args = parser.parse_args(argv)
     try:
         config = settings()
-        if args.command in ('undo', 'retention'):
+        if args.command in ('complete', 'undo', 'complete-undo', 'retention'):
             with store_lock():
-                if args.command == 'undo':
+                if args.command in ('complete', 'complete-undo'):
+                    if args.results is None:
+                        raise ValueError('completion requires --results')
+                    if args.command == 'complete':
+                        evidence = read_open_sessions(args.open_sessions) if args.open_sessions else None
+                        path, report = complete_act(config, args.run_id, args.results, evidence)
+                    else:
+                        path, report = complete_undo(config, args.run_id, args.results)
+                elif args.command == 'undo':
                     if not args.user_started:
                         raise ValueError('undo must be explicitly user-started with --user-started')
-                    profile_path = args.user_profile or Path(os.environ.get('CHECKLIST_USER_PROFILE') or
-                        str(Path(os.environ.get('XDG_CONFIG_HOME', os.path.expanduser('~/.config'))) / 'checklist/profile.md'))
-                    profiles = [checklist.load_profile(profile_path)] if args.user_profile or profile_path.exists() else []
-                    plan = checklist.compose(profiles)
-                    record = next((step.get('binding') for step in plan if step.get('slot') == 'record'), None)
-                    path = execute_undo(config, args.run_id, record)
+                    path, report = plan_undo(config, args.run_id)
                 else:
+                    require_idle()
                     destination = report_directory(config)
                     destination.mkdir(parents=True, exist_ok=True)
                     path = destination / (uuid.uuid4().hex + '.retention.md')
                     execute_retention(config, datetime.now(timezone.utc),
                                       lambda report: save_operation(path, report))
-                print(path)
+                    print(path)
+                    return 0
+                print(json.dumps(dict(report=str(path), run_id=report['run_id'],
+                                      work=report.get('work', []), phase=report['phase'],
+                                      archive_restorations=report.get('archive_restorations', []))))
             return 0
         if args.scope is None:
             raise ValueError('inspect and run require --scope')
-        checks = read_open_sessions(args.open_sessions)
+        evidence = read_open_sessions(args.open_sessions)
         if args.interactive and args.open_sessions is None and not config['open_session_checks']:
             raise ValueError('interactive sweep requires open-session inspection evidence, including an empty result')
         with store_lock():
+            if args.command == 'run':
+                require_idle()
             started = datetime.now(timezone.utc)
-            checks = open_session_checks(config, checks)
+            checks = open_session_checks(config, evidence)
             history = read_ask_history(config)
             discovery = discover(args.scope, config, started)
             discovery['idle_days'] = config['idle_days']
             discovery['open_session_checks'] = checks
+            discovery['open_session_evidence'] = evidence
             for check in checks['results']:
                 if check['outcome'] == 'failed':
                     discovery['errors'].append(dict(check, reason='open-session check failed; no session counts as abandoned'))
@@ -1127,10 +1209,11 @@ def main(argv=None):
             path = destination / (report['run_id'] + '.md')
             with path.open('x') as handle:
                 handle.write(render_report(report))
-            if config['mode'] == 'act':
-                execute_act(report, discovery, plan, ask,
-                            checklist.record_read_binding(profiles[0]) if profiles else None, config, path, history)
-            print(path)
+            if config['mode'] == 'act' and args.decisions is not None:
+                plan_act(report, discovery, ask, config, path)
+                print(json.dumps(dict(report=str(path), run_id=report['run_id'], work=report['work'], phase=report['phase'])))
+            else:
+                print(path)
         return 0
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)
