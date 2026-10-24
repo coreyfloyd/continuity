@@ -24,7 +24,8 @@ def selected(tmp_path):
     profile = tmp_path / 'profile.md'
     profile.write_text('```checklist-profile\n' + json.dumps({
         'name': 'user', 'record_read': {'command': '/read-work'}}) + '\n```\n')
-    env = dict(os.environ, CHECKLIST_USER_PROFILE=str(profile), HOME=str(tmp_path))
+    env = dict(os.environ, CHECKLIST_USER_PROFILE=str(profile), HOME=str(tmp_path),
+               XDG_CONFIG_HOME=str(tmp_path / 'xdg-config'))
     return path, handoff, env
 
 
@@ -168,6 +169,51 @@ def test_explicit_missing_profile_is_unavailable(selected):
     report = pickup(selected)
     assert 'record read unavailable: user profile:' in lines(report)
     assert 'No record read is bound.' not in lines(report)
+
+
+@pytest.mark.parametrize('location', ['explicit', 'xdg', 'home'])
+@pytest.mark.parametrize('profile_data', [
+    {},
+    {'name': 'user', 'bindings': {'record': {'command': '', 'consumes': ['progress']}}},
+    {'name': 'user', 'bindings': {'unknown': None}},
+    {'name': 'user', 'steps': [{'id': 'extra', 'after': 'unknown', 'instructions': 'Do work'}]},
+    {'name': 'user', 'unexpected': True},
+    {'name': 'user', 'record_read': {'command': '/read-work'},
+     'bindings': {'record': {'command': '', 'consumes': ['progress']}}},
+    {'name': 'user'},
+], ids=['missing-name', 'empty-command', 'unknown-slot', 'invalid-step',
+        'unknown-field', 'invalid-with-read-binding', 'valid-unbound'])
+def test_checklist_profile_validation_preserves_handoff(selected, tmp_path, location, profile_data):
+    env = selected[2]
+    env.pop('CHECKLIST_USER_PROFILE')
+    if location == 'home':
+        env.pop('XDG_CONFIG_HOME')
+    baseline = pickup(selected)
+    handoff_rows = [row for row in baseline['briefing'] if row.get('source') != 'record_read']
+    if location == 'explicit':
+        profile = tmp_path / 'explicit-profile.md'
+        env['CHECKLIST_USER_PROFILE'] = str(profile)
+    else:
+        config_home = Path(env['XDG_CONFIG_HOME']) if location == 'xdg' else tmp_path / '.config'
+        profile = config_home / 'checklist/profile.md'
+    profile.parent.mkdir(parents=True, exist_ok=True)
+    profile.write_text('```checklist-profile\n' + json.dumps(profile_data) + '\n```\n')
+
+    report = pickup(selected)
+    assert report['handoff'] == selected[1]
+    assert report['resume'] == selected[1]['resume']
+    assert [row for row in report['briefing'] if row.get('source') != 'record_read'] == handoff_rows
+    assert 'record_read' not in report
+    assert 'Tickets from record:' not in lines(report)
+    assert 'Commitments from record:' not in lines(report)
+    if profile_data == {'name': 'user'}:
+        assert lines(report).count('No record read is bound.') == 1
+        assert 'record read unavailable:' not in lines(report)
+    else:
+        assert lines(report).count('record read unavailable: user profile:') == 1
+        assert 'invalid' in lines(report)
+        assert str(profile) in lines(report)
+        assert 'No record read is bound.' not in lines(report)
 
 
 @pytest.mark.parametrize('use_xdg', [False, True])

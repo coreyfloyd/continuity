@@ -154,8 +154,10 @@ The selected report resolves the user profile at `$CHECKLIST_USER_PROFILE`, or
 `checklist/profile.md` under `$XDG_CONFIG_HOME` (default `~/.config`). Only an
 absent default profile means configured-nothing. A default profile link whose
 target is unavailable reports the same path-naming diagnostic as an explicitly
-configured path. An unreadable or invalid profile
-is **record read unavailable: <reason>**, not an unbound profile. Repository
+configured path. An unreadable profile is **record read unavailable: <reason>**.
+A profile that fails checklist validation, including outside `record_read`,
+reports **record read unavailable: user profile: <path>: invalid profile: <reason>**.
+A valid profile without `record_read` reports **No record read is bound.** Repository
 profiles cannot bind this read. This path reads profiles without starting a
 checklist or writing a ledger marker.
 
