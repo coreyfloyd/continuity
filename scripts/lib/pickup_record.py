@@ -9,7 +9,7 @@ import os
 from pathlib import Path
 import sys
 
-from checklist import load_profile, record_read_binding
+from checklist import compose, load_profile, record_read_binding
 from record_read import verdict
 
 
@@ -37,8 +37,15 @@ def prepare(report, no_commitments=False):
     try:
         # Only an absent default is configured-nothing. An explicit path that
         # cannot be read, including an unavailable link, is still configured.
-        binding = record_read_binding(load_profile(path)) if (
-            configured or path.exists() or path.is_symlink()) else None
+        binding = None
+        if configured or path.exists() or path.is_symlink():
+            try:
+                profile = load_profile(path)
+                # Reuse checklist validation without executing any plan steps.
+                compose([profile])
+                binding = record_read_binding(profile)
+            except (ValueError, TypeError, AttributeError) as error:
+                raise ValueError(f'{path}: invalid profile: {error}') from error
     except (OSError, ValueError, TypeError, AttributeError) as error:
         line(report, 'record read unavailable: user profile: ' + ' '.join(str(error).split()))
         return report
