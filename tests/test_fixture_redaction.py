@@ -144,3 +144,16 @@ def test_codex_redactor_replaces_commit_hash(fixture, tmp_path):
     redacted = json.loads(out.read_text(encoding="utf-8"))
     assert redacted["payload"]["git"] == dict(row["payload"]["git"],
                                              commit_hash="[REDACTED COMMIT HASH]")
+
+
+def test_sweep_handoff_contains_only_redacted_contract_values():
+    data = json.loads((Path(HERE) / 'fixtures/sweep-handoff.json').read_text())
+    assert data['subject'] == {'working_directory': '/redacted/repository', 'session_id': 'redacted-session'}
+    assert data['git']['branch'] == 'main'
+    assert data['git']['head'] == '[REDACTED COMMIT HASH]'
+    assert data['uncommitted_files'] == data['spawned_processes'] == []
+    for item in data['resume']['open_loops']:
+        assert re.fullmatch(r'\[REDACTED ITEM [1-9][0-9]*\]', item['context'])
+        assert item.get('session_id', 'redacted-session') == 'redacted-session'
+        assert item.get('produced_at', '2026-10-01T00:00:00Z') == '2026-10-01T00:00:00Z'
+        assert item.get('anchor', {'ticket': 'https://example.test/ticket'}) == {'ticket': 'https://example.test/ticket'}

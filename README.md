@@ -18,7 +18,7 @@ own data area, and survive adapter removal.
 
 ## Skills
 
-Both installers register **eight skills**. Claude Code uses plugin-namespaced
+Both installers register **nine skills**. Claude Code uses plugin-namespaced
 commands; in Codex, invoke the skill by its name, for example `Use checkpoint`.
 
 | Skill name in Codex | Claude Code command | Role |
@@ -28,6 +28,7 @@ commands; in Codex, invoke the skill by its name, for example `Use checkpoint`.
 | `pickup` | `/continuity:pickup` | List handoffs after a cold start, select one, and check it against the record. |
 | `checklist` | `/continuity:checklist` | Wrap the session through the spine and profile steps, ending with a validated handoff. |
 | `handoff-prompt` | `/continuity:handoff-prompt` | Produce a portable prompt for deliberately transferring a slice of work to another session. |
+| `sweep` | `/continuity:sweep` | Report how abandoned sessions would be filed, in watch-only mode. |
 | `wip` | `/continuity:wip` | Report current work, blockers, and pending approvals from verified state. |
 | `improve-harness` | `/continuity:improve-harness` | Route grounded lessons to their owning rules, skills, agent definitions, or memory. |
 | `slim-harness` | `/continuity:slim-harness` | Review one instruction source with the user, resolve conflicts, and leave source edits uncommitted. |
@@ -101,6 +102,10 @@ The [routing contract](skills/improve-harness/SKILL.md#memory-policy) accepts
 `memory-policy: native` (default, no placement changes) or `promote` (propose
 moving session memories to configured destinations after approval). Codex skips memory review because it
 has no comparable agent-written store; other routing still applies.
+
+The [sweep command](docs/sweep.md) reports abandoned sessions across a directory
+and its sibling worktrees, or the whole machine. It defaults to watch-only mode
+and ships no scheduler.
 
 ## Hooks
 

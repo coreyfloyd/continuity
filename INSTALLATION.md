@@ -289,10 +289,9 @@ with `#` are comments; use `\#` for a literal leading `#`. Exit zero is clean.
 ## Guided setup with the user present
 
 After installation, invoke `/continuity:setup` in Claude Code or `Use setup` in
-Codex. Setup is the eighth skill, in addition to the seven listed in the
-original installation layout above; it is discovered by the Claude Code plugin
-and linked by the Codex installer. Both tools use the same setup procedure and
-user profile.
+Codex. Setup is included among the nine installed skills. It is discovered by the
+Claude Code plugin and linked by the Codex installer. Both tools use the same setup
+procedure and user profile.
 
 Setup asks about each checklist slot: record, knowledge, lessons and persist.
 It creates a user profile or extends your existing one, preserving notes,

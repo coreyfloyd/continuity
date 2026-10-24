@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Install/uninstall the eight continuity skills and Codex hooks in one action."""
+"""Install/uninstall the nine continuity skills and Codex hooks in one action."""
 from __future__ import annotations
 
 import argparse
@@ -15,7 +15,7 @@ import sys
 from lib import codex_trust as trust
 
 ROOT = Path(__file__).resolve().parent.parent
-SKILLS = ('checkpoint','pickup','checklist','handoff-prompt','wip','improve-harness','slim-harness','setup')
+SKILLS = ('checkpoint','pickup','checklist','handoff-prompt','wip','improve-harness','slim-harness','setup','sweep')
 REGISTRATIONS = (('SessionStart','post-compact',None), ('PreCompact','pre-compact',None),
                  ('UserPromptSubmit','context-guard',None), ('PostToolUse','ledger-record',None),
                  ('Stop','guard-decide',None), ('PostToolUse','checklist-nudge','Bash'),
@@ -251,7 +251,7 @@ def main():
         if backup.exists():backup.rename(package)
         raise
     if backup.exists():shutil.rmtree(backup)
-    print('Installed eight continuity skills, six hooks, and the checklist actor guard; seven trusted handlers')
+    print('Installed nine continuity skills, six hooks, and the checklist actor guard; seven trusted handlers')
     return 0
 
 
