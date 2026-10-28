@@ -16,6 +16,43 @@ ENGINE = ROOT / 'scripts/lib/sweep.py'
 FIXTURE = ROOT / 'tests/fixtures/sweep-handoff.json'
 
 
+def readable_rows(text, row):
+    """Find text rows carrying every scalar in a structured entry."""
+    def values(value):
+        if isinstance(value, dict):
+            return [leaf for child in value.values() for leaf in values(child)]
+        if isinstance(value, list):
+            return [leaf for child in value for leaf in values(child)]
+        return [] if value is None else [str(value).lower() if isinstance(value, bool) else ' '.join(str(value).splitlines())]
+
+    body = text.split('```json\n', 1)[0]
+    assert json.dumps(row, ensure_ascii=False, sort_keys=True) not in body
+    return [line for line in body.splitlines() if line.startswith('- ')
+            and all(value in line for value in values(row))]
+
+
+def assert_readable_report(text, data):
+    assert text.count('```json\n') == 1
+    payload = text.split('```json\n', 1)[1]
+    expected = json.dumps(data, indent=2, **({'ensure_ascii': False}
+                          if data['mode'] in ('act', 'watch-only') else {}))
+    assert payload == expected + '\n```\n'
+    assert json.loads(payload.rsplit('\n```', 1)[0]) == data
+    if 'directories' in data:
+        for section in data['directories'].values():
+            for rows in section.values():
+                for row in rows:
+                    matches = readable_rows(text, row)
+                    assert matches, row
+                    if row.get('rule'):
+                        assert any('Rule: ' + row['rule'] in line for line in matches)
+    else:
+        body = text.split('```json\n', 1)[0]
+        assert '## Items' in body
+        for row in data['items']:
+            assert readable_rows(text, row), row
+
+
 @pytest.fixture
 def sandbox(tmp_path):
     home = tmp_path / 'home'
@@ -97,7 +134,9 @@ def report(sandbox, *args):
         assert run['phase'] == 'completed'
     else:
         path = Path(result.stdout.strip())
-    return path.read_text(), read_run(path)
+    text, data = path.read_text(), read_run(path)
+    assert_readable_report(text, data)
+    return text, data
 
 
 def act_profile(sandbox, behavior=None):
@@ -192,8 +231,7 @@ def test_duplicate_identities_in_one_handoff_are_retained_as_ambiguous(sandbox, 
         assert row['identity_occurrences'] == 2
         assert 'manual judgment' in row['reason']
         assert 'no filing decision applied' in row['reason']
-        rendered = json.dumps(row, ensure_ascii=False, sort_keys=True)
-        assert text.split('## Structured data')[0].count(rendered) == outcomes.count(row)
+        assert len(readable_rows(text, row)) == outcomes.count(row)
     assert [item['identity_occurrences'] for item in inspected] == [2, 2, 1]
     assert outcomes[2]['outcome'] == 'dry run'
     assert section['items_dropped'] == [outcomes[2]]
@@ -325,7 +363,7 @@ def test_untyped_legacy_items_receive_every_filing_outcome(sandbox, version, ent
     assert section[section_key] == [row]
     assert section['handoffs_archived'][0]['path'] == str(path)
     assert not section['handoffs_kept']
-    assert json.dumps(row, ensure_ascii=False, sort_keys=True) in text.split('## Structured data')[0]
+    assert readable_rows(text, row)
     assert outside_report_snapshot(sandbox) == before
     assert len(list((sandbox[0] / 'reports').iterdir())) == 1
 
@@ -399,7 +437,7 @@ def test_item_failure_is_reported_without_aborting_other_items_or_handoffs(sandb
     assert failed['rule'] == bad_entry['rule']
     assert failed.get('destination') == bad_entry.get('destination')
     assert error in failed['error']
-    assert json.dumps(failed, ensure_ascii=False, sort_keys=True) in text.split('## Structured data')[0]
+    assert readable_rows(text, failed)
     assert len(section['items_dropped']) == len(items) - 1
     for key in ('asks_raised', 'comments_added', 'new_tickets', 'documents_changed', 'handoffs_archived'):
         assert not section[key]
@@ -1165,6 +1203,7 @@ def test_retention_cli_reports_changes_and_does_not_run_during_watch(sandbox):
     assert outside_report_snapshot(sandbox) == before
     done = command(sandbox, 'retention')
     result = read_run(done.stdout.strip())
+    assert_readable_report(Path(done.stdout.strip()).read_text(), result)
     assert result['items'][0]['outcome'] == 'deleted'
     assert not target.exists() and path.exists()
 
@@ -1315,3 +1354,16 @@ def test_future_lint_messages_block_even_in_warn_only_fields(sandbox, monkeypatc
     assert not discovery['candidates']
     assert discovery['errors'] == [{'path': str(path), 'reason': message}]
     assert path.exists()
+
+
+@pytest.mark.parametrize('mode', ['watch-only', 'act'])
+def test_reports_have_readable_entries_and_unchanged_json(sandbox, mode):
+    source(sandbox)
+    profile = act_profile(sandbox) if mode == 'act' else bound_profile(sandbox)
+    text, data = report(sandbox, *decisions(sandbox, [new_work()]),
+                        '--user-profile', str(profile))
+    assert_readable_report(text, data)
+    body = text.split('## Structured data')[0]
+    assert "'session_ids':" not in body
+    assert 'Destination: new ticket' in body
+    assert 'Rule: R5' in body
