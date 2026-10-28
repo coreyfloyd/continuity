@@ -967,10 +967,42 @@ def finish_act(report, discovery, ask, path, save, send_ask):
     save()
 
 
+def report_fields(value, label=''):
+    """Render nested report facts as labeled text, without JSON or repr syntax."""
+    if isinstance(value, dict):
+        return '; '.join(report_fields(child, (label + ' ' + key.replace('_', ' ')).strip())
+                         for key, child in value.items()) or (label.capitalize() + ': none')
+    if isinstance(value, list):
+        return '; '.join(report_fields(child, label + (f' {index}' if len(value) > 1 else ''))
+                         for index, child in enumerate(value, 1)) or (label.capitalize() + ': none')
+    text = 'not assigned' if value is None else str(value).lower() if isinstance(value, bool) else str(value)
+    text = ' '.join(text.splitlines())
+    return (label.capitalize() + ': ' if label else '') + text
+
+
+def report_row(row):
+    # Put the filing decision first; retain all remaining facts as labeled text.
+    keys = ('item', 'path', 'session_id', 'rule', 'destination', 'outcome', 'reason')
+    ordered = {key: row[key] for key in keys if key in row}
+    ordered.update({key: value for key, value in row.items() if key not in ordered})
+    return '- ' + report_fields(ordered)
+
+
+def render_operation_report(report):
+    lines = ['# Sweep ' + report['mode'] + ' report', '', report.get('note', '')]
+    for key, value in report.items():
+        if key not in ('mode', 'note', 'items'):
+            lines.extend(['', report_fields(value, key.replace('_', ' '))])
+    lines.extend(['', '## Items', ''])
+    lines.extend([report_row(row) for row in report['items']] or ['None.'])
+    lines.extend(['', '## Structured data', '', '```json', json.dumps(report, indent=2), '```', ''])
+    return '\n'.join(lines)
+
+
 def render_report(report):
     lines = ['# Sweep report', '', ('Watch-only: every action below is proposed; no action executed.' if report['mode'] == 'watch-only'
               else 'Act: outcomes and receipts describe executed actions. New this run lists created tickets.'), '',
-             *[f'{key}: {report[key]}' for key in ('run_id', 'host', 'started_at', 'ended_at', 'scope', 'mode', 'interactive', 'open_session_checks')]]
+             *[report_fields(report[key], key.replace('_', ' ')) for key in ('run_id', 'host', 'started_at', 'ended_at', 'scope', 'mode', 'interactive', 'open_session_checks')]]
     if report['nothing_to_do']:
         lines.extend(['', 'Nothing to do.'])
     for directory, section in sorted(report['directories'].items()):
@@ -979,9 +1011,9 @@ def render_report(report):
                            ('worktrees_kept', 'Worktrees kept'), ('handoffs_kept', 'Handoffs kept'),
                            *((('unfiled_items', 'Unfiled items'),) if report['mode'] == 'act' else ())):
             lines.extend(['', '### ' + title])
-            lines.extend(['- ' + json.dumps(row, ensure_ascii=False, sort_keys=True) for row in section.get(key, [])] or ['None.'])
+            lines.extend([report_row(row) for row in section.get(key, [])] or ['None.'])
     if report['errors']:
-        lines.extend(['', '## Errors; sources left in place', *[json.dumps(e) for e in report['errors']]])
+        lines.extend(['', '## Errors; sources left in place', *[report_row(e) for e in report['errors']]])
     lines.extend(['', '## Structured data', '', '```json', json.dumps(report, indent=2, ensure_ascii=False), '```', ''])
     return '\n'.join(lines)
 
@@ -992,9 +1024,7 @@ def save_operation(path, report):
     try:
         with temporary.open('x') as handle:
             handle.write(render_report(report) if report['mode'] == 'act' else
-                         '# Sweep ' + report['mode'] + ' report\n\n' +
-                         report.get('note', '') + '\n\n```json\n' +
-                         json.dumps(report, indent=2) + '\n```\n')
+                         render_operation_report(report))
             handle.flush()
             os.fsync(handle.fileno())
         temporary.replace(path)

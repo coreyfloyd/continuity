@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 from test_sweep import (sandbox, source, command, decisions, bound_profile,
-                        outside_report_snapshot, FIXTURE, archive_test_repository)
+                        outside_report_snapshot, FIXTURE, archive_test_repository, assert_readable_report)
 
 
 def read_run(path):
@@ -144,10 +144,12 @@ def test_undo_plan_completion_and_retry_only_failed(sandbox, status):
     done = complete(sandbox, act(sandbox))
     planned = json.loads(command(sandbox, 'undo', '--run-id', done['run_id'], '--user-started').stdout)
     undo = read_run(planned['report'])
+    assert_readable_report(Path(planned['report']).read_text(), undo)
     assert not path.exists()
     assert len(undo['work']) == 1 and undo['archive_restorations']
     restored = complete(sandbox, undo, [status], 'complete-undo')
     assert path.read_bytes() == original
+    assert_readable_report(Path(planned['report']).read_text(), restored)
     assert restored['items'][0]['outcome'] == status
     retry = json.loads(command(sandbox, 'undo', '--run-id', done['run_id'], '--user-started').stdout)
     assert len(retry['work']) == (1 if status == 'failed' else 0)
