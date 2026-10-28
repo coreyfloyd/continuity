@@ -181,8 +181,12 @@ Undo prints JSON with the journaled reversal work and proposed archive
 restorations; planning changes no destination or archive. For each work entry,
 check its target immediately before reversing it through the original record
 or slot binding. A ticket created by the run is closed as not planned; a
-comment is removed; a document or slot edit restores the saved preimage. Never
-close an existing ticket. Later comments or edits on a created ticket, or later
+comment is edited to the one-line stub `Removed by sweep undo <run_id>` while
+retaining the original record marker; a document or slot edit restores the saved
+preimage. Never delete the comment. A retry that finds this run's stub returns
+`reversed`. With one shared token, a manual "not planned" close also reads as
+`reversed`; the binding cannot distinguish it from the undo close. Never close
+an existing ticket. Later comments or edits on a created ticket, or later
 document edits, mean `conflict`: preserve the target. The check is separate
 from reversal; a change between them is **not detected**. No atomic reversal
 adapter is required.

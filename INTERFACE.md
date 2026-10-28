@@ -575,8 +575,12 @@ list of confirmed record/slot writes belonging to that run, plus
 `archive_restorations`; it performs no reversal or restoration. Asks and
 preexisting identities are excluded. The agent checks each target immediately
 before reversing it through its profile binding. For an unchanged target,
-close a ticket this run created as not planned, remove its comment, or restore
-its document/slot preimage. Never close an existing ticket. A later comment or
+close a ticket this run created as not planned, edit its comment to the one-line
+stub `Removed by sweep undo <run_id>` while retaining the original record
+marker, or restore its document/slot preimage. Never delete the comment. A retry
+that finds this run's stub returns `reversed`. With one shared token, a manual
+"not planned" close also reads as `reversed`; the binding cannot distinguish it
+from the undo close. Never close an existing ticket. A later comment or
 edit on a created ticket, or a later document edit, is a `conflict` and must
 remain unchanged. A change made **between the check and the reversal is not
 detected**. Bindings need not check and reverse atomically.
