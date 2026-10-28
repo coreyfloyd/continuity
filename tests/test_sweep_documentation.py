@@ -39,6 +39,7 @@ def test_documented_herdr_check(tmp_path, available):
             "00000000-0000-4000-8000-000000000002",
             "00000000-0000-4000-8000-000000000003",
             "00000000-0000-4000-8000-000000000004",
+            "00000000-0000-4000-8000-000000000005",  # A done pane is still open.
         ]
     else:
         assert result.returncode == 1

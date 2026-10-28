@@ -54,6 +54,8 @@ session ids from panes whose `agent_session.kind` is `id`:
 python3 -c 'import json,subprocess; out=subprocess.run(["herdr","pane","list"],check=True,capture_output=True,text=True).stdout; [print(p["agent_session"]["value"]) for p in json.loads(out)["result"]["panes"] if (p.get("agent_session") or {}).get("kind")=="id"]'
 ```
 
+Every Herdr agent state (`idle`, `done`, `working`, `blocked`) counts as open.
+
 Put the same command in the configuration as a JSON string (the double quotes
 inside the command must be escaped):
 
