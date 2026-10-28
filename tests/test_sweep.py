@@ -1200,3 +1200,118 @@ def test_subdirectory_handoffs_remove_the_containing_worktree_once(sandbox, mode
         branches = subprocess.run(['git', '-C', str(sandbox[0] / 'repo'), 'branch', '--list', 'feature'],
                                   capture_output=True, text=True, check=True)
         assert not branches.stdout
+
+
+# Variations of the captured checkpoint structure reproduce the lint families
+# recorded in the approved ticket; identities and paths stay sandbox-local.
+@pytest.mark.parametrize('defect,reason', [
+    ('process-identity', 'missing pid+started_at'),
+    ('process-object', 'spawned_processes[0] not an object'),
+    ('process-array', 'spawned_processes must be an array'),
+    ('context-length', '.context is 601 chars'),
+    ('unanchored', 'has no anchor'),
+])
+@pytest.mark.parametrize('act', [False, True])
+def test_approved_lint_findings_warn_and_allow_sweeping(sandbox, defect, reason, act):
+    path = source(sandbox)
+    data = json.loads(path.read_text())
+    if defect == 'process-identity':
+        data['spawned_processes'] = [{}]
+    elif defect == 'process-object':
+        data['spawned_processes'] = ['redacted process']
+    elif defect == 'process-array':
+        data['spawned_processes'] = {}
+    elif defect == 'context-length':
+        data['resume']['open_loops'][0]['context'] = 'x' * 601
+    else:
+        data['resume']['open_loops'][0].pop('disposition')
+    path.write_text(json.dumps(data))
+    old = int(time.time()) - 5 * 86400
+    os.utime(path, (old, old))
+    args = decisions(sandbox, [{'rule': 'R6', 'reason': 'No stated outcome'}])
+    if act:
+        args += ['--user-profile', str(act_profile(sandbox))]
+
+    text, run = report(sandbox, *args)
+
+    assert not run['errors']
+    section = run['directories'][str(sandbox[0])]
+    warning, = section['handoff_warnings']
+    assert warning['path'] == str(path)
+    assert any(reason in message for message in warning['warnings'])
+    assert reason in text.split('## Structured data')[0]
+    assert section['handoffs_archived'][0]['path'] == str(path)
+    assert section['handoffs_archived'][0]['outcome'] == ('archived' if act else 'dry run')
+    assert path.exists() is not act
+
+
+@pytest.mark.parametrize('defect,reason', [
+    ('flat-v0', 'missing/invalid resume block'),
+    ('flat-v2', 'schema_version 2 requires a subject block'),
+    ('no-resume', 'missing/invalid resume block'),
+    ('other', 'resume.open_loops must be an array'),
+    ('mixed', 'resume.open_loops must be an array'),
+])
+def test_blocking_lint_keeps_source_with_reason(sandbox, defect, reason):
+    path = source(sandbox)
+    data = json.loads(path.read_text())
+    if defect.startswith('flat'):
+        data.update(data.pop('resume'))
+        data.pop('subject')
+        if defect == 'flat-v0':
+            data.pop('schema_version')
+    elif defect == 'no-resume':
+        data.pop('resume')
+    else:
+        data['resume']['open_loops'] = {}
+        if defect == 'mixed':
+            data['spawned_processes'] = [{}]
+    path.write_text(json.dumps(data))
+    before = path.read_bytes()
+
+    inspected = json.loads(command(sandbox, 'inspect', '--scope', 'all').stdout)
+
+    assert not inspected['candidates']
+    assert inspected['errors'][0]['path'] == str(path)
+    assert reason in inspected['errors'][0]['reason']
+    assert path.read_bytes() == before
+
+
+def test_scope_excludes_other_directories_before_lint(sandbox):
+    own = source(sandbox, name='own', directory=sandbox[0] / 'own')
+    other = source(sandbox, name='other', directory=sandbox[0] / 'other')
+    data = json.loads(other.read_text())
+    data.pop('resume')
+    other.write_text(json.dumps(data))
+
+    inspected = json.loads(command(sandbox, 'inspect', '--scope', str(sandbox[0] / 'own')).stdout)
+
+    assert [row['path'] for row in inspected['candidates']] == [str(own)]
+    assert not inspected['errors']
+
+
+@pytest.mark.parametrize('message', [
+    'a future lint rule',
+    'spawned_processes[0] future identity restriction',
+    'open_loops[0].context future restriction',
+    'open_loops[0] has no anchor future restriction',
+])
+def test_future_lint_messages_block_even_in_warn_only_fields(sandbox, monkeypatch, message):
+    path = source(sandbox)
+    spec = importlib.util.spec_from_file_location('future_lint_sweep', ENGINE)
+    engine = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(engine)
+    for key, value in sandbox[3].items():
+        monkeypatch.setenv(key, value)
+    lint = engine.handoff.lint_data
+
+    def future_lint(data):
+        errors, warnings = lint(data)
+        return errors + [message], warnings
+
+    monkeypatch.setattr(engine.handoff, 'lint_data', future_lint)
+    discovery = engine.discover('all', engine.settings(), engine.datetime.now(engine.timezone.utc))
+
+    assert not discovery['candidates']
+    assert discovery['errors'] == [{'path': str(path), 'reason': message}]
+    assert path.exists()

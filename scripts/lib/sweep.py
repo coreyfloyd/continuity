@@ -12,6 +12,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 from pathlib import Path
 import socket
 import shlex
@@ -145,6 +146,17 @@ def check_handoff_source(candidate):
         raise ValueError('handoff changed since discovery')
 
 
+# Only these approved lint messages are non-blocking for sweep. Full matches
+# deliberately keep any new lint rule blocking, even within the same field.
+WARN_ONLY_LINT = (
+    r'spawned_processes must be an array',
+    r'spawned_processes\[\d+\] not an object',
+    r'spawned_processes\[\d+\] missing pid\+started_at — identity reconcile \(F4\) is impossible without both; kill -0 alone can hit a stranger',
+    r'open_loops\[\d+\]\.context is \d+ chars — that reads like durable progress; put it in the record and leave a pointer here',
+    r'open_loops\[\d+\] has no anchor \(ticket\|project\) and no disposition — an un-anchored loop MUST say where it will be filed',
+)
+
+
 def discover(scope, config, now):
     store = Path(handoff.state_dir()).resolve()
     scoped = None if scope == 'all' else handoff.canonical_subject(scope)
@@ -162,9 +174,31 @@ def discover(scope, config, now):
         try:
             source_bytes, source_snapshot = read_handoff_source(path)
             data = json.loads(source_bytes)
-            errors, _ = handoff.lint_data(data)
-            if errors:
-                raise ValueError('; '.join(errors))
+            # Scope identifiable sources before lint so unrelated repositories'
+            # contract failures do not leak into a directory-scoped report.
+            if scoped and isinstance(data, dict):
+                subject = data.get('subject')
+                subject = subject if isinstance(subject, dict) else {}
+                directory = subject.get('working_directory') or data.get('working_directory') or data.get('cwd')
+                if isinstance(directory, str) and directory:
+                    directory = handoff.canonical_subject(directory)
+                    git = data.get('git')
+                    git = git if isinstance(git, dict) else {}
+                    stored_repo = git.get('repository_root')
+                    actual_repo = handoff.repository_root(directory)
+                    source_repo = actual_repo or (handoff.canonical_subject(stored_repo)
+                        if isinstance(stored_repo, str) and stored_repo else None)
+                    if not ((repo and source_repo == repo) or (not repo and directory == scoped)):
+                        continue
+            errors, warnings = handoff.lint_data(data)
+            blocking = []
+            for error in errors:
+                if any(re.fullmatch(pattern, error) for pattern in WARN_ONLY_LINT):
+                    warnings.append(error)
+                else:
+                    blocking.append(error)
+            if blocking:
+                raise ValueError('; '.join(blocking))
             directory, session = subjects(data)
             # v1 did not require a subject. Keep it decidable in all scope,
             # but never guess that an unidentified directory matches a scope.
@@ -172,11 +206,6 @@ def discover(scope, config, now):
                 raise ValueError('legacy handoff has no directory; cannot assign directory scope')
             if directory:
                 directory = handoff.canonical_subject(directory)
-            stored_repo = data.get('git', {}).get('repository_root')
-            actual_repo = handoff.repository_root(directory) if directory else None
-            source_repo = actual_repo or (handoff.canonical_subject(stored_repo) if stored_repo else None)
-            if scoped and not ((repo and source_repo == repo) or (not repo and directory == scoped)):
-                continue
             activity = path.stat().st_mtime
             if data.get('written_at'):
                 activity = max(activity, timestamp(data['written_at']))
@@ -191,7 +220,7 @@ def discover(scope, config, now):
             result['candidates'].append({'path': str(path), 'directory': directory or 'unknown directory',
                 'session_id': session or path.stem, 'activity_at': activity, 'idle_seconds': idle,
                 'abandoned': idle > config['idle_days'] * 86400,
-                'items': items, 'handoff': data, 'source_snapshot': source_snapshot})
+                'items': items, 'handoff': data, 'source_snapshot': source_snapshot, 'warnings': warnings})
         except (OSError, ValueError, TypeError, AttributeError) as exc:
             result['errors'].append({'path': str(path), 'reason': str(exc)})
     return result
@@ -444,7 +473,9 @@ def build_report(discovery, decisions, plan, ask, checks, interactive, started, 
         if not candidate['abandoned'] and not is_open and not checks.get('failed'):
             continue
         section = report['directories'].setdefault(candidate['directory'],
-            {**{key: [] for key, _ in SECTIONS}, 'filing_outcomes': [], 'worktrees_kept': [], 'handoffs_kept': []})
+            {**{key: [] for key, _ in SECTIONS}, 'filing_outcomes': [], 'worktrees_kept': [], 'handoffs_kept': [], 'handoff_warnings': []})
+        if candidate.get('warnings'):
+            section['handoff_warnings'].append({'path': candidate['path'], 'warnings': candidate['warnings']})
         if is_open:
             section['open_sessions'].append({key: candidate[key] for key in
                                             ('session_id', 'idle_seconds', 'activity_at', 'path')})
@@ -944,11 +975,11 @@ def render_report(report):
         lines.extend(['', 'Nothing to do.'])
     for directory, section in sorted(report['directories'].items()):
         lines.extend(['', '## ' + directory])
-        for key, title in (*SECTIONS, ('filing_outcomes', 'Every filing outcome'),
+        for key, title in (*SECTIONS, ('handoff_warnings', 'Handoff lint warnings'), ('filing_outcomes', 'Every filing outcome'),
                            ('worktrees_kept', 'Worktrees kept'), ('handoffs_kept', 'Handoffs kept'),
                            *((('unfiled_items', 'Unfiled items'),) if report['mode'] == 'act' else ())):
             lines.extend(['', '### ' + title])
-            lines.extend(['- ' + json.dumps(row, ensure_ascii=False, sort_keys=True) for row in section[key]] or ['None.'])
+            lines.extend(['- ' + json.dumps(row, ensure_ascii=False, sort_keys=True) for row in section.get(key, [])] or ['None.'])
     if report['errors']:
         lines.extend(['', '## Errors; sources left in place', *[json.dumps(e) for e in report['errors']]])
     lines.extend(['', '## Structured data', '', '```json', json.dumps(report, indent=2, ensure_ascii=False), '```', ''])
