@@ -16,6 +16,43 @@ ENGINE = ROOT / 'scripts/lib/sweep.py'
 FIXTURE = ROOT / 'tests/fixtures/sweep-handoff.json'
 
 
+def readable_rows(text, row):
+    """Find text rows carrying every scalar in a structured entry."""
+    def values(value):
+        if isinstance(value, dict):
+            return [leaf for child in value.values() for leaf in values(child)]
+        if isinstance(value, list):
+            return [leaf for child in value for leaf in values(child)]
+        return [] if value is None else [str(value).lower() if isinstance(value, bool) else ' '.join(str(value).splitlines())]
+
+    body = text.split('```json\n', 1)[0]
+    assert json.dumps(row, ensure_ascii=False, sort_keys=True) not in body
+    return [line for line in body.splitlines() if line.startswith('- ')
+            and all(value in line for value in values(row))]
+
+
+def assert_readable_report(text, data):
+    assert text.count('```json\n') == 1
+    payload = text.split('```json\n', 1)[1]
+    expected = json.dumps(data, indent=2, **({'ensure_ascii': False}
+                          if data['mode'] in ('act', 'watch-only') else {}))
+    assert payload == expected + '\n```\n'
+    assert json.loads(payload.rsplit('\n```', 1)[0]) == data
+    if 'directories' in data:
+        for section in data['directories'].values():
+            for rows in section.values():
+                for row in rows:
+                    matches = readable_rows(text, row)
+                    assert matches, row
+                    if row.get('rule'):
+                        assert any('Rule: ' + row['rule'] in line for line in matches)
+    else:
+        body = text.split('```json\n', 1)[0]
+        assert '## Items' in body
+        for row in data['items']:
+            assert readable_rows(text, row), row
+
+
 @pytest.fixture
 def sandbox(tmp_path):
     home = tmp_path / 'home'
@@ -97,7 +134,9 @@ def report(sandbox, *args):
         assert run['phase'] == 'completed'
     else:
         path = Path(result.stdout.strip())
-    return path.read_text(), read_run(path)
+    text, data = path.read_text(), read_run(path)
+    assert_readable_report(text, data)
+    return text, data
 
 
 def act_profile(sandbox, behavior=None):
@@ -192,8 +231,7 @@ def test_duplicate_identities_in_one_handoff_are_retained_as_ambiguous(sandbox, 
         assert row['identity_occurrences'] == 2
         assert 'manual judgment' in row['reason']
         assert 'no filing decision applied' in row['reason']
-        rendered = json.dumps(row, ensure_ascii=False, sort_keys=True)
-        assert text.split('## Structured data')[0].count(rendered) == outcomes.count(row)
+        assert len(readable_rows(text, row)) == outcomes.count(row)
     assert [item['identity_occurrences'] for item in inspected] == [2, 2, 1]
     assert outcomes[2]['outcome'] == 'dry run'
     assert section['items_dropped'] == [outcomes[2]]
@@ -325,7 +363,7 @@ def test_untyped_legacy_items_receive_every_filing_outcome(sandbox, version, ent
     assert section[section_key] == [row]
     assert section['handoffs_archived'][0]['path'] == str(path)
     assert not section['handoffs_kept']
-    assert json.dumps(row, ensure_ascii=False, sort_keys=True) in text.split('## Structured data')[0]
+    assert readable_rows(text, row)
     assert outside_report_snapshot(sandbox) == before
     assert len(list((sandbox[0] / 'reports').iterdir())) == 1
 
@@ -399,7 +437,7 @@ def test_item_failure_is_reported_without_aborting_other_items_or_handoffs(sandb
     assert failed['rule'] == bad_entry['rule']
     assert failed.get('destination') == bad_entry.get('destination')
     assert error in failed['error']
-    assert json.dumps(failed, ensure_ascii=False, sort_keys=True) in text.split('## Structured data')[0]
+    assert readable_rows(text, failed)
     assert len(section['items_dropped']) == len(items) - 1
     for key in ('asks_raised', 'comments_added', 'new_tickets', 'documents_changed', 'handoffs_archived'):
         assert not section[key]
@@ -1165,6 +1203,7 @@ def test_retention_cli_reports_changes_and_does_not_run_during_watch(sandbox):
     assert outside_report_snapshot(sandbox) == before
     done = command(sandbox, 'retention')
     result = read_run(done.stdout.strip())
+    assert_readable_report(Path(done.stdout.strip()).read_text(), result)
     assert result['items'][0]['outcome'] == 'deleted'
     assert not target.exists() and path.exists()
 
@@ -1200,3 +1239,131 @@ def test_subdirectory_handoffs_remove_the_containing_worktree_once(sandbox, mode
         branches = subprocess.run(['git', '-C', str(sandbox[0] / 'repo'), 'branch', '--list', 'feature'],
                                   capture_output=True, text=True, check=True)
         assert not branches.stdout
+
+
+# Variations of the captured checkpoint structure reproduce the lint families
+# recorded in the approved ticket; identities and paths stay sandbox-local.
+@pytest.mark.parametrize('defect,reason', [
+    ('process-identity', 'missing pid+started_at'),
+    ('process-object', 'spawned_processes[0] not an object'),
+    ('process-array', 'spawned_processes must be an array'),
+    ('context-length', '.context is 601 chars'),
+    ('unanchored', 'has no anchor'),
+])
+@pytest.mark.parametrize('act', [False, True])
+def test_approved_lint_findings_warn_and_allow_sweeping(sandbox, defect, reason, act):
+    path = source(sandbox)
+    data = json.loads(path.read_text())
+    if defect == 'process-identity':
+        data['spawned_processes'] = [{}]
+    elif defect == 'process-object':
+        data['spawned_processes'] = ['redacted process']
+    elif defect == 'process-array':
+        data['spawned_processes'] = {}
+    elif defect == 'context-length':
+        data['resume']['open_loops'][0]['context'] = 'x' * 601
+    else:
+        data['resume']['open_loops'][0].pop('disposition')
+    path.write_text(json.dumps(data))
+    old = int(time.time()) - 5 * 86400
+    os.utime(path, (old, old))
+    args = decisions(sandbox, [{'rule': 'R6', 'reason': 'No stated outcome'}])
+    if act:
+        args += ['--user-profile', str(act_profile(sandbox))]
+
+    text, run = report(sandbox, *args)
+
+    assert not run['errors']
+    section = run['directories'][str(sandbox[0])]
+    warning, = section['handoff_warnings']
+    assert warning['path'] == str(path)
+    assert any(reason in message for message in warning['warnings'])
+    assert reason in text.split('## Structured data')[0]
+    assert section['handoffs_archived'][0]['path'] == str(path)
+    assert section['handoffs_archived'][0]['outcome'] == ('archived' if act else 'dry run')
+    assert path.exists() is not act
+
+
+@pytest.mark.parametrize('defect,reason', [
+    ('flat-v0', 'missing/invalid resume block'),
+    ('flat-v2', 'schema_version 2 requires a subject block'),
+    ('no-resume', 'missing/invalid resume block'),
+    ('other', 'resume.open_loops must be an array'),
+    ('mixed', 'resume.open_loops must be an array'),
+])
+def test_blocking_lint_keeps_source_with_reason(sandbox, defect, reason):
+    path = source(sandbox)
+    data = json.loads(path.read_text())
+    if defect.startswith('flat'):
+        data.update(data.pop('resume'))
+        data.pop('subject')
+        if defect == 'flat-v0':
+            data.pop('schema_version')
+    elif defect == 'no-resume':
+        data.pop('resume')
+    else:
+        data['resume']['open_loops'] = {}
+        if defect == 'mixed':
+            data['spawned_processes'] = [{}]
+    path.write_text(json.dumps(data))
+    before = path.read_bytes()
+
+    inspected = json.loads(command(sandbox, 'inspect', '--scope', 'all').stdout)
+
+    assert not inspected['candidates']
+    assert inspected['errors'][0]['path'] == str(path)
+    assert reason in inspected['errors'][0]['reason']
+    assert path.read_bytes() == before
+
+
+def test_scope_excludes_other_directories_before_lint(sandbox):
+    own = source(sandbox, name='own', directory=sandbox[0] / 'own')
+    other = source(sandbox, name='other', directory=sandbox[0] / 'other')
+    data = json.loads(other.read_text())
+    data.pop('resume')
+    other.write_text(json.dumps(data))
+
+    inspected = json.loads(command(sandbox, 'inspect', '--scope', str(sandbox[0] / 'own')).stdout)
+
+    assert [row['path'] for row in inspected['candidates']] == [str(own)]
+    assert not inspected['errors']
+
+
+@pytest.mark.parametrize('message', [
+    'a future lint rule',
+    'spawned_processes[0] future identity restriction',
+    'open_loops[0].context future restriction',
+    'open_loops[0] has no anchor future restriction',
+])
+def test_future_lint_messages_block_even_in_warn_only_fields(sandbox, monkeypatch, message):
+    path = source(sandbox)
+    spec = importlib.util.spec_from_file_location('future_lint_sweep', ENGINE)
+    engine = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(engine)
+    for key, value in sandbox[3].items():
+        monkeypatch.setenv(key, value)
+    lint = engine.handoff.lint_data
+
+    def future_lint(data):
+        errors, warnings = lint(data)
+        return errors + [message], warnings
+
+    monkeypatch.setattr(engine.handoff, 'lint_data', future_lint)
+    discovery = engine.discover('all', engine.settings(), engine.datetime.now(engine.timezone.utc))
+
+    assert not discovery['candidates']
+    assert discovery['errors'] == [{'path': str(path), 'reason': message}]
+    assert path.exists()
+
+
+@pytest.mark.parametrize('mode', ['watch-only', 'act'])
+def test_reports_have_readable_entries_and_unchanged_json(sandbox, mode):
+    source(sandbox)
+    profile = act_profile(sandbox) if mode == 'act' else bound_profile(sandbox)
+    text, data = report(sandbox, *decisions(sandbox, [new_work()]),
+                        '--user-profile', str(profile))
+    assert_readable_report(text, data)
+    body = text.split('## Structured data')[0]
+    assert "'session_ids':" not in body
+    assert 'Destination: new ticket' in body
+    assert 'Rule: R5' in body

@@ -47,17 +47,32 @@ quoting without a shell and have the configured binding timeout. Nonzero exits,
 timeouts, and commands that cannot start prevent every session in scope from
 counting as abandoned; the report names the command and error. Successful checks
 and their ids are recorded too. Checks must be read-only, including in watch-only.
-For example, a user-owned adapter can inspect Herdr's session surfaces:
+For example, this optional Herdr check reads `herdr pane list` and prints the
+session ids from panes whose `agent_session.kind` is `id`:
 
-```json
-{"sweep":{"open_session_checks":["/absolute/path/to/herdr-open-sessions"]}}
+```bash
+python3 -c 'import json,subprocess; out=subprocess.run(["herdr","pane","list"],check=True,capture_output=True,text=True).stdout; [print(p["agent_session"]["value"]) for p in json.loads(out)["result"]["panes"] if (p.get("agent_session") or {}).get("kind")=="id"]'
 ```
 
-That adapter reads `herdr workspace list` and `herdr tab list`, extracts actual
-session ids from the user's session metadata, and prints only those ids. It must
-exit nonzero if inspection fails. Tab titles alone are not session ids. Herdr
-is an optional example, never a package dependency. Other session managers can
-implement the same command contract. `new_ticket_limit` (a non-negative
+Every Herdr agent state (`idle`, `done`, `working`, `blocked`) counts as open.
+
+Put the same command in the configuration as a JSON string (the double quotes
+inside the command must be escaped):
+
+```json
+{
+  "sweep": {
+    "open_session_checks": [
+      "python3 -c 'import json,subprocess; out=subprocess.run([\"herdr\",\"pane\",\"list\"],check=True,capture_output=True,text=True).stdout; [print(p[\"agent_session\"][\"value\"]) for p in json.loads(out)[\"result\"][\"panes\"] if (p.get(\"agent_session\") or {}).get(\"kind\")==\"id\"]'"
+    ]
+  }
+}
+```
+
+The command runs without a shell or pipeline. If Herdr is missing or inspection
+fails, it exits nonzero so sweep prevents sessions from counting as abandoned.
+Herdr is an optional example, never a package dependency. Other session managers
+can implement the same command contract. `new_ticket_limit` (a non-negative
 integer, default 10) and `archive_retention_days` (default null, retention off)
 control creation capacity and optional archive deletion respectively.
 Retention runs only through the separate `retention` command described below. Watch-only creates no ticket and
