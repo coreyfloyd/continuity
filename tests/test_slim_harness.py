@@ -1,6 +1,7 @@
 """Deterministic workflow boundaries exercised with redacted captured instructions."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -10,6 +11,43 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / 'skills/slim-harness'
 FIX = ROOT / 'tests/fixtures/slim-harness'
+
+
+@pytest.mark.parametrize('configured', [True, False])
+def test_enforcement_reference_config_present_or_absent(configured, tmp_path):
+    example = json.loads((ROOT / 'docs/examples/config.json').read_text())
+    reference = example['harness_enforcement_reference']
+    config = tmp_path / 'config.json'
+    config.write_text(json.dumps({'harness_enforcement_reference': reference} if configured else {}))
+    result = subprocess.run(
+        [sys.executable, str(ROOT / 'scripts/lib/handoff.py'), 'config-get',
+         'harness_enforcement_reference'],
+        env=dict(os.environ, CONTINUITY_CONFIG=str(config)), capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (reference + '\n' if configured else '')
+
+
+@pytest.mark.parametrize('path_kind', ['absolute', 'home', 'relative'])
+def test_enforcement_reference_path_contract_is_independent_of_cwd(path_kind, tmp_path):
+    reference = {'absolute': str(tmp_path / 'enforcement.md'),
+                 'home': '~/state/harness/enforcement.md',
+                 'relative': 'enforcement.md'}[path_kind]
+    config = tmp_path / 'config.json'
+    config.write_text(json.dumps({'harness_enforcement_reference': reference}))
+    other = tmp_path / 'other'
+    other.mkdir()
+    for cwd in [tmp_path, other]:
+        result = subprocess.run(
+            [sys.executable, str(ROOT / 'scripts/lib/handoff.py'), 'config-get',
+             'harness_enforcement_reference'], cwd=cwd,
+            env=dict(os.environ, CONTINUITY_CONFIG=str(config)), capture_output=True, text=True)
+        if path_kind == 'relative':
+            assert result.returncode == 2
+            assert 'harness_enforcement_reference must be an absolute or ~/ path' in result.stderr
+            assert result.stdout == ''
+        else:
+            assert result.returncode == 0, result.stderr
+            assert result.stdout == reference + '\n'
 
 def helper():
     path = SKILL / 'scripts/harness.py'

@@ -106,6 +106,8 @@ def config_string(key: str) -> str | None:
         return None
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"continuity config {config_path()}: {key} must be a non-empty string")
+    if key == "harness_enforcement_reference" and not (os.path.isabs(value) or value.startswith("~/")):
+        raise ValueError(f"continuity config {config_path()}: {key} must be an absolute or ~/ path")
     return value
 
 
