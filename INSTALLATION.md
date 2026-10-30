@@ -151,7 +151,7 @@ These are every key in [INTERFACE.md section 2](INTERFACE.md#2-configuration):
 | `checklist_state_dir` | string | Checklist marker directory; `CHECKLIST_STATE_DIR` overrides it. |
 | `checklist_surfaces` | list of strings | Standing directories the surface detector reports alongside the session's repository. |
 | `checklist_suite_baselines_dir` | string | Per-repository suite baseline directory reported by the surface detector. |
-| `harness_enforcement_reference` | string | Optional slim-harness enforcement reference path; expand `~`. If absent, report “no enforcement reference configured” and inspect hooks directly. |
+| `harness_enforcement_reference` | string | Optional slim-harness enforcement reference; require an absolute path or a `~/` path (expand `~` to the current user’s home). Ordinary relative paths are configuration errors, never relative to the working directory. If absent, report “no enforcement reference configured” and inspect hooks directly. |
 | `prune_days` | positive integer | Transcript age in days for `stale_transcript` prune candidates; default 7, overridden by `PICKUP_PRUNE_DAYS`. |
 | `cycle_sessions` | object | Session names mapped to home-relative directories for an external session-cycling consumer. The package does not run that consumer. |
 | `unattended` | object | Optional unattended-mode adapter: `state_module`, `completion_command`, and `completed_by`, described in interface section 6. Absent by default. |

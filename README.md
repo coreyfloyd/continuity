@@ -370,7 +370,7 @@ configuration JSON object             # shared settings, not a profile
 ├── checklist_state_dir: string       # unattended-wrap marker directory
 ├── checklist_surfaces: string[]      # standing surface-detector candidates
 ├── checklist_suite_baselines_dir: string # per-repository suite baseline directory
-├── harness_enforcement_reference: string # optional slim-harness hook/gate/supersession reference
+├── harness_enforcement_reference: string # optional slim-harness reference; absolute or ~/ path
 ├── prune_days: positive integer      # stale-transcript prune age, default 7; PICKUP_PRUNE_DAYS overrides
 ├── cycle_sessions: object            # consumer session-name to home-relative directory mapping
 └── unattended: object                # optional unattended-mode integration
@@ -380,7 +380,9 @@ configuration JSON object             # shared settings, not a profile
 ```
 
 The example exercises storage and the optional `harness_enforcement_reference` path.
-Without that key, slim-harness reports “no enforcement reference configured” and
+The reference must be an absolute path or a `~/` path; expand `~` to the current
+user’s home directory. Ordinary relative paths are configuration errors, never
+resolved against the working directory. Without that key, slim-harness reports “no enforcement reference configured” and
 inspects hooks directly; the review continues. `config-get` validates
 that input's string key; it is not a full validator for the object-valued
 `cycle_sessions` and `unattended` integrations. Their consumers validate those

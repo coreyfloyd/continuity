@@ -21,8 +21,10 @@ Keep unguessable conventions and mechanisms for the remaining review steps.
 
 Resolve the shared config using `$CONTINUITY_CONFIG`, otherwise
 `${XDG_CONFIG_HOME:-~/.config}/continuity/config.json`; an absent file is `{}`.
-Read its optional string key `harness_enforcement_reference`, expanding `~` in
-the path. The shared reader is `python3 scripts/lib/handoff.py config-get harness_enforcement_reference` (script path relative to the continuity package).
+Read its optional string key `harness_enforcement_reference`: require an absolute
+path or a `~/` path, expanding `~` to the current user’s home directory. Reject
+ordinary relative paths as configuration errors; never resolve them against the
+working directory. The shared reader is `python3 scripts/lib/handoff.py config-get harness_enforcement_reference` (script path relative to the continuity package).
 An empty result means report **“no enforcement reference configured”**, inspect
 hooks directly, and continue the review; this gap does not fail it.
 Malformed config or an unreadable configured path is a coverage error to report,
