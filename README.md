@@ -370,6 +370,7 @@ configuration JSON object             # shared settings, not a profile
 ├── checklist_state_dir: string       # unattended-wrap marker directory
 ├── checklist_surfaces: string[]      # standing surface-detector candidates
 ├── checklist_suite_baselines_dir: string # per-repository suite baseline directory
+├── harness_enforcement_reference: string # optional slim-harness hook/gate/supersession reference
 ├── prune_days: positive integer      # stale-transcript prune age, default 7; PICKUP_PRUNE_DAYS overrides
 ├── cycle_sessions: object            # consumer session-name to home-relative directory mapping
 └── unattended: object                # optional unattended-mode integration
@@ -378,7 +379,9 @@ configuration JSON object             # shared settings, not a profile
     └── completed_by[]                # accepted updated_by values after that command
 ```
 
-The example exercises one existing storage-test input. `config-get` validates
+The example exercises storage and the optional `harness_enforcement_reference` path.
+Without that key, slim-harness reports “no enforcement reference configured” and
+inspects hooks directly; the review continues. `config-get` validates
 that input's string key; it is not a full validator for the object-valued
 `cycle_sessions` and `unattended` integrations. Their consumers validate those
 settings when used. See [the full settings table](INTERFACE.md#2-configuration).

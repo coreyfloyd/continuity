@@ -1,6 +1,7 @@
 """Deterministic workflow boundaries exercised with redacted captured instructions."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -10,6 +11,20 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / 'skills/slim-harness'
 FIX = ROOT / 'tests/fixtures/slim-harness'
+
+
+@pytest.mark.parametrize('configured', [True, False])
+def test_enforcement_reference_config_present_or_absent(configured, tmp_path):
+    example = json.loads((ROOT / 'docs/examples/config.json').read_text())
+    reference = example['harness_enforcement_reference']
+    config = tmp_path / 'config.json'
+    config.write_text(json.dumps({'harness_enforcement_reference': reference} if configured else {}))
+    result = subprocess.run(
+        [sys.executable, str(ROOT / 'scripts/lib/handoff.py'), 'config-get',
+         'harness_enforcement_reference'],
+        env=dict(os.environ, CONTINUITY_CONFIG=str(config)), capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == (reference + '\n' if configured else '')
 
 def helper():
     path = SKILL / 'scripts/harness.py'

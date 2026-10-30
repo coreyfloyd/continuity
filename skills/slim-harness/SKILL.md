@@ -9,7 +9,7 @@ Review one handed or loaded instruction file. This skill adds source edits and
 cross-file conflict checks to Claude Code's `/doctor prompt-audit`, and works in
 both tools. Review the target; read the comparison files below for cross-file
 checks. Never scan a catalog or independently review unrelated files.
-No schedule, time trigger, model-switch trigger, unattended mode, or review history.
+Size is one trigger: a user or scheduled review may request an under-limit file. User presence is still required; no schedule is installed.
 
 ## Start and measure
 
@@ -68,6 +68,7 @@ Keep comparison context separate from the session's original loading scope:
 these extra reads do not create over-limit trigger rows or authorize independent
 reviews or edits of those files. Use this same preparation in Claude Code and Codex.
 
+Before Redundancy, apply `references/removable-rules.md` to classify every rule and check enforcement and supersession.
 For every finding, first try redundancy, unneeded context, and conflicts. Use
 extraction and compression only for what those first three leave.
 
@@ -85,7 +86,8 @@ After resolution, state the instruction once where the user agreed it is owned.
 
 ### Unneeded context
 
-Always preserve intent, goals, audience, and the one-line why behind a rule.
+Preserve intent, goals, audience; a one-line why states the goal or consequence protected.
+Move dated incident provenance to the rule’s ticket, keeping at most one repo-qualified link.
 Keep always-on only what the model cannot work out: unguessable tools/commands,
 deviations from defaults, repeated gotchas, and boundaries. Delete general good
 practice, obvious behavior, tool explanations, and facts obtainable with one read
@@ -95,13 +97,13 @@ sessions need it. Put it behind a pointer when only some sessions need it.
 
 A partly needed list of cases becomes the **judgment criterion** behind it rather
 than being kept whole or deleted. Name that rewrite in the summary. Replace a long
-block of examples with the rule or constrained interface it illustrates.
+block of examples with its criterion; retain only exact failing command forms or
+other mechanisms the rule cannot state, reduced to that clause.
 Flag wording written for older models; explain which assumption is stale rather
 than deleting a safety boundary just because it is old. Flag “double-check your
 work” and “think hard” for deletion: checking is default behavior and effort is a
-setting. For every capitalized-emphasis rule (IMPORTANT, MUST, NEVER), record one
-of: **delete, propose a hook, or keep** with a stated reason. A hook proposal
-specifies both tools' halves; this skill writes no hooks and files no tickets.
+setting. For IMPORTANT/MUST/NEVER, default to delete; record **delete, propose a hook, or keep**
+with a basis per `references/removable-rules.md`; propose both tools’ hooks for zero-exception rules. Write no hooks or tickets.
 
 ### Conflicts
 
@@ -191,7 +193,6 @@ and supply `context_window` if known. The helper reports the listing budget and
 largest loaded descriptions (unknown window: 8,000 characters; otherwise 2% of
 context window), with no automatic trigger. Output has `measured`, `over_limit`,
 `unresolved`, and optional `listing`; the script measures and runs no review.
-
 
 For cross-file detection without a review, `scripts/harness.py duplicates
 <manifest.json>` accepts the same manifest. Read `references/duplicates.md` for

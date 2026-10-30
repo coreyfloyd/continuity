@@ -49,3 +49,25 @@ Sources (checked 2026-10-12; skill byte guidance checked 2026-10-17):
 
 The extension of pointer depth and TOC requirements to rules files is this skill's
 own policy; the published best-practices page makes those claims for skills only.
+
+## Removal review (sources checked 2026-10-29)
+
+Apply `references/removable-rules.md` (relative to the skill directory) before
+Redundancy: classify defaults, check enforcement, and test dated rules for
+supersession. Every finding names system-prompt text, a hook, or a superseding
+mechanism as its basis. A user or scheduled review may request an under-limit
+file; the user-presence and edit-approval requirements still apply.
+
+- [Claude Code best practices](https://code.claude.com/docs/en/best-practices)
+  (checked 2026-10-29): each instruction consumes attention; default to removing
+  IMPORTANT/MUST/NEVER rules and propose hooks for zero-exception rules,
+  specifying both tools' halves.
+- [Fable 5 prompting](https://platform.claude.com/docs/en/build-with-claude/prompt-engineering/prompting-claude-fable-5)
+  (checked 2026-10-29): reconsider older prescriptive instructions when current
+  defaults suffice; retain the reason and prefer a brief judgment criterion.
+- [Agent Skills best practices](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/best-practices)
+  (checked 2026-10-29): its “MUST filter” advice predates Claude 5; do not treat
+  it as a mandate to retain capitalized emphasis.
+
+Read the available Claude Code system prompt and active output style for the
+default-behavior test; inspect the Claude Code enforcement entries.

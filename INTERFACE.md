@@ -43,6 +43,7 @@ an empty configuration.
 | `checklist_state_dir` | string | Where the checklist keeps its marker. |
 | `checklist_surfaces` | list of strings | Standing surfaces the surface detector reports in addition to the session's own repository. |
 | `checklist_suite_baselines_dir` | string | Directory of per-repository suite baseline files the surface detector reports. |
+| `harness_enforcement_reference` | string | Optional slim-harness enforcement reference path; expand `~`. If absent, report “no enforcement reference configured” and inspect hooks directly. |
 | `prune_days` | positive integer | Age in days at which a handoff becomes a `stale_transcript` prune candidate. Shared by Claude and Codex; `PICKUP_PRUNE_DAYS` overrides it. Default: 7. |
 | `cycle_sessions` | object | Maps a session name to a directory under the home directory, for a consumer that cycles sessions (section 8). |
 | `unattended` | object | Optional unattended mode, section 6. |
