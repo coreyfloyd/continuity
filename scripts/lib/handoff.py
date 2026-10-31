@@ -1109,7 +1109,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 if type(value) is not int or value <= 0:
                     raise ValueError(f"continuity config {config_path()}: prune_days must be a positive integer")
                 print(value)
-            elif isinstance(value, list):
+            elif isinstance(value, list) and args.key != "harness_enforcement_reference":
                 config_string_list(args.key)
                 print("\n".join(value))
             elif value is not None:
