@@ -49,6 +49,36 @@ def test_enforcement_reference_path_contract_is_independent_of_cwd(path_kind, tm
             assert result.returncode == 0, result.stderr
             assert result.stdout == reference + '\n'
 
+@pytest.mark.parametrize('count', [0, 1, 2])
+def test_enforcement_reference_rejects_list_values(count, tmp_path):
+    example = json.loads((ROOT / 'docs/examples/config.json').read_text())
+    reference = example['harness_enforcement_reference']
+    config = tmp_path / 'config.json'
+    config.write_text(json.dumps({'harness_enforcement_reference': [reference] * count}))
+    result = subprocess.run(
+        [sys.executable, str(ROOT / 'scripts/lib/handoff.py'), 'config-get',
+         'harness_enforcement_reference'],
+        env=dict(os.environ, CONTINUITY_CONFIG=str(config)), capture_output=True, text=True)
+    assert result.returncode == 2
+    assert 'continuity config' in result.stderr
+    assert 'harness_enforcement_reference must be a non-empty string' in result.stderr
+    assert result.stdout == ''
+
+
+@pytest.mark.parametrize('count', [0, 1, 2])
+def test_config_get_preserves_other_list_values(count, tmp_path):
+    example = json.loads((ROOT / 'docs/examples/config.json').read_text())
+    values = [example['harness_enforcement_reference']] * count
+    config = tmp_path / 'config.json'
+    config.write_text(json.dumps({'checklist_surfaces': values}))
+    result = subprocess.run(
+        [sys.executable, str(ROOT / 'scripts/lib/handoff.py'), 'config-get',
+         'checklist_surfaces'],
+        env=dict(os.environ, CONTINUITY_CONFIG=str(config)), capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == '\n'.join(values) + '\n'
+
+
 def helper():
     path = SKILL / 'scripts/harness.py'
     assert path.is_file(), 'shared measurement and edit helper must ship'
