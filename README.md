@@ -1,5 +1,11 @@
 # continuity
 
+> **continuity is now part of [hippocampus](https://github.com/coreyfloyd/hippocampus).**
+> This repository is archived and receives no further changes. Its open issues moved
+> to hippocampus. To switch, follow
+> [Coming from continuity](https://github.com/coreyfloyd/hippocampus#coming-from-continuity)
+> and the [manual cutover steps](https://github.com/coreyfloyd/hippocampus/blob/main/MIGRATION.md#manual-continuity-cutover).
+
 A coding session that ends, compacts, or runs out of context can lose its work:
 what changed, where the decisions went, and what still needs attention.
 continuity keeps the **record** primary and writes a thin **handoff** pointing
